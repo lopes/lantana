@@ -1,0 +1,17 @@
+# /etc/logrotate.d/firewall
+# Managed by Ansible
+
+/var/log/lantana/honeywall/nftables/firewall.log
+{
+    # No 'daily': forced with cron for more determinism
+    rotate 90
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0644 root root
+    sharedscripts
+    postrotate
+        /usr/lib/rsyslog/rsyslog-rotate
+    endscript
+}
