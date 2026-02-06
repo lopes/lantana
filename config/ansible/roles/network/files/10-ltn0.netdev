@@ -1,0 +1,7 @@
+# /etc/systemd/network/10-ltn0.netdev
+# Managed by Ansible
+
+[NetDev]
+Name=ltn0
+Kind=dummy
+Description=Lantana Virtual sensor & collector interface
