@@ -1,0 +1,70 @@
+---
+# --- COLLECTOR USER ---
+- name: "Manage collector user group"
+  become: true
+  group:
+    gid: "{{ node_collector_user.uid }}"
+    name: "{{ node_collector_user.name }}"
+    state: present
+
+- name: "Manage stigma system user"
+  become: true
+  user:
+    uid: "{{ node_collector_user.uid }}"
+    name: "{{ node_collector_user.name }}"
+    group: "{{ node_collector_user.name }}"
+    shell: /usr/sbin/nologin
+    create_home: false
+    system: true
+    state: present
+
+# -- COLLECTOR DIRECTORIES ---
+- name: "Create collector config directory"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  loop:
+    - /etc/lantana/collector
+
+- name: "Create datalake directory"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ node_collector_user.name }}"
+    group: "{{ node_collector_user.name }}"
+    mode: "0750"
+  loop:
+    - /var/lib/lantana/datalake
+
+# --- SECRETS FILE ---
+- name: Deploy API credentials template
+  become: true
+  ansible.builtin.template:
+    src: secrets.json.j2
+    dest: /etc/lantana/collector/secrets.json
+    owner: "{{ node_collector_user.name }}"
+    group: "{{ node_collector_user.name }}"
+    mode: "0600"
+  no_log: true
+
+# --- LANTANA-PRUNE DEPLOYMENT ---
+- name: "Deploy lantana-prune script"
+  become: true
+  ansible.builtin.copy:
+    src: lantana-prune
+    dest: /usr/local/sbin
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: "Add periodic pruning"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cron.d/lantana-prune
+    content: "15 0 * * * root /usr/local/sbin/lantana-prune\n"
+    mode: "0644"
