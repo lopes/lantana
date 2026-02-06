@@ -1,0 +1,8 @@
+#!/bin/bash
+# /usr/local/sbin/lantana-prune
+
+LAKE_DIR="/var/lib/lantana/datalake"
+DATE=$(date +%Y-%m-%d)
+RETENTION_DAYS=180
+
+find "$LAKE_DIR" -name "*.parquet" -type f -mtime +"$RETENTION_DAYS" -delete
