@@ -1,0 +1,162 @@
+---
+- name: "VALIDATION: Single Node Stack Verification"
+  hosts: single_nodes
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    # ---------------------------------------------------------
+    # VARIABLE LOADING
+    # ---------------------------------------------------------
+    - name: "Force load infra variables from inventory structure"
+      ansible.builtin.include_vars:
+        file: "{{ inventory_dir }}/group_vars/all/infra.yml"
+
+    - name: "DEBUG: Confirm Variables Loaded"
+      ansible.builtin.debug:
+        msg: "Loaded Sensor IP: {{ lantana_net.sensor_01_ipv4 | default('Still Missing!') }}"
+
+  tasks:
+    # ---------------------------------------------------------
+    # USER
+    # ---------------------------------------------------------
+    - name: "Check if required users exist"
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ item.name }}"
+      loop:
+        - "{{ node_sensor_user }}"
+        - "{{ node_collector_user }}"
+      register: user_check
+
+    - name: "Assert users have correct UIDs"
+      ansible.builtin.assert:
+        that:
+          - "item.ansible_facts.getent_passwd[item.item.name][1]|int == item.item.uid"
+        fail_msg: "User {{ item.item.name }} has incorrect UID. Expected {{ item.item.uid }}."
+      loop: "{{ user_check.results }}"
+
+    # ---------------------------------------------------------
+    # NETWORK & PORT
+    # ---------------------------------------------------------
+    - name: "Check if custom SSH admin port is listening"
+      ansible.builtin.wait_for:
+        port: "{{ node_ssh_port }}"
+        state: started
+        timeout: 5
+        connect_timeout: 2
+      register: ssh_port_check
+      ignore_errors: true
+
+    - name: "Assert SSH port is reachable"
+      ansible.builtin.assert:
+        that: "not ssh_port_check.failed"
+        fail_msg: "SSH Port {{ node_ssh_port }} is unreachable."
+
+    - name: "Check if ltn0 virtual interface exists"
+      ansible.builtin.command: ip addr show ltn0
+      register: ltn0_check
+      changed_when: false
+      failed_when: ltn0_check.rc != 0
+
+    - name: "Calculate expected IP strings"
+      ansible.builtin.set_fact:
+        expected_sensor_ipv4: "{{ lantana_net.sensor_01_ipv4 | regex_replace('/.*', '') }}"
+        expected_sensor_ipv6: "{{ lantana_net.sensor_01_ipv6 | regex_replace('/.*', '') }}"
+
+    - name: "Assert ltn0 has correct sensor IPs"
+      ansible.builtin.assert:
+        that:
+          - expected_sensor_ipv4 in ltn0_check.stdout
+          - expected_sensor_ipv6 in ltn0_check.stdout
+        fail_msg: "Validation Failed. Expected {{ expected_sensor_ipv4 }} in ltn0 output."
+
+    # ---------------------------------------------------------
+    # FIREWALL
+    # ---------------------------------------------------------
+    - name: "Check if NFTables ruleset is loaded"
+      ansible.builtin.command: nft list ruleset
+      register: nft_check
+      changed_when: false
+
+    - name: "Assert Firewall Tables and Chains exist"
+      ansible.builtin.assert:
+        that:
+          - "'table inet lantana_filter' in nft_check.stdout"
+          - "'chain input' in nft_check.stdout"
+          - "'table ip lantana_nat' in nft_check.stdout"
+        fail_msg: "Critical firewall tables are missing."
+
+    # ---------------------------------------------------------
+    # FILESYSTEM
+    # ---------------------------------------------------------
+    - name: "Check critical directories"
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      loop:
+        - {
+            path: "/etc/lantana/honeywall/nftables/sensors",
+            owner: "root",
+            mode: "0755",
+          }
+        - { path: "/var/log/lantana/honeywall", owner: "root", mode: "0755" }
+      register: dir_stats
+
+    - name: "Assert Directory Compliance"
+      ansible.builtin.assert:
+        that:
+          - "item.stat.exists"
+          - "item.stat.pw_name == item.item.owner"
+          - "item.stat.mode == item.item.mode"
+        fail_msg: "Directory {{ item.item.path }} failed validation."
+      loop: "{{ dir_stats.results }}"
+
+    # ---------------------------------------------------------
+    # LOGGING & CRON
+    # ---------------------------------------------------------
+    - name: "Check Log Rotation configurations"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        # Must match what firewall/auth roles deploy
+        - /etc/logrotate.d/firewall
+        - /etc/logrotate.d/auth
+        - /etc/logrotate.d/audit
+        - /etc/logrotate.d/honeypots
+      register: logrotate_check
+
+    - name: "Assert Log Rotation files exist"
+      ansible.builtin.assert:
+        that: "item.stat.exists"
+        fail_msg: "Log rotation file {{ item.item }} is missing."
+      loop: "{{ logrotate_check.results }}"
+
+    - name: "Check Cron Jobs for Logs"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        # Must match what roles deploy in /etc/cron.d/
+        - /etc/cron.d/firewall
+        - /etc/cron.d/honeypots
+        - /etc/cron.d/lantana-prune
+        - /etc/cron.d/auth
+        - /etc/cron.d/audit
+      register: cron_check
+
+    - name: "Assert Cron Jobs exist"
+      ansible.builtin.assert:
+        that: "item.stat.exists"
+        fail_msg: "Cron job {{ item.item }} is missing."
+      loop: "{{ cron_check.results }}"
+
+    - name: "Check if Log Files are being created"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /var/log/lantana/honeywall/firewall.log
+      register: logfile_check
+
+    - name: "Report on Log File Status"
+      ansible.builtin.debug:
+        msg: "Log file {{ item.item }} status: {{ 'Present' if item.stat.exists else 'Missing (Might need traffic first)' }}"
+      loop: "{{ logfile_check.results }}"
