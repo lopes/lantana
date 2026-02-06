@@ -1,0 +1,27 @@
+---
+- name: "[Single] Enable systemd-networkd"
+  become: true
+  ansible.builtin.service:
+    name: systemd-networkd
+    state: started
+    enabled: true
+
+- name: "[Single] Create ltn0 virtual interface (netdev)"
+  become: true
+  ansible.builtin.copy:
+    src: "10-ltn0.netdev"
+    dest: /etc/systemd/network/10-ltn0.netdev
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Restart systemd-networkd"
+
+- name: "[Single] Configure IPs on ltn0 (network)"
+  become: true
+  ansible.builtin.template:
+    src: "10-ltn0.network.j2"
+    dest: /etc/systemd/network/10-ltn0.network
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Restart systemd-networkd"
