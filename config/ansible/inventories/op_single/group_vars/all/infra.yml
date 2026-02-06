@@ -1,0 +1,38 @@
+---
+# Single or multi node
+lantana_mode: "single"
+lantana_strict_mode: false # deployment: false, later: true
+
+node_hostname: "seedling"
+node_ssh_port: 60090 # must NOT be 22
+node_ssh_authorized_keys:
+  - "ssh-ed25519 AAAA..."
+
+ansible_user: "lantana" # the user ansible will use to connect to the node
+ansible_become_password: "lantana" # the user's password for sudo
+ansible_port: "{{ node_ssh_port }}"
+ansible_ssh_private_key_file: "~/.ssh/id_ed25519"
+
+# Unprivileged user for sensor ownership
+node_sensor_user:
+  name: "stigma"
+  uid: 2001
+
+# Unprivileged user for data processing
+node_collector_user:
+  name: "nectar"
+  uid: 2002
+
+lantana_net:
+  wan_if: enp0s1
+  lan_if: eth1 # defaults to ltn0 in single mode
+
+  # main node's IP addresses
+  wan_ipv4_root: 192.168.64.14/24
+  wan_ipv6_root: fd94:2397:fef2:6a5a:3955:5f51:7c86:63a7/64
+
+  sensor_01_ipv4: 10.10.10.10/24
+  sensor_01_ipv6: fd10:10:10::10/64
+
+  collector_ipv4: 10.10.10.20/24
+  collector_ipv6: fd10:10:10::20/64
