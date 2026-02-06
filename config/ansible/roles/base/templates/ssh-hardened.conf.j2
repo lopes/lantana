@@ -1,0 +1,37 @@
+# /etc/ssh/sshd_config.d/00-ssh-hardened.conf
+# Managed by Ansible
+
+# --- NETWORK ---
+Port {{ node_ssh_port }}
+{% if not lantana_strict_mode %}
+Port 22
+{% endif %}
+AddressFamily any
+
+# --- AUTHENTICATION ---
+# Hardened: No root, No passwords, No interactive prompts
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+UsePAM yes
+
+# Force Public Key only (prevents multi-auth bypass)
+AuthenticationMethods publickey
+
+# --- SESSION HARDENING ---
+X11Forwarding no
+PrintMotd no
+# 5-minute idle timeout, then immediate disconnection
+ClientAliveInterval 300
+ClientAliveCountMax 0
+IgnoreUserKnownHosts yes
+
+# --- ENVIRONMENT ---
+AcceptEnv LANG LC_* COLORTERM NO_COLOR
+
+# --- SUBSYSTEM ---
+# Use the built-in SFTP server to remain distro-agnostic
+# This is required for modern 'scp' and Ansible file transfers
+Subsystem sftp internal-sftp
