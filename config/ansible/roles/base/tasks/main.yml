@@ -1,0 +1,67 @@
+---
+# --- BASIC PACKAGES ---
+- name: "Update apt cache"
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: "Install basic packages"
+  become: true
+  ansible.builtin.apt:
+    name:
+      - cron
+      - rsyslog
+
+# --- BASIC SYSTEM SETUP ---
+- name: "Set system timezone to UTC"
+  become: true
+  ansible.builtin.timezone:
+    name: Etc/UTC
+  notify:
+    - Restart rsyslog
+    - Restart cron
+
+- name: "Configure system hostname"
+  become: true
+  ansible.builtin.hostname:
+    name: "{{ node_hostname }}"
+
+- name: "Ensure hostname is resolvable in /etc/hosts"
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+  loop:
+    - { regexp: '^127\.0\.1\.1', line: "127.0.1.1 {{ inventory_hostname }}" }
+    - {
+        regexp: "^::1",
+        line: "::1 localhost ip6-localhost ip6-loopback {{ inventory_hostname }}",
+      }
+
+- name: "Deploy system MOTD banner"
+  become: true
+  ansible.builtin.template:
+    src: motd.j2
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+
+# -- BASE DIRECTORIES ---
+- name: "Create base directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  loop:
+    - /etc/lantana
+    - /var/log/lantana
+    - /var/lib/lantana
+
+- name: "Deploy SSH"
+  include_tasks: ssh.yml

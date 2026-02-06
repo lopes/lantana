@@ -1,0 +1,47 @@
+---
+# OS-wide handlers commonly used by other roles.
+# As base role runs first, they can be reused by other roles.
+
+- name: "Reload sysctl"
+  become: true
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+- name: "Restart sshd"
+  become: true
+  ansible.builtin.service:
+    name: ssh
+    state: restarted
+
+- name: "Reload nftables"
+  become: true
+  ansible.builtin.service:
+    name: nftables
+    state: reloaded
+  async: 15
+  poll: 0
+
+- name: "Restart cron"
+  become: true
+  ansible.builtin.service:
+    name: cron
+    state: restarted
+
+- name: "Restart rsyslog"
+  become: true
+  ansible.builtin.service:
+    name: rsyslog
+    state: restarted
+
+- name: "Restart systemd-networkd"
+  become: true
+  ansible.builtin.service:
+    name: systemd-networkd
+    state: restarted
+
+- name: "Restart auditd"
+  become: true
+  ansible.builtin.service:
+    name: auditd
+    state: restarted
+    use: service # Forces use of /sbin/service instead of systemctl
