@@ -1,0 +1,35 @@
+---
+- name: "Deploy multi-node operation: Honeywall"
+  hosts:
+    - honeywall_nodes
+  roles:
+    - base
+    - profile_honeywall
+    - firewall
+    - suricata
+    - vector
+
+- name: "Deploy multi-node operation: Low-interaction sensor"
+  hosts:
+    - sensor_low_nodes
+  roles:
+    - base
+    - profile_sensor_low
+    - docker
+    - vector
+
+- name: "Deploy multi-node operation: High-interaction sensor"
+  hosts:
+    - sensor_high_nodes
+  roles:
+    - base
+    - profile_sensor_high
+
+- name: "Deploy multi-node operation: Collector"
+  hosts:
+    - collector_nodes
+  roles:
+    - base
+    - profile_collector
+    - vector
+    - etl

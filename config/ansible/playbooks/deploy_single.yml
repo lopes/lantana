@@ -1,0 +1,13 @@
+---
+- name: "Deploy Single-Node Operation"
+  hosts: single_nodes
+  roles:
+    - base
+    - profile_honeywall
+    - profile_sensor_low
+    - profile_collector
+    - network
+    - firewall
+    # - suricata
+    # - vector
+    # - docker
