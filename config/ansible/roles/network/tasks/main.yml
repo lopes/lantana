@@ -1,0 +1,54 @@
+---
+# --- SYSTEM PREPARATION ---
+- name: "Enable packet forwarding"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-ip-forwarding.conf
+    content: |
+      # Enable IP Forwarding for Router/Gateway functionality
+      net.ipv4.ip_forward=1
+      net.ipv6.conf.all.forwarding=1
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Reload sysctl"
+
+# --- FIREWALL DEFINITIONS ---
+- name: "Deploy network variables for NFTables"
+  become: true
+  ansible.builtin.template:
+    src: "network-{{ lantana_mode }}.nft.j2"
+    dest: /etc/lantana/honeywall/nftables/network.nft
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: "Set nftables to use network configuration"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/nftables.conf
+    content: |
+      #!/usr/sbin/nft -f
+      flush ruleset
+      include "/etc/lantana/honeywall/nftables/network.nft"
+    owner: root
+    group: root
+    mode: "0755"
+    validate: /usr/sbin/nft -c -f %s
+  notify: "Reload nftables"
+
+- name: "Enable nftables service"
+  become: true
+  ansible.builtin.service:
+    name: nftables
+    state: started
+    enabled: true
+
+# --- MODE SPECIFIC CONFIGURATION ---
+- name: "Configure Single Node specific networking"
+  include_tasks: single_node.yml
+  when: lantana_mode == "single"
+
+- name: "Configure Multi Node specific networking"
+  include_tasks: multi_node.yml
+  when: lantana_mode == "multi"
