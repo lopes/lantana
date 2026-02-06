@@ -1,0 +1,60 @@
+---
+# --- CONTAINER USER ---
+- name: "Manage container user group"
+  become: true
+  group:
+    gid: "{{ node_sensor_user.uid }}"
+    name: "{{ node_sensor_user.name }}"
+    state: present
+
+- name: "Manage container system user"
+  become: true
+  user:
+    uid: "{{ node_sensor_user.uid }}"
+    name: "{{ node_sensor_user.name }}"
+    group: "{{ node_sensor_user.name }}"
+    shell: /usr/sbin/nologin
+    create_home: false
+    system: true
+    state: present
+
+# -- SENSOR DIRECTORIES ---
+- name: "Create sensor config directory"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  loop:
+    - /etc/lantana/sensor
+
+- name: "Create sensor collector directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ node_sensor_user.name }}"
+    group: "{{ node_sensor_user.name }}"
+    mode: "0755"
+  loop:
+    - /var/log/lantana/sensor
+    - /var/lib/lantana/sensor
+
+# --- HONEYPOTS LOG ROTATION --
+- name: "Log rotation of honeypots"
+  become: true
+  ansible.builtin.copy:
+    src: honeypots.logrotate
+    dest: /etc/logrotate.d/honeypots
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: "Add rotation to cron for determinism"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cron.d/honeypots
+    content: "1 0 * * * root /usr/sbin/logrotate -f /etc/logrotate.d/honeypots\n"
+    mode: "0644"

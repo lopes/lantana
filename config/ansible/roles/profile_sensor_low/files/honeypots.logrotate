@@ -1,0 +1,15 @@
+# /etc/logrotate.d/honeypots
+# Managed by Ansible
+
+# All low-interaction honeypots like Cowrie, Dionaea, Honeyd
+/var/log/lantana/sensor/*/*.log
+/var/log/lantana/sensor/*/*.json
+{
+    # No 'daily': forced with cron for more determinism
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0644 root root
+}
