@@ -1,0 +1,30 @@
+# /etc/lantana/honeywall/nftables/network.nft
+# Managed by Ansible
+
+# --- INTERFACES ---
+# The physical interface connected to the internet
+define WAN_IF = "{{ lantana_net.wan_if }}"
+
+# The virtual interface where sensors and collector services "live"
+define SENSOR_IF = "ltn0"
+define COLLECTOR_IF = "ltn0"  # In single mode, Collector is on the same dummy iface
+
+# --- IP ADDRESSES ---
+# WAN IP (Management & Entry Point)
+define WAN_IPV4 = {{ lantana_net.wan_ipv4_root.split('/')[0] }}
+define WAN_IPV6 = {{ lantana_net.wan_ipv6_root.split('/')[0] }}
+
+# Sensor IPs (Traffic is DNAT'ed)
+define SENSOR_IPV4 = {{ lantana_net.sensor_01_ipv4.split('/')[0] }}
+define SENSOR_IPV6 = {{ lantana_net.sensor_01_ipv6.split('/')[0] }}
+
+# Collector Node IPs (For Vector forwarding)
+define COLLECTOR_IPV4 = {{ lantana_net.collector_ipv4.split('/')[0] }}
+define COLLECTOR_IPV6 = {{ lantana_net.collector_ipv6.split('/')[0] }}
+
+# --- SUBNETS ---
+define SENSOR_NET_V4 = {{ lantana_net.sensor_01_ipv4 }}
+define SENSOR_NET_V6 = {{ lantana_net.sensor_01_ipv6 }}
+
+# --- PORTS ---
+define SSH_ADMIN_PORT = {{ node_ssh_port }}
