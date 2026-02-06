@@ -1,0 +1,11 @@
+---
+op_name: "Operation Alpha"
+
+op_company: "Financiera del Sol S.A. de C.V."
+op_country: "MX"
+op_state: "Mexico City"
+op_locality: "Mexico City"
+op_common_name: "portal.finasol.mx"
+
+op_server_os: "Ubuntu 12.04 LTS (Precise Pangolin)"
+op_server_hostname: "finasol-mx-prod-01"

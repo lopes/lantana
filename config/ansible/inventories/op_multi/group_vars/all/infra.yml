@@ -1,0 +1,37 @@
+---
+# Lantana can be deployed in single or multi node
+lantana_mode: "single"
+
+# Unprivileged user for sensor ownership
+node_sensor_user:
+  name: "stigma"
+  uid: 2001
+
+# Data processing user
+node_collector_user:
+  name: "nectar"
+  uid: 2002
+
+node_hostname: "seedling"
+node_ssh_port: 60090 # custom SSH port
+
+ansible_user: "lantana" # user ansible will use to connect
+ansible_ssh_private_key_file: "~/.ssh/my_project_key.pem"
+
+lantana_net:
+  wan_if: eth0
+  lan_if: eth1
+
+  wan_ipv4_root: 192.0.2.1/24 # the main node's IP address
+  wan_ipv4_gw: 192.0.2.2/24
+  wan_ipv6_root: 2001:db8:1::1/64 # the main node's IP address
+  wan_ipv6_gw: 2001:db8:1::2/64
+
+  lan_ipv4_gw: 10.10.10.1/24
+  lan_ipv6_gw: fd10:10:10::1/64
+
+  sensor_ipv4: 10.10.10.10/24
+  sensor_ipv6: fd10:10:10::10/64
+
+  collector_ipv4: 10.10.10.20/24
+  collector_ipv6: fd10:10:10::20/64

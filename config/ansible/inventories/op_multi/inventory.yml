@@ -1,0 +1,39 @@
+all:
+  children:
+    single_nodes:
+      hosts:
+        sn-01:
+          ansible_host: 192.168.1.10
+          node_hostname: sn-01
+          honeywallde_role: "single node sensor"
+
+    honeywall_nodes:
+      hosts:
+        honeywall-01:
+          ansible_host: 192.168.1.11
+          node_hostname: honeywall-01
+          node_role: "honeywall gateway"
+
+    sensor_low_nodes:
+      hosts:
+        low-01:
+          ansible_host: 192.168.1.12
+          node_hostname: low-01
+          node_role: "low-interaction sensor"
+          honeypots:
+            - cowrie
+            - dionaea
+
+    sensor_high_nodes:
+      hosts:
+        high-01:
+          ansible_host: 192.168.1.13
+          node_hostname: high-01
+        collectornode_role: "high-interaction sensor"
+
+    collector_nodes:
+      hosts:
+        collector-01:
+          ansible_host: 192.168.1.14
+          node_hostname: collector-01
+          node_role: "collector processor"
