@@ -1,0 +1,93 @@
+---
+# --- HONEYWALL DIRECTORIES ---
+- name: "Create honeywall configuration directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  loop:
+    - /etc/lantana/honeywall
+    - /etc/lantana/honeywall/nftables
+
+- name: "Create honeywall collector directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  loop:
+    - /var/log/lantana/honeywall
+    - /var/log/lantana/honeywall/auth
+    - /var/log/lantana/honeywall/audit
+    - /var/log/lantana/honeywall/nftables
+
+# --- AUDITD SETUP ---
+- name: "Ensure auditd packages are installed"
+  become: true
+  ansible.builtin.apt:
+    name:
+      - auditd
+      - audispd-plugins
+    state: present
+
+- name: "Configure auditd to NOT write local logs (Rsyslog handles it)"
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^write_logs"
+    line: "write_logs = no"
+  notify: "Restart auditd"
+
+# --- AUDIT AND AUTHENTICATION LOGGING ---
+- name: "Log audit and authentication events"
+  become: true
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /etc/rsyslog.d/
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - 20-audit.conf
+    - 30-auth.conf
+  notify: "Restart rsyslog"
+
+- name: "Forces handler to flush immediately"
+  ansible.builtin.meta: flush_handlers
+
+- name: "Log rotation of authentication events"
+  become: true
+  ansible.builtin.copy:
+    src: auth.logrotate
+    dest: /etc/logrotate.d/auth
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: "Add auth rotation to cron for determinism"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cron.d/auth
+    content: "1 0 * * * root /usr/sbin/logrotate -f /etc/logrotate.d/auth\n"
+    mode: "0644"
+
+- name: "Log rotation of audit events"
+  become: true
+  ansible.builtin.copy:
+    src: audit.logrotate
+    dest: /etc/logrotate.d/audit
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: "Add audit rotation to cron for determinism"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cron.d/audit
+    content: "1 0 * * * root /usr/sbin/logrotate -f /etc/logrotate.d/audit\n"
+    mode: "0644"
