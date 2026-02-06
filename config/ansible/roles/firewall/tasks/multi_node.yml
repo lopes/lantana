@@ -1,0 +1,25 @@
+---
+- name: "Deploy multi-node firewall"
+  template:
+    src: firewall-multi-node.nft.j2
+    dest: /etc/lantana/honeywall/nftables/firewall.nft
+    owner: root
+    group: root
+    mode: "0700"
+    validate: /usr/sbin/nft -c -f %s
+
+- name: Enable IPv4 forwarding in kernel
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: true
+    state: present
+    reload: true
+
+- name: Enable IPv6 forwarding in kernel
+  ansible.posix.sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "1"
+    sysctl_set: true
+    state: present
+    reload: true
