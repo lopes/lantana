@@ -1,0 +1,53 @@
+---
+# --- FIREWALL LOGGING ---
+- name: "Setup firewall connections logging"
+  become: true
+  ansible.builtin.copy:
+    src: 10-nftables.conf
+    dest: /etc/rsyslog.d/
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Restart rsyslog"
+
+- name: "Forces handler to flush immediately"
+  ansible.builtin.meta: flush_handlers
+
+- name: "Setup log rotation of firewall connections"
+  become: true
+  ansible.builtin.copy:
+    src: firewall.logrotate
+    dest: /etc/logrotate.d/firewall
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: "Add rotation to cron for determinism"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cron.d/firewall
+    content: "1 0 * * * root /usr/sbin/logrotate -f /etc/logrotate.d/firewall\n"
+    mode: "0644"
+
+# --- MODE SPECIFIC CONFIGURATION ---
+- name: "Configure single node firewall"
+  include_tasks: single_node.yml
+  when: lantana_mode == "single"
+
+- name: "Configure multi node firewall"
+  include_tasks: multi_node.yml
+  when: lantana_mode == "multi"
+
+# --- SSH CLEANUP ---
+- name: "SSH cleanup: Remove port 22"
+  ansible.builtin.include_role:
+    name: base
+    tasks_from: ssh
+  vars:
+    lantana_strict_mode: true
+
+- name: "Force SSH restart"
+  become: true
+  ansible.builtin.service:
+    name: sshd
+    state: restarted
