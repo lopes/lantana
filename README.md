@@ -21,7 +21,7 @@ The honeywall zone does not run honeypots and is not intended to be directly exp
 The sensor zone is the core of the platform and hosts the actual honeypot workloads. It is intentionally designed to support two fundamentally different sensor classes under the same control plane.
 
 #### Low-interaction sensors
-Low-interaction sensors are implemented as hardened containerized services running known honeypot frameworks such as [Cowrie](https://www.cowrie.org/), [Dionaea](https://dionaea.readthedocs.io/en/latest/), [Honeyd](https://www.honeyd.org/), or [OpenCanary](https://opencanary.readthedocs.io/en/latest/). Docker provides process isolation, filesystem isolation, and network namespace separation, while Lantana applies additional hardening: no privileged mode, no host mounts, no Docker socket access, seccomp and capability drops, and restricted egress paths enforced by the honeywall zone.
+Low-interaction sensors are implemented as hardened containerized services running known honeypot frameworks such as [Cowrie](https://www.cowrie.org/), [Dionaea](https://dionaea.readthedocs.io/en/latest/), [Honeyd](https://www.honeyd.org/), or [OpenCanary](https://opencanary.readthedocs.io/en/latest/). Podman provides process isolation, filesystem isolation, and network namespace separation, while Lantana applies additional hardening enforced by the honeywall zone.
 
 Because these sensors are containerized, a single host can safely run multiple honeypots in parallel, each isolated into its own runtime environment. This model is supported both in single-host and multi-host deployments.
 
@@ -47,7 +47,7 @@ Lantana supports multiple deployment models without changing its logical archite
 ### Single-node mode
 In single-host mode, the honeywall, sensor, and collector zones coexist on the same machine. This mode is intended for lightweight deployments, edge sensors, labs, and environments where operational simplicity or cost constraints dominate.
 
-Only **low-interaction sensors** are supported in this mode. Honeypots run inside hardened Docker containers, and containment is enforced through container isolation and nftables-based egress control applied by the honeywall zone. While this model does not provide hardware isolation between zones, it preserves policy boundaries and observability semantics and is considered acceptable for low-interaction deception workloads.
+Only **low-interaction sensors** are supported in this mode. Honeypots run inside hardened Podman containers, and containment is enforced through container isolation and nftables-based egress control applied by the honeywall zone. While this model does not provide hardware isolation between zones, it preserves policy boundaries and observability semantics and is considered acceptable for low-interaction deception workloads.
 
 This mode optimizes for ease of deployment, minimal infrastructure footprint, and fast iteration.
 
@@ -86,8 +86,8 @@ The technical backbone of Lantana rests on the synergy between [Terraform](https
 
 Once the infrastructure is provisioned, Ansible takes over to apply identity and purpose through a tiered role system:
 
-- **Atomic Roles:** These are the granular building blocks of the platform. An atomic role does exactly one thing—such as installing the Docker engine, configuring the Vector log-shipper, or deploying a specific honeypot application like Cowrie. They are highly reusable and agnostic of the larger deployment model.
-- **Composite Roles:** These serve as functional archetypes or "Zones." A composite role uses Ansible's meta-dependency system to group atomic roles into a higher-level abstraction. For example, the `sensor_low` composite role automatically ensures that `common` utilities and `docker` runtimes are present before preparing the environment for honeypot containers.
+- **Atomic Roles:** These are the granular building blocks of the platform. An atomic role does exactly one thing—such as installing the IDS engine, configuring the Vector log-shipper, or deploying a specific honeypot application like Cowrie. They are highly reusable and agnostic of the larger deployment model.
+- **Composite Roles:** These serve as functional archetypes or "Zones." A composite role uses Ansible's meta-dependency system to group atomic roles into a higher-level abstraction. For example, the `sensor_low` composite role automatically ensures that `common` utilities and `vector` runtimes are present before preparing the environment for honeypot containers.
 
 This architecture enables a "Menu-based" deployment. The user selects a **Plate** (the base playbook, such as `single_node.yml` or `multi_node.yml`) to establish the infrastructure's backbone, and then adds **Toppings** (the narrative-driven sensors) via the `apply_narrative.yml` playbook. This separation ensures that security baselines and telemetry pipelines (the Plate) are consistently applied, while the deception logic (the Toppings) remains flexible and easily rotatable.
 
@@ -128,8 +128,8 @@ git clone https://github.com/lopes/lantana.git
 cd lantana
 ```
 
-> [!NOTE]
-> In the future, we'll use **Terraform** to deploy VMs but it's not implemented yet, so we assume there's a VM with [Debian 13](https://www.debian.org/) available and the operator has the right credentials to reach and administrate it through SSH.
+> [!IMPORTANT]
+> In the future, we'll use **Terraform** to deploy VMs but it's not implemented yet, so we assume there's a VM with [Debian 13](https://www.debian.org/) available and the operator has the right credentials to reach and administrate it through SSH. SSH is configured to use certificates, avoid passwords, and use a custom port.
 
 ### Step 2: Define the Operation and Narrative
 Each deployment is an "Operation" with its own inventory (Ansible). You define the behavior of your honeypots—such as exposed services, SSH banners, and vulnerable versions—within the `narrative.yml` file for that specific operation. Lantana comes with two operations as examples, one for single-node mode and the other fo for multi-node mode, and it's highly recommended to "clone" them to avoid starting operations from scratch. For the sake of this quick start guide, we'll show how to clone the `op_single` operation into `op_alpha`.
@@ -139,7 +139,7 @@ Clone the operation by copying the whole folder in the new one:
 cp -r inventories/op_single inventories/op_alpha
 ```
 
-Navigate to your operation folder and customize all files under `group_vars/all` with your host's data and the narrative you'll use. Create the `vault.yml` file using the next structure (even if you aren't planning to use a listed service, declare it with empty string).
+Navigate to your operation folder and customize all files under `group_vars/all` with your sensor's data and the narrative you'll use. Create the `vault.yml` file using the next structure (even if you aren't planning to use a listed service, declare it with empty string).
 
 > [!NOTE]
 > Ansible will require a password to this file. It's crucial to a secure passphrase and keep it safe.
@@ -164,16 +164,21 @@ vault_webhook_discord: ""
 Use the `single_node` playbook to apply the required roles, turning the generic host into an all-in-one Lantana node.
 
 ```bash
-ansible-playbook -i inventories/op_alpha/inventory.yml playbooks/deploy_single.yml
+cd config/ansible
+ansible-playbook -i inventories/op_single/inventory.yml playbooks/deploy_single.yml --ask-vault-pass
 ```
 
-### Step 4: TBD Deploy the Honeypots
+> [!NOTE]
+> The extra parameters in the first run are needed because Lantana expects a fresh installed Debian 13 host with default SSH configuration (port 22 and password authentication). During the deployment, these settings are hardened, so later SSH connections will be made without password, rootless, in a custom port, using certificate. Hence, the first run forces Ansible to login with stardard configurations while later authentication will use the hardened way.
+
+### Step 4: Deploy the Honeypots
 Once the base system is ready, "skin" the servers by deploying the specific honeypot applications and configurations defined in your narrative.
+
 ```bash
 ansible-playbook -i inventories/op_alpha/inventory.yml playbooks/deploy_honeypots.yml
 ```
 
-### Step 6: TBD Operational Lifecycle (Isolation and Rotation)
+### Step 5: TBD Operational Lifecycle (Isolation and Rotation)
 Lantana provides specific "Day 2" workflows for managing active engagements.
 
 **To isolate a compromised node (Kill Switch):** Push a restrictive nftables ruleset to the target host to freeze it for forensic analysis.
