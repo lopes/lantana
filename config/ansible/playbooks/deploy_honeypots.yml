@@ -1,10 +1,12 @@
 ---
 - name: "Deploy low-interaction honeypots"
-  hosts: sensor_low_nodes
+  hosts:
+    - single_nodes
+    - sensor_low_nodes
   tasks:
     - include_role:
         name: "{{ item }}"
-      loop: "{{ honeypots | default([]) }}"
+      loop: "{{ sensor_honeypots | default([]) }}"
 
 - name: "Setup high-interaction sensors"
   hosts: sensor_high_nodes

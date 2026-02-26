@@ -15,7 +15,6 @@
   roles:
     - base
     - profile_sensor_low
-    - docker
     - vector
 
 - name: "Deploy multi-node operation: High-interaction sensor"
@@ -31,5 +30,4 @@
   roles:
     - base
     - profile_collector
-    - vector
     - etl

@@ -1,13 +1,12 @@
 ---
-- name: "Deploy Single-Node Operation"
+- name: "Deploy single-node sensor"
   hosts: single_nodes
   roles:
     - base
     - profile_honeywall
-    - profile_sensor_low
     - profile_collector
+    - profile_sensor_low
     - network
     - firewall
     # - suricata
     # - vector
-    # - docker
