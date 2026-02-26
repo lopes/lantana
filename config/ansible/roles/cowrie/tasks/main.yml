@@ -1,0 +1,106 @@
+---
+# --- SYSTEM PREPARATION ---
+- name: "Create Cowrie configuration directory"
+  become: true
+  ansible.builtin.file:
+    path: /etc/lantana/sensor/cowrie
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+
+- name: "Create Cowrie data directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0755"
+  loop:
+    - /var/log/lantana/sensor/cowrie
+    - /var/lib/lantana/sensor/cowrie
+
+- name: "Create Cowrie artifact directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0775"
+  loop:
+    - /var/lib/lantana/sensor/cowrie/keys
+    - /var/lib/lantana/sensor/cowrie/tty
+    - /var/lib/lantana/sensor/cowrie/downloads
+    - /var/lib/lantana/sensor/cowrie/misc
+
+- name: "Enable linger for sensor-user"
+  become: true
+  ansible.builtin.command: "loginctl enable-linger {{ system.users.sensor.name }}"
+  args:
+    creates: "/var/lib/systemd/linger/{{ system.users.sensor.name }}"
+
+# --- CONFIGURATION FILES ---
+- name: "Deploy Cowrie configuration template"
+  become: true
+  ansible.builtin.template:
+    src: "cowrie.cfg.j2"
+    dest: /etc/lantana/sensor/cowrie/cowrie.cfg
+    owner: "root"
+    group: "root"
+    mode: "0644"
+
+- name: "Create the sensor-user Quadlet directory"
+  become: true
+  ansible.builtin.file:
+    dest: "/home/{{ system.users.sensor.name }}/.config/containers/"
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0700"
+
+- name: "Ensure the Quadlet folder is root-owned"
+  become: true
+  ansible.builtin.file:
+    path: "/home/{{ system.users.sensor.name }}/.config/containers/systemd"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+
+- name: "Deploy Quadlet definition"
+  become: true
+  ansible.builtin.template:
+    src: cowrie.container.j2
+    dest: "/home/{{ system.users.sensor.name }}/.config/containers/cowrie.container"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+
+- name: "Start Cowrie container"
+  become: true
+  become_user: "{{ system.users.sensor.name }}"
+  ansible.builtin.systemd:
+    name: "cowrie"
+    state: started
+    enabled: true
+    scope: user
+    daemon_reload: true
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+
+- name: "Publish the Cowrie ports"
+  become: true
+  ansible.builtin.template:
+    src: cowrie.nft.j2
+    dest: /etc/lantana/honeywall/nftables/sensors/cowrie.nft
+    owner: "root"
+    group: "root"
+    mode: "0600"
+
+- name: "Reload nftables for Cowrie"
+  become: true
+  ansible.builtin.service:
+    name: nftables
+    state: reloaded

@@ -1,0 +1,34 @@
+# /etc/containers/systemd/{{ system.users.sensor.name }}/cowrie.container
+# Managed by Ansible
+
+[Unit]
+Description=Cowrie Honeypot Sensor
+After=network-online.target
+
+[Container]
+Image=docker.io/cowrie/cowrie:latest
+ContainerName=sensor-cowrie
+Network=pasta
+
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:2222:2222
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:2222:2222
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:2223:2223
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:2223:2223
+
+# Hardening settings
+DropCapability=ALL
+NoNewPrivileges=true
+ReadOnly=true
+VolatileTmp=true
+SecurityLabelDisable=false
+
+# Volumes: Z/z for SELinux isolation, U for subUID ownership mapping
+Volume=/etc/lantana/sensor/cowrie/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro,Z
+Volume=/var/log/lantana/sensor/cowrie:/cowrie/cowrie-git/var/log/cowrie:rw,z,U
+Volume=/var/lib/lantana/sensor/cowrie:/cowrie/cowrie-git/var/lib/cowrie:rw,z,U
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
