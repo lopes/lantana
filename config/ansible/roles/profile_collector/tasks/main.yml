@@ -3,18 +3,18 @@
 - name: "Manage collector user group"
   become: true
   group:
-    gid: "{{ node_collector_user.uid }}"
-    name: "{{ node_collector_user.name }}"
+    gid: "{{ system.users.collector.uid }}"
+    name: "{{ system.users.collector.name }}"
     state: present
 
-- name: "Manage stigma system user"
+- name: "Manage collector system user"
   become: true
   user:
-    uid: "{{ node_collector_user.uid }}"
-    name: "{{ node_collector_user.name }}"
-    group: "{{ node_collector_user.name }}"
+    uid: "{{ system.users.collector.uid }}"
+    name: "{{ system.users.collector.name }}"
+    group: "{{ system.users.collector.name }}"
     shell: /usr/sbin/nologin
-    create_home: false
+    create_home: false # will be managed manually
     system: true
     state: present
 
@@ -35,11 +35,14 @@
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
-    owner: "{{ node_collector_user.name }}"
-    group: "{{ node_collector_user.name }}"
+    owner: "{{ system.users.collector.name }}"
+    group: "{{ system.users.collector.name }}"
     mode: "0750"
   loop:
     - /var/lib/lantana/datalake
+    - /var/lib/lantana/datalake/bronze
+    - /var/lib/lantana/datalake/silver
+    - /var/lib/lantana/datalake/gold
 
 # --- SECRETS FILE ---
 - name: Deploy API credentials template
@@ -47,8 +50,8 @@
   ansible.builtin.template:
     src: secrets.json.j2
     dest: /etc/lantana/collector/secrets.json
-    owner: "{{ node_collector_user.name }}"
-    group: "{{ node_collector_user.name }}"
+    owner: "{{ system.users.collector.name }}"
+    group: "{{ system.users.collector.name }}"
     mode: "0600"
   no_log: true
 

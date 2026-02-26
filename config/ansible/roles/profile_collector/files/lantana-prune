@@ -1,5 +1,6 @@
 #!/bin/bash
 # /usr/local/sbin/lantana-prune
+# Managed by Ansible
 
 LAKE_DIR="/var/lib/lantana/datalake"
 DATE=$(date +%Y-%m-%d)
