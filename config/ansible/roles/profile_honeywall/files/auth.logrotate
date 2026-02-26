@@ -1,4 +1,4 @@
-# /etc/logrotate.d/auth
+# /etc/lantana/logrotate.d/00_00/auth
 # Managed by Ansible
 
 /var/log/lantana/honeywall/auth/auth.log

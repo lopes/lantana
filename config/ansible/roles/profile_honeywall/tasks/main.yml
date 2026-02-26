@@ -64,30 +64,16 @@
   become: true
   ansible.builtin.copy:
     src: auth.logrotate
-    dest: /etc/logrotate.d/auth
+    dest: /etc/lantana/logrotate.d/00_00/auth
     owner: root
     group: root
-    mode: "0644"
-
-- name: "Add auth rotation to cron for determinism"
-  become: true
-  ansible.builtin.copy:
-    dest: /etc/cron.d/auth
-    content: "1 0 * * * root /usr/sbin/logrotate -f /etc/logrotate.d/auth\n"
     mode: "0644"
 
 - name: "Log rotation of audit events"
   become: true
   ansible.builtin.copy:
     src: audit.logrotate
-    dest: /etc/logrotate.d/audit
+    dest: /etc/lantana/logrotate.d/00_00/audit
     owner: root
     group: root
-    mode: "0644"
-
-- name: "Add audit rotation to cron for determinism"
-  become: true
-  ansible.builtin.copy:
-    dest: /etc/cron.d/audit
-    content: "1 0 * * * root /usr/sbin/logrotate -f /etc/logrotate.d/audit\n"
     mode: "0644"
