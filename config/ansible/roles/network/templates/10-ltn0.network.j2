@@ -5,10 +5,10 @@
 Name=ltn0
 
 [Network]
-# Sensor IPs: Traffic destined for the honeypots
-Address={{ lantana_net.sensor_01_ipv4 }}
-Address={{ lantana_net.sensor_01_ipv6 }}
+# Collector Node Addresses: Vector traffic to the Collector Node
+Address={{ network.collector.ipv4 }}
+Address={{ network.collector.ipv6 }}
 
-# Collector Node IPs: Vector traffic to the Collector Node
-Address={{ lantana_net.collector_ipv4 }}
-Address={{ lantana_net.collector_ipv6 }}
+# Sensor IP Addresses: Traffic destined for the honeypots
+Address={{ network.sensors.sensor_01.ipv4 }}
+Address={{ network.sensors.sensor_01.ipv6 }}

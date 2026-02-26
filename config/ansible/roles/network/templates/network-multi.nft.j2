@@ -1,13 +1,13 @@
-# /etc/lantana/honeywall/network.conf
+# /etc/lantana/honeywall/nftables/network.nft
 # Managed by Ansible
 
-define WAN_IF = "{{ lantana_net.wan_if }}"
-define LAN_IF = "{{ lantana_net.lan_if }}"
+define WAN_IF = "{{ network.honeywall.wan.interface }}"
+define LAN_IF = "{{ network.honeywall.lan.interface }}"
 
-define SENSOR_IP4 = {{ lantana_net.sensor_ipv4.split('/')[0] }}
-define COLLECTOR_IP4   = {{ lantana_net.collector_ipv4.split('/')[0] }}
-define SENSOR_IP6 = {{ lantana_net.sensor_ipv6.split('/')[0] }}
-define COLLECTOR_IP6   = {{ lantana_net.collector_ipv6.split('/')[0] }}
+define SENSOR_IP4 = {{ network.sensors.sensor_01.ipv4.split('/')[0] }}
+define COLLECTOR_IP4   = {{ network.collector.ipv4.split('/')[0] }}
+define SENSOR_IP6 = {{ network.sensors.sensor_01.ipv6.split('/')[0] }}
+define COLLECTOR_IP6   = {{ network.collector.ipv6.split('/')[0] }}
 
 # --- FORWARD PLANE ---
 table inet lantana-forward {
