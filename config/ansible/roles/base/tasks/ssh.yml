@@ -1,41 +1,4 @@
 ---
-# --- ENSURE CUSTOM PORT IS OPEN ---
-- name: "Safety: Ensure new SSH port is open in kernel"
-  become: true
-  ignore_errors: true
-  when: not lantana_strict_mode
-  block:
-    - name: "Safety: Create temporary table 'ansible_safety'"
-      ansible.builtin.command: nft add table inet ansible_safety
-      changed_when: false
-    - name: "Safety: Create input chain"
-      ansible.builtin.command:
-        cmd: nft 'add chain inet ansible_safety input { type filter hook input priority -100; policy accept; }'
-      changed_when: false
-    - name: "Safety: Insert accept rule for new SSH port"
-      ansible.builtin.command:
-        cmd: nft add rule inet ansible_safety input tcp dport {{ node_ssh_port }} accept
-      changed_when: false
-
-# --- SSH CONFIGURATION ---
-- name: "Ensure .ssh directory exists"
-  become: true
-  ansible.builtin.file:
-    path: "/home/{{ ansible_user }}/.ssh"
-    state: directory
-    mode: "0700"
-    owner: "{{ ansible_user }}"
-    group: "{{ ansible_user }}"
-
-- name: "Deploy authorized keys"
-  become: true
-  ansible.builtin.authorized_key:
-    user: "{{ ansible_user }}"
-    key: "{{ item }}"
-    state: present
-    exclusive: true
-  loop: "{{ node_ssh_authorized_keys }}"
-
 - name: "Ensure sshd_config.d directory exists"
   become: true
   ansible.builtin.file:
@@ -46,28 +9,10 @@
 - name: "Deploy hardened SSH configuration"
   become: true
   ansible.builtin.template:
-    src: ssh-hardened.conf.j2
+    src: 00-ssh-hardened.conf.j2
     dest: /etc/ssh/sshd_config.d/00-ssh-hardened.conf
     owner: root
     group: root
     mode: "0600"
     validate: /usr/sbin/sshd -T -f %s
   register: ssh_config_task
-
-# --- PORT HANDOFF ---
-- name: "Update ansible_port variable"
-  when:
-    - not lantana_strict_mode
-    - ssh_config_task.changed
-  ansible.builtin.set_fact:
-    ansible_port: "{{ node_ssh_port }}"
-
-- name: "Force reconnection"
-  ansible.builtin.meta: reset_connection
-
-- name: "Verify connection on new port"
-  when:
-    - not lantana_strict_mode
-    - ssh_config_task.changed
-  ansible.builtin.wait_for_connection:
-    timeout: 10

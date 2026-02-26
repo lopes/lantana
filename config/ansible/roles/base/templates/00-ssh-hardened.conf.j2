@@ -2,28 +2,21 @@
 # Managed by Ansible
 
 # --- NETWORK ---
-Port {{ node_ssh_port }}
-{% if not lantana_strict_mode %}
-Port 22
-{% endif %}
+Port {{ ansible_port }}
 AddressFamily any
 
 # --- AUTHENTICATION ---
-# Hardened: No root, No passwords, No interactive prompts
 PermitRootLogin no
 PubkeyAuthentication yes
 PasswordAuthentication no
 ChallengeResponseAuthentication no
 KbdInteractiveAuthentication no
 UsePAM yes
-
-# Force Public Key only (prevents multi-auth bypass)
 AuthenticationMethods publickey
 
 # --- SESSION HARDENING ---
 X11Forwarding no
 PrintMotd no
-# 5-minute idle timeout, then immediate disconnection
 ClientAliveInterval 300
 ClientAliveCountMax 0
 IgnoreUserKnownHosts yes

@@ -21,24 +21,20 @@
     - Restart rsyslog
     - Restart cron
 
+- name: "Ensure hostname is resolvable in /etc/hosts"
+  become: true
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} LANTANA HOSTNAME BLOCK - MANAGED BY ANSIBLE"
+    block: |
+      127.0.1.1 {{ inventory_hostname }}
+      ::1 localhost ip6-localhost ip6-loopback {{ inventory_hostname }}
+
 - name: "Configure system hostname"
   become: true
   ansible.builtin.hostname:
-    name: "{{ node_hostname }}"
-
-- name: "Ensure hostname is resolvable in /etc/hosts"
-  become: true
-  ansible.builtin.lineinfile:
-    path: /etc/hosts
-    regexp: "{{ item.regexp }}"
-    line: "{{ item.line }}"
-    state: present
-  loop:
-    - { regexp: '^127\.0\.1\.1', line: "127.0.1.1 {{ inventory_hostname }}" }
-    - {
-        regexp: "^::1",
-        line: "::1 localhost ip6-localhost ip6-loopback {{ inventory_hostname }}",
-      }
+    name: "{{ inventory_hostname }}"
+    use: systemd
 
 - name: "Deploy system MOTD banner"
   become: true
@@ -60,8 +56,20 @@
     mode: "0755"
   loop:
     - /etc/lantana
+    - /etc/lantana/logrotate.d
+    - /etc/lantana/logrotate.d/00_00
     - /var/log/lantana
     - /var/lib/lantana
+
+- name: "Setup log rotation"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cron.d/lantana-logs
+    content: |
+      # Process all logs scheduled for 00:00 (Midnight)
+      0 0 * * * root /usr/sbin/logrotate -f /etc/lantana/logrotate.d/00_00/*
+
+    mode: "0644"
 
 - name: "Deploy SSH"
   include_tasks: ssh.yml

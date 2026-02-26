@@ -2,10 +2,10 @@
        LANTANA — ADVERSARY ENGAGEMENT NODE
 -------------------------------------------------
 
-Host.....: {{ node_hostname }}
-Operation: {{ op_name }}
-Role.....: {{ node_role }}
-Persona..: {{ op_server_hostname }}
+Host.....: {{ inventory_hostname }}
+Operation: {{ narrative.operation_name }}
+Profile..: {{ lantana_profile }}
+Persona..: {{ narrative.host.hostname }}
 
 HIGH RISK LEVEL — Live adversary interaction
 

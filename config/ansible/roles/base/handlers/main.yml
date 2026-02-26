@@ -1,6 +1,6 @@
 ---
 # OS-wide handlers commonly used by other roles.
-# As base role runs first, they can be reused by other roles.
+# These can be reused by other roles during sensor deployment.
 
 - name: "Reload sysctl"
   become: true
@@ -38,6 +38,8 @@
   ansible.builtin.service:
     name: systemd-networkd
     state: restarted
+  async: 45
+  poll: 0
 
 - name: "Restart auditd"
   become: true
