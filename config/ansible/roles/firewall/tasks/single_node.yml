@@ -54,3 +54,22 @@
     name: nftables
     state: started
     enabled: true
+
+# --- APPLY NEW FIREWALL RULESET ---
+- name: "[Single] Reload nftables ruleset"
+  become: true
+  ansible.builtin.systemd:
+    name: nftables
+    state: reloaded
+  async: 15
+  poll: 0
+
+- name: "[Single] Reset SSH connection to clear firewall state"
+  become: true
+  ansible.builtin.meta: reset_connection
+
+- name: "[Single] Wait for SSH to become available again"
+  become: true
+  ansible.builtin.wait_for_connection:
+    timeout: 30
+    delay: 2

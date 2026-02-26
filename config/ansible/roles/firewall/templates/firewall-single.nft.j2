@@ -68,8 +68,6 @@ table inet lantana_filter {
 
         # 2. LOCAL COMMUNICATION
         oifname "ltn0" accept
-        oifname "docker0" accept
-        oifname "br-*" accept
 
         # 3. MAINTENANCE PORTS
         udp dport @allowed_egress_ports accept
@@ -88,7 +86,6 @@ table inet lantana_filter {
 # LOAD PLUGINS
 # ------------------------------------------------------------
 include "/etc/lantana/honeywall/nftables/sensors/*.nft"
-
 
 # ------------------------------------------------------------
 #  TRAILING RULES: LOG & DROP

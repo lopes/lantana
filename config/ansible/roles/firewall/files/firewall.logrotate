@@ -1,4 +1,4 @@
-# /etc/logrotate.d/firewall
+# /etc/lantana/logrotate.d/00_00/firewall
 # Managed by Ansible
 
 /var/log/lantana/honeywall/nftables/firewall.log

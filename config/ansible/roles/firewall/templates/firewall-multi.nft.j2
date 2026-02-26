@@ -6,7 +6,7 @@
 
 flush ruleset
 
-define admin_ssh_port = {{ node_ssh_port }}
+define admin_ssh_port = {{ ansible_port }}
 
 # Backend Definitions
 define target_ssh_telnet = 10.0.1.2
