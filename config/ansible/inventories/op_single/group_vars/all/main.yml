@@ -1,0 +1,20 @@
+---
+# --- ANSIBLE CONNECTION VARIABLES ---
+# Dictate how Ansible talks to the machine during the run.
+ansible_user: "lantana"
+ansible_become_password: "lantana"
+ansible_port: "60090"
+ansible_private_key_file: "~/.ssh/id_ed25519"
+
+# --- LANTANA PLATFORM CONFIGURATION ---
+lantana:
+  mode: "single" # Options: single, multi
+
+system:
+  users:
+    sensor: # Unprivileged user for sensor ownership
+      name: "stigma"
+      uid: 2001
+    collector: # Unprivileged user for data pipeline ownership
+      name: "nectar"
+      uid: 2002

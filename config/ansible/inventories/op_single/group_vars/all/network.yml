@@ -1,0 +1,21 @@
+---
+# --- NETWORK TOPOLOGY & ADDRESSING ---
+network:
+  honeywall:
+    wan: # Internet-facing interface
+      interface: "enp2s0"
+      ipv4: "172.31.99.129/24"
+      ipv6: "fd99:10:50:99::5/64"
+    lan: # Internal or Dummy interface (ltn0 in single-node)
+      interface: "ltn0"
+      ipv4: "10.50.99.6/24"
+      ipv6: "fd99:10:50:99::6/64"
+
+  collector:
+    ipv4: "10.50.99.10/24"
+    ipv6: "fd99:10:50:99::10/64"
+
+  sensors:
+    sensor_01:
+      ipv4: "10.50.99.100/24"
+      ipv6: "fd99:10:50:99::100/64"

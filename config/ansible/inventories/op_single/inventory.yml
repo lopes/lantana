@@ -1,8 +1,11 @@
+---
 all:
   children:
     single_nodes:
       hosts:
-        sn-01:
-          ansible_host: 192.168.64.14
-          node_hostname: sn-01
-          node_role: "single node sensor"
+        sn-01: # This automatically becomes {{ inventory_hostname }}
+          ansible_host: 172.31.99.129
+          lantana_profile: "single_node_sensor"
+          sensor_honeypots:
+            - cowrie
+            # - dionaea
