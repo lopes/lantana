@@ -1,0 +1,16 @@
+---
+- name: "Reload sensor-user systemd"
+  become: true
+  become_user: "{{ system.users.sensor.name }}"
+  systemd:
+    daemon_reload: true
+    scope: user
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+
+- name: "Apply Podman system migrate"
+  become: true
+  become_user: "{{ system.users.sensor.name }}"
+  command: "podman system migrate"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"

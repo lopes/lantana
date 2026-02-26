@@ -1,4 +1,4 @@
-# /etc/logrotate.d/honeypots
+# /etc/lantana/logrotate.d/00_00/honeypots
 # Managed by Ansible
 
 # All low-interaction honeypots like Cowrie, Dionaea, Honeyd
