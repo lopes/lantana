@@ -8,13 +8,13 @@
     # ---------------------------------------------------------
     # VARIABLE LOADING
     # ---------------------------------------------------------
-    - name: "Force load infra variables from inventory structure"
+    - name: "Force load network variables from inventory structure"
       ansible.builtin.include_vars:
-        file: "{{ inventory_dir }}/group_vars/all/infra.yml"
+        file: "{{ inventory_dir }}/group_vars/all/network.yml"
 
     - name: "DEBUG: Confirm Variables Loaded"
       ansible.builtin.debug:
-        msg: "Loaded Sensor IP: {{ lantana_net.sensor_01_ipv4 | default('Still Missing!') }}"
+        msg: "Loaded Sensor IP: {{ network.sensors.sensor_01.ipv4 | default('Still Missing!') }}"
 
   tasks:
     # ---------------------------------------------------------
@@ -25,8 +25,8 @@
         database: passwd
         key: "{{ item.name }}"
       loop:
-        - "{{ node_sensor_user }}"
-        - "{{ node_collector_user }}"
+        - "{{ system.users.sensor }}"
+        - "{{ system.users.collector }}"
       register: user_check
 
     - name: "Assert users have correct UIDs"
@@ -41,7 +41,7 @@
     # ---------------------------------------------------------
     - name: "Check if custom SSH admin port is listening"
       ansible.builtin.wait_for:
-        port: "{{ node_ssh_port }}"
+        port: "{{ ansible_port }}"
         state: started
         timeout: 5
         connect_timeout: 2
@@ -51,7 +51,7 @@
     - name: "Assert SSH port is reachable"
       ansible.builtin.assert:
         that: "not ssh_port_check.failed"
-        fail_msg: "SSH Port {{ node_ssh_port }} is unreachable."
+        fail_msg: "SSH Port {{ ansible_port }} is unreachable."
 
     - name: "Check if ltn0 virtual interface exists"
       ansible.builtin.command: ip addr show ltn0
@@ -61,8 +61,8 @@
 
     - name: "Calculate expected IP strings"
       ansible.builtin.set_fact:
-        expected_sensor_ipv4: "{{ lantana_net.sensor_01_ipv4 | regex_replace('/.*', '') }}"
-        expected_sensor_ipv6: "{{ lantana_net.sensor_01_ipv6 | regex_replace('/.*', '') }}"
+        expected_sensor_ipv4: "{{ network.sensors.sensor_01.ipv4 | regex_replace('/.*', '') }}"
+        expected_sensor_ipv6: "{{ network.sensors.sensor_01.ipv6 | regex_replace('/.*', '') }}"
 
     - name: "Assert ltn0 has correct sensor IPs"
       ansible.builtin.assert:
@@ -119,10 +119,10 @@
         path: "{{ item }}"
       loop:
         # Must match what firewall/auth roles deploy
-        - /etc/logrotate.d/firewall
-        - /etc/logrotate.d/auth
-        - /etc/logrotate.d/audit
-        - /etc/logrotate.d/honeypots
+        - /etc/lantana/logrotate.d/00_00/firewall
+        - /etc/lantana/logrotate.d/00_00/auth
+        - /etc/lantana/logrotate.d/00_00/audit
+        - /etc/lantana/logrotate.d/00_00/honeypots
       register: logrotate_check
 
     - name: "Assert Log Rotation files exist"
@@ -136,11 +136,8 @@
         path: "{{ item }}"
       loop:
         # Must match what roles deploy in /etc/cron.d/
-        - /etc/cron.d/firewall
-        - /etc/cron.d/honeypots
+        - /etc/cron.d/lantana-logs
         - /etc/cron.d/lantana-prune
-        - /etc/cron.d/auth
-        - /etc/cron.d/audit
       register: cron_check
 
     - name: "Assert Cron Jobs exist"
