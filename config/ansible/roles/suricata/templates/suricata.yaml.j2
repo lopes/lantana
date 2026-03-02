@@ -1,0 +1,212 @@
+%YAML 1.1
+---
+suricata-version: "7.0"
+sensor-name: "{{ inventory_hostname }}"
+
+# --- STEP 1 ---
+vars:
+  address-groups:
+    HOME_NET: "[{{ network.honeywall.lan.ipv4 }}, {{ network.honeywall.lan.ipv6 }}]"
+    EXTERNAL_NET: "!$HOME_NET"
+    HTTP_SERVERS: "$HOME_NET"
+    SMTP_SERVERS: "$HOME_NET"
+    SQL_SERVERS: "$HOME_NET"
+    DNS_SERVERS: "$HOME_NET"
+    TELNET_SERVERS: "$HOME_NET"
+    AIM_SERVERS: "$EXTERNAL_NET"
+    DNP3_SERVER: "$HOME_NET"
+    DNP3_CLIENT: "$HOME_NET"
+    MODBUS_CLIENT: "$HOME_NET"
+    MODBUS_SERVER: "$HOME_NET"
+    ENIP_CLIENT: "$HOME_NET"
+    ENIP_SERVER: "$HOME_NET"
+  port-groups:
+    HTTP_PORTS: "80,443,8080"
+    SHELLCODE_PORTS: "!80"
+    ORACLE_PORTS: 1521
+    SSH_PORTS: 22
+    DNP3_PORTS: 20000
+    MODBUS_PORTS: 502
+    FILE_DATA_PORTS: "[$HTTP_PORTS,110,143]"
+    FTP_PORTS: 21
+    GENEVE_PORTS: 6081
+    VXLAN_PORTS: 4789
+    TEREDO_PORTS: 3544
+
+# --- STEP 2 ---
+default-log-dir: /var/log/lantana/honeywall/suricata
+stats:
+  enabled: true
+  interval: 60
+  null-values: false
+outputs:
+  - eve-log:
+      enabled: true
+      filetype: regular
+      filename: eve.json
+      pcap-file: false
+      community-id: true
+      community-id-seed: 0
+      types:
+        - alert:
+            payload: true
+            payload-buffer-size: 8kb
+            payload-printable: true
+            packet: true
+            http-body: true
+            http-body-printable: true
+            metadata: true
+            tagged-packets: true
+        - anomaly:
+            enabled: true
+        - stats:
+            totals: true
+            threads: true
+            deltas: false
+            null-values: false
+        - http:
+            extended: true
+        - dns:
+            query: true
+            answer: true
+        - tls:
+            extended: true
+        - files:
+            force-magic: true
+        - smtp:
+            extended: true
+        - ftp
+        - rdp
+        - smb
+        - tftp
+        - ike
+        - krb5
+        - snmp
+        - rfb
+        - sip
+        - dhcp:
+            enabled: true
+        - ssh
+        - mqtt:
+            enabled: true
+        - http2
+        - quic
+        - flow
+        - netflow
+  - fast:
+      enabled: false
+  - pcap-log:
+      enabled: true
+      filename: log.pcap
+      limit: 1000mb
+      max-files: 10
+      mode: normal
+      use-stream-depth: false
+      honor-pass-rules: false
+  - file-store:
+      version: 2
+      enabled: true
+      dir: /var/lib/lantana/honeywall/suricata/files
+      force-filestore: true
+      force-hash: [sha256]
+
+# --- STEP 3 ---
+af-packet:
+  - interface: "{{ network.honeywall.lan.interface }}"
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: true
+    use-mmap: true
+    tpacket-v3: true
+  - interface: "{{ network.honeywall.wan.interface }}"
+    cluster-id: 88
+    cluster-type: cluster_flow
+    defrag: true
+    use-mmap: true
+    tpacket-v3: true
+
+# --- STEP 4 ---
+app-layer:
+  protocols:
+    rfb:
+      enabled: true
+      detection-ports:
+        dp: 5900, 5901, 5902, 5903, 5904, 5905, 5906, 5907, 5908, 5909
+    mqtt:
+      enabled: true
+    krb5:
+      enabled: true
+    snmp:
+      enabled: true
+    ikev2:
+      enabled: true
+    tls:
+      enabled: true
+      detection-ports:
+        dp: 443, 465, 587, 853, 993, 995, 3389, 5061, 636, 8080
+    dcerpc:
+      enabled: true
+    ftp:
+      enabled: true
+    ssh:
+      enabled: true
+    smtp:
+      enabled: true
+    imap:
+      enabled: true
+    smb:
+      enabled: true
+    nfs:
+      enabled: true
+    tftp:
+      enabled: true
+    dns:
+      tcp:
+        enabled: true
+      udp:
+        enabled: true
+    http:
+      enabled: true
+      libhtp:
+        default-config:
+          personality: IDS
+          request-body-limit: 1mb
+          response-body-limit: 1mb
+          double-decode-path: true
+          double-decode-query: true
+    http2:
+      enabled: true
+    quic:
+      enabled: true
+    # ICS/SCADA: unsupported in Debian 13's version (Suricata)
+    dnp3:
+      enabled: false
+    modbus:
+      enabled: false
+    enip:
+      enabled: false
+asn1-max-frames: 256
+stream:
+  memcap: 1gb
+  checksum-validation: true
+  inline: false
+  reassembly:
+    memcap: 2gb
+    depth: 1mb
+    toserver-chunk-size: 2560
+    toclient-chunk-size: 2560
+    randomize-chunk-size: true
+host-os-policy:
+  linux: []
+defrag:
+  memcap: 512mb
+  hash-size: 65536
+  trackers: 65535
+  max-frags: 65535
+  prealloc: true
+  timeout: 60
+default-rule-path: /var/lib/lantana/honeywall/suricata/rules
+rule-files:
+  - suricata.rules
+classification-file: /etc/suricata/classification.config
+reference-config-file: /etc/suricata/reference.config

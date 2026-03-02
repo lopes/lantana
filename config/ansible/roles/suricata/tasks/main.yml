@@ -1,0 +1,87 @@
+---
+# --- SURICATA DIRECTORIES ---
+- name: "Create Suricata directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  loop:
+    - /var/log/lantana/honeywall/suricata
+    - /var/lib/lantana/honeywall/suricata/rules
+    - /var/lib/lantana/honeywall/suricata/files
+
+# --- SURICATA INSTALLATION ---
+- name: "Update apt cache"
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: "Install Suricata"
+  become: true
+  ansible.builtin.apt:
+    name: suricata
+    state: present
+
+# --- SURICATA CONFIGURATION ---
+- name: "Create empty suricata.rules to pass initial validation"
+  become: true
+  ansible.builtin.copy:
+    dest: /var/lib/lantana/honeywall/suricata/rules/suricata.rules
+    content: ""
+    force: false # don't overwrite if exists
+    owner: "root"
+    group: "root"
+    mode: "0644"
+
+- name: "Create Suricata's disable.conf with unsupported protocols"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/suricata/disable.conf
+    content: |
+      # /etc/suricata/disable.conf
+      # Managed by Ansible
+      # Debian 13 Suricata binary lacks compiled support for these protocols.
+      re:dnp3
+      re:modbus
+      re:enip
+    owner: "root"
+    group: "root"
+    mode: "0644"
+
+- name: "Deploy Suricata configuration"
+  become: true
+  ansible.builtin.template:
+    src: suricata.yaml.j2
+    dest: /etc/suricata/suricata.yaml
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/bin/suricata -T -c %s
+
+# --- SURICATA LOGGING ---
+- name: "Log rotation for Suricata"
+  become: true
+  ansible.builtin.copy:
+    src: suricata.logrotate
+    dest: /etc/lantana/logrotate.d/00_00/suricata
+    owner: root
+    group: root
+    mode: "0644"
+
+# --- SURICATA ENABLEMENT ---
+- name: "Update Suricata rules"
+  become: true
+  ansible.builtin.command: "suricata-update --data-dir /var/lib/lantana/honeywall/suricata"
+  register: suricata_update
+  changed_when: "'Writing rules to' in suricata_update.stdout"
+  notify: "Restart Suricata"
+
+- name: "Ensure Suricata is enabled and started"
+  become: true
+  ansible.builtin.service:
+    name: suricata
+    state: started
+    enabled: true

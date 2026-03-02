@@ -1,0 +1,18 @@
+# /etc/lantana/logrotate.d/00_00/suricata
+# Managed by Ansible
+
+/var/log/lantana/honeywall/suricata/*.log
+/var/log/lantana/honeywall/suricata/*.json
+{
+    # No 'daily': forced with cron for more determinism
+    rotate 90
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0644 root root
+    sharedscripts
+    postrotate
+        /bin/kill -HUP $(cat /var/run/suricata.pid 2>/dev/null) 2>/dev/null || true
+    endscript
+}
