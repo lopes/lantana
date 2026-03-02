@@ -8,5 +8,5 @@
     - profile_sensor_low
     - network
     - firewall
-    # - suricata
+    - suricata
     # - vector

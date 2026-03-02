@@ -21,7 +21,7 @@
 # --- RULE DEPLOYMENT ---
 - name: "[Single] Deploy firewall configuration template"
   become: true
-  template:
+  ansible.builtin.template:
     src: "firewall-single.nft.j2"
     dest: /etc/lantana/honeywall/nftables/firewall.nft
     owner: root

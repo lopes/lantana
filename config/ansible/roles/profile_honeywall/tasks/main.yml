@@ -12,7 +12,7 @@
     - /etc/lantana/honeywall
     - /etc/lantana/honeywall/nftables
 
-- name: "Create honeywall collector directories"
+- name: "Create honeywall directories"
   become: true
   ansible.builtin.file:
     path: "{{ item }}"
