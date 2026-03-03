@@ -7,22 +7,6 @@
     - profile_honeywall
     - firewall
     - suricata
-    - vector
-
-- name: "Deploy multi-node operation: Low-interaction sensor"
-  hosts:
-    - sensor_low_nodes
-  roles:
-    - base
-    - profile_sensor_low
-    - vector
-
-- name: "Deploy multi-node operation: High-interaction sensor"
-  hosts:
-    - sensor_high_nodes
-  roles:
-    - base
-    - profile_sensor_high
 
 - name: "Deploy multi-node operation: Collector"
   hosts:
@@ -30,4 +14,17 @@
   roles:
     - base
     - profile_collector
-    - etl
+
+- name: "Deploy multi-node operation: Low-interaction sensor"
+  hosts:
+    - sensor_low_nodes
+  roles:
+    - base
+    - profile_sensor_low
+
+- name: "Deploy multi-node operation: High-interaction sensor"
+  hosts:
+    - sensor_high_nodes
+  roles:
+    - base
+    - profile_sensor_high

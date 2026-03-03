@@ -1,6 +1,10 @@
 ---
 # --- NETWORK TOPOLOGY & ADDRESSING ---
 network:
+  prefixes:
+    ipv4: "10.50.99.0/24"
+    ipv6: "fd99:10:50:99::/64"
+
   honeywall:
     wan: # Internet-facing interface
       interface: "enp2s0"
@@ -14,6 +18,7 @@ network:
   collector:
     ipv4: "10.50.99.10/24"
     ipv6: "fd99:10:50:99::10/64"
+    port: 48123
 
   sensors:
     sensor_01:

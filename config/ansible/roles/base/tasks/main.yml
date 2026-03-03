@@ -73,3 +73,6 @@
 
 - name: "Deploy SSH"
   include_tasks: ssh.yml
+
+- name: "Deploy Vector"
+  include_tasks: vector.yml

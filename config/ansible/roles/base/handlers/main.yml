@@ -47,3 +47,15 @@
     name: auditd
     state: restarted
     use: service # Forces use of /sbin/service instead of systemctl
+
+- name: "Reload systemd"
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: "Restart Vector"
+  become: true
+  ansible.builtin.service:
+    name: vector
+    state: restarted
+    enabled: true

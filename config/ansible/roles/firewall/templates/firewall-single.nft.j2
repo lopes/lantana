@@ -48,6 +48,8 @@ table inet lantana_filter {
 
         # 3. MANAGEMENT
         tcp dport $SSH_ADMIN_PORT accept
+        iifname "$COLLECTOR_IF" ip daddr $COLLECTOR_IPV4 tcp dport $COLLECTOR_PORT accept
+        iifname "$COLLECTOR_IF" ip6 daddr $COLLECTOR_IPV6 tcp dport $COLLECTOR_PORT accept
 
         # 4. ICMP/v6
         icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept

@@ -1,0 +1,22 @@
+# /etc/vector/conf.d/suricata.yaml
+# Managed by Ansible
+
+sources:
+  in_suricata:
+    type: file
+    include:
+      - /var/log/lantana/honeywall/suricata/eve.json
+    read_from: end
+
+transforms:
+  tag_suricata:
+    type: remap
+    inputs:
+      - in_suricata
+    source: |-
+      parsed, err = parse_json(.message)
+      if err == null {
+          . = parsed
+      }
+      .dataset = "suricata"
+      .server = "{{ inventory_hostname }}"

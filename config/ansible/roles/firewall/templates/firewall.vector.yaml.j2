@@ -1,0 +1,18 @@
+# /etc/vector/conf.d/firewall.yaml
+# Managed by Ansible
+
+sources:
+  in_nftables:
+    type: file
+    include:
+      - /var/log/lantana/honeywall/nftables/firewall.log
+    read_from: end
+
+transforms:
+  tag_nftables:
+    type: remap
+    inputs:
+      - in_nftables
+    source: |-
+      .dataset = "nftables"
+      .server = "{{ inventory_hostname }}"

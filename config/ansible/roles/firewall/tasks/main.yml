@@ -19,6 +19,22 @@
     group: root
     mode: "0644"
 
+- name: "Deploy Vector configuration"
+  become: true
+  ansible.builtin.template:
+    src: firewall.vector.yaml.j2
+    dest: /etc/vector/conf.d/firewall.yaml
+    owner: "root"
+    group: "root"
+    mode: "0644"
+
+- name: "Restart Vector"
+  become: true
+  ansible.builtin.service:
+    name: vector
+    state: restarted
+    enabled: true
+
 # --- MODE SPECIFIC CONFIGURATION ---
 - name: "Configure single node firewall"
   include_tasks: single_node.yml

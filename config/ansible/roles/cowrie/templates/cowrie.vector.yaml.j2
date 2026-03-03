@@ -1,0 +1,22 @@
+# /etc/vector/conf.d/cowrie.yaml
+# Managed by Ansible
+
+sources:
+  in_cowrie:
+    type: file
+    include:
+      - /var/log/lantana/sensor/cowrie/cowrie.json
+    read_from: end
+
+transforms:
+  tag_cowrie:
+    type: remap
+    inputs:
+      - in_cowrie
+    source: |-
+      parsed, err = parse_json(.message)
+      if err == null {
+          . = parsed
+      }
+      .dataset = "cowrie"
+      .server = "{{ inventory_hostname }}"

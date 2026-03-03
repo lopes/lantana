@@ -71,6 +71,22 @@
     group: root
     mode: "0644"
 
+- name: "Deploy Vector configuration"
+  become: true
+  ansible.builtin.template:
+    src: suricata.vector.yaml.j2
+    dest: /etc/vector/conf.d/suricata.yaml
+    owner: "root"
+    group: "root"
+    mode: "0644"
+
+- name: "Restart Vector"
+  become: true
+  ansible.builtin.service:
+    name: vector
+    state: restarted
+    enabled: true
+
 # --- SURICATA ENABLEMENT ---
 - name: "Update Suricata rules"
   become: true

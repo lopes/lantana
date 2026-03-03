@@ -1,0 +1,17 @@
+# /etc/vector/conf.d/receive.yaml
+# Managed by Ansible
+
+sources:
+  receive_from_edges:
+    type: vector
+    address: "0.0.0.0:{{ network.collector.port }}"
+    version: "2"
+
+sinks:
+  write_to_datalake:
+    type: file
+    inputs:
+      - receive_from_edges
+    path: "/var/lib/lantana/datalake/bronze/dataset={{ '{{.dataset}}' }}/date=%Y-%m-%d/server={{ '{{.server}}' }}/events.json"
+    encoding:
+      codec: json

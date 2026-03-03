@@ -14,9 +14,17 @@
     name: "{{ system.users.collector.name }}"
     group: "{{ system.users.collector.name }}"
     shell: /usr/sbin/nologin
-    create_home: false # will be managed manually
+    create_home: false
     system: true
     state: present
+
+- name: "Add Vector user to collector group"
+  become: true
+  ansible.builtin.user:
+    name: vector
+    groups: "{{ system.users.collector.name }}"
+    append: true
+  notify: "Restart Vector"
 
 # -- COLLECTOR DIRECTORIES ---
 - name: "Create collector config directory"
@@ -37,7 +45,7 @@
     state: directory
     owner: "{{ system.users.collector.name }}"
     group: "{{ system.users.collector.name }}"
-    mode: "0750"
+    mode: "0770" # vector user is part of collector group and manages the data lake too
   loop:
     - /var/lib/lantana/datalake
     - /var/lib/lantana/datalake/bronze
@@ -71,3 +79,14 @@
     dest: /etc/cron.d/lantana-prune
     content: "15 0 * * * root /usr/local/sbin/lantana-prune\n"
     mode: "0644"
+
+# --- LOG RECEIVER ---
+- name: "Deploy Vector receiver configuration"
+  become: true
+  ansible.builtin.template:
+    src: receive.vector.yaml.j2
+    dest: /etc/vector/conf.d/receive.yaml
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  notify: "Restart Vector"

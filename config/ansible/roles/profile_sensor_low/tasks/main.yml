@@ -72,3 +72,14 @@
   ansible.builtin.apt:
     name: podman
     update_cache: true
+
+# --- LOG FORWARDING ---
+- name: "Deploy Vector forwarder configuration"
+  become: true
+  ansible.builtin.template:
+    src: forward.vector.yaml.j2
+    dest: /etc/vector/conf.d/forward.yaml
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  notify: "Restart Vector"

@@ -1,0 +1,89 @@
+---
+# --- DEPENDENCY INSTALLATION ---
+- name: "Update apt cache"
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: "Install Vector dependencies"
+  become: true
+  ansible.builtin.apt:
+    name:
+      - gpg
+      - curl
+
+# --- INSTALLATION ---
+- name: "Initialize Datadog binary keyring"
+  become: true
+  ansible.builtin.file:
+    path: /usr/share/keyrings/datadog-archive-keyring.gpg
+    state: touch
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+
+- name: "Import repository Datadog GPG keys"
+  become: true
+  ansible.builtin.shell: |
+    curl -sSL https://keys.datadoghq.com/{{ item }} | \
+    gpg --no-default-keyring --keyring /usr/share/keyrings/datadog-archive-keyring.gpg --import --batch
+  loop:
+    - DATADOG_APT_KEY_CURRENT.public
+    - DATADOG_APT_KEY_C0962C7D.public
+    - DATADOG_APT_KEY_F14F620E.public
+  changed_when: false
+
+- name: "Configure apt repository"
+  become: true
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.vector.dev/ stable vector-0"
+    state: present
+    filename: vector
+
+- name: "Install Vector"
+  become: true
+  ansible.builtin.apt:
+    name: vector
+    state: present
+    update_cache: true
+
+# --- ARCHITECTURE SETUP ---
+- name: "Create Vector conf.d directory"
+  become: true
+  ansible.builtin.file:
+    path: /etc/vector/conf.d
+    state: directory
+    owner: vector
+    group: vector
+    mode: "0755"
+
+- name: "Create systemd override directory"
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/system/vector.service.d
+    state: directory
+    mode: "0755"
+
+- name: "Configure systemd to read conf.d directory"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/vector.service.d/override.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=/usr/bin/vector --config-yaml /etc/vector/vector.yaml --config-dir /etc/vector/conf.d/
+    mode: "0644"
+  notify:
+    - "Reload systemd"
+    - "Restart Vector"
+
+- name: "Deploy core configuration template"
+  become: true
+  ansible.builtin.template:
+    src: vector.yaml.j2
+    dest: /etc/vector/vector.yaml
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "vector validate --config-yaml %s"
+  notify: "Restart Vector"

@@ -1,0 +1,10 @@
+# /etc/vector/conf.d/forward.yaml
+# Managed by Ansible
+
+sinks:
+  forward_to_collector:
+    type: vector
+    inputs:
+      - "tag_*"
+    address: "{{ network.collector.ipv4 }}:{{ network.collector.port }}"
+    version: "2"

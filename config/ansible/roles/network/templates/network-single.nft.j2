@@ -17,6 +17,7 @@ define WAN_IPV6 = {{ network.honeywall.wan.ipv6.split('/')[0] }}
 # Collector Node IPs (For Vector forwarding)
 define COLLECTOR_IPV4 = {{ network.collector.ipv4.split('/')[0] }}
 define COLLECTOR_IPV6 = {{ network.collector.ipv6.split('/')[0] }}
+define COLLECTOR_PORT = {{ network.collector.port }}
 
 # Sensor IPs (Traffic is DNAT'ed)
 define SENSOR_IPV4 = {{ network.sensors.sensor_01.ipv4.split('/')[0] }}

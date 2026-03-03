@@ -1,0 +1,17 @@
+# /etc/vector/vector.yaml
+# Managed by Ansible
+
+data_dir: /var/lib/vector
+
+api:
+  enabled: false
+
+sources:
+  vector_keepalive:
+    type: internal_metrics
+
+sinks:
+  vector_blackhole:
+    type: blackhole
+    inputs:
+      - vector_keepalive

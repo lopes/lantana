@@ -104,3 +104,20 @@
   ansible.builtin.service:
     name: nftables
     state: reloaded
+
+# --- LOGGING ---
+- name: "Deploy Vector configuration"
+  become: true
+  ansible.builtin.template:
+    src: cowrie.vector.yaml.j2
+    dest: /etc/vector/conf.d/cowrie.yaml
+    owner: "root"
+    group: "root"
+    mode: "0644"
+
+- name: "Restart Vector"
+  become: true
+  ansible.builtin.service:
+    name: vector
+    state: restarted
+    enabled: true
