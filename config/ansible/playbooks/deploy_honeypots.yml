@@ -7,8 +7,8 @@
     - include_role:
         name: "{{ item }}"
       loop: "{{ sensor_honeypots | default([]) }}"
-
-- name: "Setup high-interaction sensors"
-  hosts: sensor_high_nodes
-  roles:
-    - vuln_ssh
+#
+# - name: "Setup high-interaction sensors"
+#   hosts: sensor_high_nodes
+#   roles:
+#     - vuln_ssh

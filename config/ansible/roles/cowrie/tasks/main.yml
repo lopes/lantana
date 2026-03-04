@@ -73,7 +73,7 @@
   become: true
   ansible.builtin.template:
     src: cowrie.container.j2
-    dest: "/home/{{ system.users.sensor.name }}/.config/containers/cowrie.container"
+    dest: "/home/{{ system.users.sensor.name }}/.config/containers/systemd/cowrie.container"
     owner: "root"
     group: "root"
     mode: "0644"

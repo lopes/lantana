@@ -62,7 +62,7 @@
     validate: /usr/bin/suricata -T -c %s
 
 # --- SURICATA LOGGING ---
-- name: "Log rotation for Suricata"
+- name: "Configure log rotation for Suricata"
   become: true
   ansible.builtin.copy:
     src: suricata.logrotate
