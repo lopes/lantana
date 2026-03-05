@@ -25,7 +25,7 @@ The following table outlines the minimum hardware requirements for each logical 
 Lantana strictly separates infrastructure provisioning from behavioral configuration. This ensures that the underlying compute resources remain disposable and the deception narratives remain highly modular.
 
 ### Day 0: Provisioning (Terraform)
-Terraform is responsible for the "physical" or hypervisor-level reality. It deploys the raw Debian virtual machines, creates the virtual networks (public and private), and injects the baseline network and security configurations via `cloud-init`. 
+Terraform is responsible for the "physical" or hypervisor-level reality. It deploys the raw Debian virtual machines, creates the virtual networks (public and private), and injects the baseline network and security configurations via `cloud-init`.
 
 Specifically, Terraform delivers bare, network-reachable OS instances by:
 
@@ -47,6 +47,13 @@ Ansible is specifically responsible for:
 - Configuring OS-level networking (dummy interfaces, `nftables` routing, and DNAT).
 - Deploying the specific honeypot containers and telemetry pipelines.
 
+### Honeypots as Plugins & Dynamic Firewalling
+Lantana treats each honeypot as an independent plugin managed via its own Ansible role. Rather than centralizing configuration, each role is responsible for self-registering its components onto the system:
+
+- **Configs:** Deploying required files into `/etc/lantana/sensor`.
+- **Telemetry:** Deploying its specific Datadog Vector configuration snippet.
+- **Firewalling:** Dropping dynamic `nftables` rules (e.g., specific port publishing and DNAT routing) into `/etc/lantana/honeywall/nftables/sensors`. Once the rule is placed, Ansible reloads the main firewall, which uses the `include` statement to dynamically ingest the new `.nft` files and publish the honeypot seamlessly.
+
 This separation means an operator can completely destroy and rebuild the Terraform infrastructure without touching the Ansible deception logic, or conversely, rotate the Ansible honeypot narrative multiple times on the same Terraform-provisioned infrastructure.
 
 ---
@@ -58,6 +65,13 @@ With the hosts provisioned, Lantana is structured around a **zoned architecture*
 - **Honeywall Zone:** The network safeguard. It protects the public interface, enforcing strict egress filtering via [nftables](https://www.netfilter.org/projects/nftables/index.html) to ensure compromised decoys cannot be weaponized. It utilizes an IDS ([Suricata](https://suricata.io/)) to identify attacks and monitors connection logs. The Honeywall never hosts decoys.
 - **Sensor Zone:** The deception runtime. This zone runs the actual honeypots. Low-interaction honeypots run inside isolated, hardened [podman](https://podman.io/) containers. It is responsible for capturing attacker interactions, performing lightweight local log parsing, and forwarding telemetry.
 - **Collector Zone:** The data brain. Explicitly out-of-band and never exposed to adversaries, this zone receives parsed logs from the Honeywall and Sensor zones. It enriches the data, normalizes it into OCSF format, builds the central data lake, and periodically persists the data to secure external storage.
+
+### System Identities & Least Privilege
+To enforce strict boundary isolation across these zones, Lantana relies on dedicated, non-interactive service accounts. These users own the processes and data for their respective roles:
+
+- **`stigma` (Sensor User):** Operates entirely within the Sensor Zone. This user is responsible for launching and managing the rootless Podman containers housing the decoys.
+- **`nectar` (Collector User):** Operates within the Collector Zone. This user executes the Python enrichment scripts and owns the processed data lake storage.
+- **`vector` (Telemetry User):** The default Datadog Vector account, utilized across all zones to read logs and transport telemetry over the internal network.
 
 ### Modes of Operation
 The platform seamlessly supports two deployment models without altering the underlying logical architecture:
@@ -168,7 +182,7 @@ graph TD
     end
 
     Switch -->|DNAT to .100| Sens_Eth0
-    
+
     %% Telemetry Paths (Out-of-band / Internal only)
     Honeypot -.->|App Logs| Coll_Eth0
     FW -.->|Network & IDS Logs| Coll_Eth0
@@ -177,7 +191,7 @@ graph TD
 ---
 
 ### Ansible Deployment Routing
-Because the Sensor and Collector nodes have no public IP in Multi-Node mode, the Ansible control host deploys to them by using the Honeywall as an **SSH Jump Host (Bastion)**. 
+Because the Sensor and Collector nodes have no public IP in Multi-Node mode, the Ansible control host deploys to them by using the Honeywall as an **SSH Jump Host (Bastion)**.
 
 In the Ansible inventory, the private nodes are configured to proxy their connection through the Honeywall:
 
@@ -194,6 +208,7 @@ all:
           ansible_host: 10.50.99.100
           ansible_ssh_common_args: '-J admin@<PUBLIC_IP_OF_HONEYWALL>'
 ```
+
 This ensures all infrastructure configuration is deployed securely without exposing internal nodes to the internet.
 
 ---
@@ -203,10 +218,10 @@ Lantana favors modern, native Linux tooling over heavy abstractions. This reduce
 
 ### Base Environment
 - **Debian:** The secure, stable foundation for all nodes.
-- **nftables:** Handles all firewalling, NAT, network segmentation, and strict egress containment policies.
+- **nftables:** Handles all firewalling, NAT, network segmentation, and strict egress containment policies. It is configured modularly: `/etc/nftables.conf` sets the base and includes routing definitions from `/etc/lantana/honeywall/nftables`, while plugin-specific rules are dynamically ingested from the `/sensors` subdirectory.
 - **systemd:** Manages service orchestration, ensuring honeypots and telemetry pipelines start reliably and recover from crashes.
 - **iproute2:** Manages network configurations, routing tables, and the creation of dummy interfaces for Single-Node mode.
-- **logrotate & cron:** Manages log retention, rotation, and triggers periodic administrative tasks.
+- **logrotate & cron:** Manages log retention and rotation deterministically. To avoid the unpredictable execution times of standard `anacron` (used by `/etc/cron.daily`), Lantana uses strict schedules in `/etc/cron.d/` to trigger explicit rotation scripts located in `/etc/lantana/logrotate.d/`, ensuring log processing aligns perfectly with downstream pipeline expectations.
 
 ### Specialized Deception & Data Tools
 - **Podman:** The container engine for Low-Interaction sensors. Chosen over Docker for its daemonless architecture and native rootless capabilities, providing stronger out-of-the-box isolation.
