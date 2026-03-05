@@ -6,8 +6,8 @@ Name=ltn0
 
 [Network]
 # Collector Node Addresses: Vector traffic to the Collector Node
-Address={{ network.collector.ipv4 }}
-Address={{ network.collector.ipv6 }}
+Address={{ network.collectors.collector_01.ipv4 }}
+Address={{ network.collectors.collector_01.ipv6 }}
 
 # Sensor IP Addresses: Traffic destined for the honeypots
 Address={{ network.sensors.sensor_01.ipv4 }}

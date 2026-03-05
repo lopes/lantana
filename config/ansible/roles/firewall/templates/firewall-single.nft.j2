@@ -1,19 +1,18 @@
 # /etc/lantana/honeywall/nftables/firewall.nft
 # Managed by Ansible
 
-# ------------------------------------------------------------
-# BASE TABLE AND CHAIN DEFINITIONS
-# ------------------------------------------------------------
-
-# --- NAT TABLES ---
+# --- BASE NAT TABLES ---
 table ip lantana_nat {
     chain prerouting {
         type nat hook prerouting priority -100; policy accept;
+        # Plugins hook here for DNAT (e.g., exposing sensor ports)
     }
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
-        # Masquerade Sensor Traffic (Generic)
-        ip saddr $SENSOR_NET_V4 oifname $WAN_IF masquerade
+
+        # SNAT/Masquerade egressing sensor traffic out the WAN
+        # Note: This only applies if the 'forward' chain explicitly allows the packet.
+        ip saddr @sensor_nets_v4 oifname $WAN_IF masquerade
     }
 }
 
@@ -23,8 +22,7 @@ table ip6 lantana_nat6 {
     }
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
-        # Masquerade Sensor Traffic (Generic)
-        ip6 saddr $SENSOR_NET_V6 oifname $WAN_IF masquerade
+        ip6 saddr @sensor_nets_v6 oifname $WAN_IF masquerade
     }
 }
 
@@ -43,61 +41,66 @@ table inet lantana_filter {
         ct state established,related accept
         ct state invalid drop
 
-        # 2. INTELLIGENCE
-        ct state new log prefix "[LANTANA_INPUT_NEW] " flags all
+        # 2. ANTI-EVASION (IPv6 Link-Local / NDP Poisoning Protection)
+        # Never trust Router Advertisements coming from the sensors.
+        iifname $SENSOR_IF icmpv6 type nd-router-advert drop
 
-        # 3. MANAGEMENT
-        tcp dport $SSH_ADMIN_PORT accept
-        iifname "$COLLECTOR_IF" ip daddr $COLLECTOR_IPV4 tcp dport $COLLECTOR_PORT accept
-        iifname "$COLLECTOR_IF" ip6 daddr $COLLECTOR_IPV6 tcp dport $COLLECTOR_PORT accept
+        # 3. MANAGEMENT & INFRASTRUCTURE (Honeywall Host)
+        tcp dport {{ ansible_port }} accept
+
+        # Allow Collector traffic using the dynamically populated sets
+        iifname $SENSOR_IF ip saddr @collector_ips_v4 tcp dport {{ network.collector.port }} accept
+        iifname $SENSOR_IF ip6 saddr @collector_ips_v6 tcp dport {{ network.collector.port }} accept
 
         # 4. ICMP/v6
-        icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, echo-request, echo-reply } accept
         ip protocol icmp accept
-        icmpv6 type { echo-request, echo-reply } accept
     }
 
     chain forward {
         type filter hook forward priority 0; policy drop;
+
+        # 1. CORE STATE
+        ct state established,related accept
+        ct state invalid drop
+
+        # 2. STRICT EGRESS INTELLIGENCE
+        # Catch malware phoning home on unexpected ports. Sent to rsyslog.
+        # Tag format: LANTANA_<CHAIN>_<ACTION>_<SUFFIX>
+        iifname $SENSOR_IF oifname $WAN_IF ct state new limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP_EGRESS] " drop
+
+        # Plugins insert specific accept rules here for honeypot ingress/egress.
     }
 
     chain output {
         type filter hook output priority 0; policy drop;
 
-        # 1. CORE TRAFFIC
+        # 1. CORE TRAFFIC (Honeywall Host Egress)
         oifname "lo" accept
         ct state established,related accept
 
-        # 2. LOCAL COMMUNICATION
-        oifname "ltn0" accept
-
-        # 3. MAINTENANCE PORTS
+        # 2. MAINTENANCE
         udp dport @allowed_egress_ports accept
         tcp dport @allowed_egress_ports accept
 
-        # 4. ICMP EGRESS
+        # 3. ICMP
         ip protocol icmp accept
         meta l4proto icmpv6 accept
 
-        # 5. LOG BLOCKED OUTBOUND
+        # 4. LOG DROPS
         limit rate 5/minute log prefix "[LANTANA_OUTPUT_DROP] "
     }
 }
 
-# ------------------------------------------------------------
-# LOAD PLUGINS
-# ------------------------------------------------------------
+# --- LOAD PLUGINS ---
 include "/etc/lantana/honeywall/nftables/sensors/*.nft"
 
-# ------------------------------------------------------------
-#  TRAILING RULES: LOG & DROP
-# ------------------------------------------------------------
+# --- TRAILING RULES: TSHOOT LOGGING & DROP ---
 table inet lantana_filter {
     chain input {
         limit rate 10/minute burst 5 packets log prefix "[LANTANA_INPUT_DROP] "
     }
-
     chain forward {
-        limit rate 5/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP] "
+        limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP] "
     }
 }

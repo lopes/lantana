@@ -2,30 +2,55 @@
 # Managed by Ansible
 
 # --- INTERFACES ---
-# The physical interface connected to the internet
 define WAN_IF = "{{ network.honeywall.wan.interface }}"
+define SENSOR_IF = "{{ network.honeywall.lan.interface }}"
 
-# The virtual interface where sensors and collector services "live"
-define SENSOR_IF = "ltn0"
-define COLLECTOR_IF = "ltn0"
+# --- HONEYWALL IPs ---
+define WAN_IPV4 = "{{ network.honeywall.wan.ipv4.split('/')[0] }}"
+define WAN_IPV6 = "{{ network.honeywall.wan.ipv6.split('/')[0] }}"
 
-# --- IP ADDRESSES ---
-# WAN IP (Management & Entry Point)
-define WAN_IPV4 = {{ network.honeywall.wan.ipv4.split('/')[0] }}
-define WAN_IPV6 = {{ network.honeywall.wan.ipv6.split('/')[0] }}
+# --- SETS ---
+# Populated dynamically by Ansible inventory loops.
+# Works seamlessly for both N=1 (single-node) and N>1 (multi-node).
 
-# Collector Node IPs (For Vector forwarding)
-define COLLECTOR_IPV4 = {{ network.collector.ipv4.split('/')[0] }}
-define COLLECTOR_IPV6 = {{ network.collector.ipv6.split('/')[0] }}
-define COLLECTOR_PORT = {{ network.collector.port }}
+table inet lantana_vars {
+    # --- COLLECTORS ---
+    set collector_ips_v4 {
+        type ipv4_addr
+        elements = {
+            {% for node in network.collectors %}
+            {{ node.ipv4.split('/')[0] }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        }
+    }
 
-# Sensor IPs (Traffic is DNAT'ed)
-define SENSOR_IPV4 = {{ network.sensors.sensor_01.ipv4.split('/')[0] }}
-define SENSOR_IPV6 = {{ network.sensors.sensor_01.ipv6.split('/')[0] }}
+    set collector_ips_v6 {
+        type ipv6_addr
+        elements = {
+            {% for node in network.collectors %}
+            {{ node.ipv6.split('/')[0] }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        }
+    }
 
-# --- SUBNETS ---
-define SENSOR_NET_V4 = {{ network.sensors.sensor_01.ipv4 }}
-define SENSOR_NET_V6 = {{ network.sensors.sensor_01.ipv6 }}
+    # --- SENSORS ---
+    set sensor_nets_v4 {
+        type ipv4_addr
+        flags interval
+        elements = {
+            {% for node in network.sensors.values() %}
+            {{ node.ipv4 }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        }
+    }
 
-# --- PORTS ---
-define SSH_ADMIN_PORT = {{ ansible_port }}
+    set sensor_nets_v6 {
+        type ipv6_addr
+        flags interval
+        elements = {
+            {% for node in network.sensors.values() %}
+            {{ node.ipv6 }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        }
+    }
+}

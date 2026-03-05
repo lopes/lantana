@@ -15,10 +15,11 @@ network:
       ipv4: "10.50.99.6/24"
       ipv6: "fd99:10:50:99::6/64"
 
-  collector:
-    ipv4: "10.50.99.10/24"
-    ipv6: "fd99:10:50:99::10/64"
-    port: 48123
+  collectors:
+    collector_01:
+      ipv4: "10.50.99.10/24"
+      ipv6: "fd99:10:50:99::10/64"
+      port: 48123
 
   sensors:
     sensor_01:

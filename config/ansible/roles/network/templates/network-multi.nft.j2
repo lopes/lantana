@@ -5,9 +5,9 @@ define WAN_IF = "{{ network.honeywall.wan.interface }}"
 define LAN_IF = "{{ network.honeywall.lan.interface }}"
 
 define SENSOR_IP4 = {{ network.sensors.sensor_01.ipv4.split('/')[0] }}
-define COLLECTOR_IP4   = {{ network.collector.ipv4.split('/')[0] }}
+define COLLECTOR_IP4   = {{ network.collectors.collector_01.ipv4.split('/')[0] }}
 define SENSOR_IP6 = {{ network.sensors.sensor_01.ipv6.split('/')[0] }}
-define COLLECTOR_IP6   = {{ network.collector.ipv6.split('/')[0] }}
+define COLLECTOR_IP6   = {{ network.collectors.collector_01.ipv6.split('/')[0] }}
 
 # --- FORWARD PLANE ---
 table inet lantana-forward {
