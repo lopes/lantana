@@ -3,21 +3,26 @@
 
 table ip lantana_nat {
     chain prerouting {
-        iifname $WAN_IF tcp dport 22 dnat to {{ network.sensors.sensor_01.ipv4 }}:2222
-        iifname $WAN_IF tcp dport 23 dnat to {{ network.sensors.sensor_01.ipv4 }}:2223
+        iifname $WAN_IF tcp dport 22 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:2222
+        iifname $WAN_IF tcp dport 23 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:2223
     }
 }
 
 table ip6 lantana_nat6 {
     chain prerouting {
-        iifname $WAN_IF tcp dport 22 dnat to {{ network.sensors.sensor_01.ipv6 }}:2222
-        iifname $WAN_IF tcp dport 23 dnat to {{ network.sensors.sensor_01.ipv6 }}:2223
+        iifname $WAN_IF tcp dport 22 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:2222
+        iifname $WAN_IF tcp dport 23 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:2223
     }
 }
 
 table inet lantana_filter {
+    chain input {
+        ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} tcp dport { 2222, 2223 } accept
+        ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} tcp dport { 2222, 2223 } accept
+    }
+
     chain forward {
-        ip daddr {{ network.sensors.sensor_01.ipv4 }} tcp dport { 2222, 2223 } accept
-        ip6 daddr {{ network.sensors.sensor_01.ipv6 }} tcp dport { 2222, 2223 } accept
+        ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} tcp dport { 2222, 2223 } accept
+        ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} tcp dport { 2222, 2223 } accept
     }
 }

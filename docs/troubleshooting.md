@@ -132,6 +132,15 @@ If Ansible is acting on outdated host data during playbook runs, clear the fact 
 ansible-playbook site.yml -e "ansible_facts_parallel=false" --flush-cache
 ```
 
+### Ansible Debug Task
+Whenever a task is failing due to variable errors, you can add the following task before the one that's failing to check out the values:
+
+```yaml
+- name: "Debug variable"
+  debug:
+    var: network # replace by the variable you're debugging
+```
+
 ---
 
 ## Tests

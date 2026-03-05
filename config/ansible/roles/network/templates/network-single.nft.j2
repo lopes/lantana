@@ -9,48 +9,27 @@ define SENSOR_IF = "{{ network.honeywall.lan.interface }}"
 define WAN_IPV4 = "{{ network.honeywall.wan.ipv4.split('/')[0] }}"
 define WAN_IPV6 = "{{ network.honeywall.wan.ipv6.split('/')[0] }}"
 
-# --- SETS ---
-# Populated dynamically by Ansible inventory loops.
-# Works seamlessly for both N=1 (single-node) and N>1 (multi-node).
+# --- DYNAMIC INVENTORY LISTS ---
+define COLLECTOR_IPS_V4 = {
+    {% for node in network.collectors.values() %}
+    {{ node.ipv4.split('/')[0] }}{% if not loop.last %}, {% endif %}
+    {% endfor %}
+}
 
-table inet lantana_vars {
-    # --- COLLECTORS ---
-    set collector_ips_v4 {
-        type ipv4_addr
-        elements = {
-            {% for node in network.collectors %}
-            {{ node.ipv4.split('/')[0] }}{% if not loop.last %}, {% endif %}
-            {% endfor %}
-        }
-    }
+define COLLECTOR_IPS_V6 = {
+    {% for node in network.collectors.values() %}
+    {{ node.ipv6.split('/')[0] }}{% if not loop.last %}, {% endif %}
+    {% endfor %}
+}
 
-    set collector_ips_v6 {
-        type ipv6_addr
-        elements = {
-            {% for node in network.collectors %}
-            {{ node.ipv6.split('/')[0] }}{% if not loop.last %}, {% endif %}
-            {% endfor %}
-        }
-    }
+define SENSOR_NETS_V4 = {
+    {% for node in network.sensors.values() %}
+    {{ node.ipv4.split('/')[0] }}{% if not loop.last %}, {% endif %}
+    {% endfor %}
+}
 
-    # --- SENSORS ---
-    set sensor_nets_v4 {
-        type ipv4_addr
-        flags interval
-        elements = {
-            {% for node in network.sensors.values() %}
-            {{ node.ipv4 }}{% if not loop.last %}, {% endif %}
-            {% endfor %}
-        }
-    }
-
-    set sensor_nets_v6 {
-        type ipv6_addr
-        flags interval
-        elements = {
-            {% for node in network.sensors.values() %}
-            {{ node.ipv6 }}{% if not loop.last %}, {% endif %}
-            {% endfor %}
-        }
-    }
+define SENSOR_NETS_V6 = {
+    {% for node in network.sensors.values() %}
+    {{ node.ipv6.split('/')[0] }}{% if not loop.last %}, {% endif %}
+    {% endfor %}
 }

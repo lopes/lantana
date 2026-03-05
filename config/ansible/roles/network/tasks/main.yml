@@ -57,3 +57,12 @@
 - name: "Configure Multi Node specific networking"
   include_tasks: multi_node.yml
   when: lantana.mode == "multi"
+
+# --- SERVICE RESTART ---
+- name: "Restart systemd-networkd"
+  become: true
+  ansible.builtin.service:
+    name: systemd-networkd
+    state: restarted
+  async: 45
+  poll: 0

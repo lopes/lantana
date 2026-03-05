@@ -5,14 +5,13 @@
 table ip lantana_nat {
     chain prerouting {
         type nat hook prerouting priority -100; policy accept;
-        # Plugins hook here for DNAT (e.g., exposing sensor ports)
+        # Plugins hook here for DNAT
     }
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
 
-        # SNAT/Masquerade egressing sensor traffic out the WAN
-        # Note: This only applies if the 'forward' chain explicitly allows the packet.
-        ip saddr @sensor_nets_v4 oifname $WAN_IF masquerade
+        # SNAT/Masquerade egressing sensor traffic
+        ip saddr $SENSOR_NETS_V4 oifname $WAN_IF masquerade
     }
 }
 
@@ -22,7 +21,7 @@ table ip6 lantana_nat6 {
     }
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
-        ip6 saddr @sensor_nets_v6 oifname $WAN_IF masquerade
+        ip6 saddr $SENSOR_NETS_V6 oifname $WAN_IF masquerade
     }
 }
 
@@ -41,16 +40,15 @@ table inet lantana_filter {
         ct state established,related accept
         ct state invalid drop
 
-        # 2. ANTI-EVASION (IPv6 Link-Local / NDP Poisoning Protection)
-        # Never trust Router Advertisements coming from the sensors.
+        # 2. ANTI-EVASION
         iifname $SENSOR_IF icmpv6 type nd-router-advert drop
 
-        # 3. MANAGEMENT & INFRASTRUCTURE (Honeywall Host)
+        # 3. MANAGEMENT & INFRASTRUCTURE
         tcp dport {{ ansible_port }} accept
 
-        # Allow Collector traffic using the dynamically populated sets
-        iifname $SENSOR_IF ip saddr @collector_ips_v4 tcp dport {{ network.collector.port }} accept
-        iifname $SENSOR_IF ip6 saddr @collector_ips_v6 tcp dport {{ network.collector.port }} accept
+        # Allow Collector traffic using the global variables
+        iifname $SENSOR_IF ip saddr $COLLECTOR_IPS_V4 tcp dport {{ network.collectors.collector_01.port }} accept
+        iifname $SENSOR_IF ip6 saddr $COLLECTOR_IPS_V6 tcp dport {{ network.collectors.collector_01.port }} accept
 
         # 4. ICMP/v6
         icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, echo-request, echo-reply } accept
@@ -65,17 +63,13 @@ table inet lantana_filter {
         ct state invalid drop
 
         # 2. STRICT EGRESS INTELLIGENCE
-        # Catch malware phoning home on unexpected ports. Sent to rsyslog.
-        # Tag format: LANTANA_<CHAIN>_<ACTION>_<SUFFIX>
         iifname $SENSOR_IF oifname $WAN_IF ct state new limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP_EGRESS] " drop
-
-        # Plugins insert specific accept rules here for honeypot ingress/egress.
     }
 
     chain output {
         type filter hook output priority 0; policy drop;
 
-        # 1. CORE TRAFFIC (Honeywall Host Egress)
+        # 1. CORE TRAFFIC
         oifname "lo" accept
         ct state established,related accept
 

@@ -12,4 +12,5 @@
     compress
     delaycompress
     create 0644 root root
+    copytruncate
 }
