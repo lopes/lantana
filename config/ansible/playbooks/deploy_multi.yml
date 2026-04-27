@@ -3,28 +3,38 @@
   hosts:
     - honeywall_nodes
   roles:
-    - base
-    - profile_honeywall
-    - firewall
-    - suricata
+    - role: base
+      tags: [base]
+    - role: profile_honeywall
+      tags: [nftables, suricata]
+    - role: firewall
+      tags: [nftables]
+    - role: suricata
+      tags: [suricata]
 
 - name: "Deploy multi-node operation: Collector"
   hosts:
     - collector_nodes
   roles:
-    - base
-    - profile_collector
+    - role: base
+      tags: [base]
+    - role: profile_collector
+      tags: [collector]
 
 - name: "Deploy multi-node operation: Low-interaction sensor"
   hosts:
     - sensor_low_nodes
   roles:
-    - base
-    - profile_sensor_low
+    - role: base
+      tags: [base]
+    - role: profile_sensor_low
+      tags: [honeypots]
 
 - name: "Deploy multi-node operation: High-interaction sensor"
   hosts:
     - sensor_high_nodes
   roles:
-    - base
-    - profile_sensor_high
+    - role: base
+      tags: [base]
+    - role: profile_sensor_high
+      tags: [honeypots]

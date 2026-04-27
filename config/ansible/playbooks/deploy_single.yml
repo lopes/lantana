@@ -2,10 +2,17 @@
 - name: "Deploy single-node sensor"
   hosts: single_nodes
   roles:
-    - base
-    - profile_honeywall
-    - profile_collector
-    - profile_sensor_low
-    - network
-    - firewall
-    - suricata
+    - role: base
+      tags: [base]
+    - role: profile_honeywall
+      tags: [nftables, suricata]
+    - role: profile_collector
+      tags: [collector]
+    - role: profile_sensor_low
+      tags: [honeypots]
+    - role: network
+      tags: [network]
+    - role: firewall
+      tags: [nftables]
+    - role: suricata
+      tags: [suricata]

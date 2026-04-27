@@ -4,9 +4,11 @@
     - single_nodes
     - sensor_low_nodes
   tasks:
-    - include_role:
+    - name: "Deploy honeypot roles"
+      ansible.builtin.include_role:
         name: "{{ item }}"
       loop: "{{ sensor_honeypots | default([]) }}"
+      tags: [honeypots]
 #
 # - name: "Setup high-interaction sensors"
 #   hosts: sensor_high_nodes
