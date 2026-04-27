@@ -1,0 +1,35 @@
+{
+  "operator": {{ reporting.operator | to_json }},
+  "sharing": {{ reporting.sharing | to_json }},
+  "operation": {
+    "name": "{{ narrative.operation_name }}",
+    "description": "{{ narrative.operation_name }} honeypot sensor",
+    "sector": "{{ narrative.sector }}",
+    "region": "{{ narrative.identity.country }}",
+    "start_date": "{{ narrative.start_date }}"
+  },
+  "redact": {
+    "infrastructure_ips": [
+      "{{ network.honeywall.wan.ipv4.split('/')[0] }}",
+      "{{ network.honeywall.wan.ipv6.split('/')[0] }}",
+      "{{ network.honeywall.lan.ipv4.split('/')[0] }}",
+      "{{ network.honeywall.lan.ipv6.split('/')[0] }}",
+      "{{ network.sensors.sensor_01.ipv4.split('/')[0] }}",
+      "{{ network.sensors.sensor_01.ipv6.split('/')[0] }}",
+      "{{ network.collectors.collector_01.ipv4.split('/')[0] }}",
+      "{{ network.collectors.collector_01.ipv6.split('/')[0] }}"
+    ],
+    "infrastructure_cidrs": [
+      "{{ network.prefixes.ipv4 }}",
+      "{{ network.prefixes.ipv6 }}"
+    ],
+    "pseudonym_map": {
+      "{{ network.honeywall.wan.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.wan }}",
+      "{{ network.honeywall.wan.ipv6.split('/')[0] }}": "{{ reporting.pseudonym_map.wan }}",
+      "{{ network.sensors.sensor_01.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.sensor_01 }}",
+      "{{ network.sensors.sensor_01.ipv6.split('/')[0] }}": "{{ reporting.pseudonym_map.sensor_01 }}",
+      "{{ network.collectors.collector_01.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.collector_01 }}",
+      "{{ network.collectors.collector_01.ipv6.split('/')[0] }}": "{{ reporting.pseudonym_map.collector_01 }}"
+    }
+  }
+}

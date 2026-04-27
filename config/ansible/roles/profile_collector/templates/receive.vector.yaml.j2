@@ -1,17 +1,45 @@
 # /etc/vector/conf.d/receive.yaml
 # Managed by Ansible
 
+enrichment_tables:
+  geoip_city:
+    type: geoip
+    path: /var/lib/lantana/collector/geoip/GeoLite2-City.mmdb
+  geoip_asn:
+    type: geoip
+    path: /var/lib/lantana/collector/geoip/GeoLite2-ASN.mmdb
+
 sources:
   receive_from_edges:
     type: vector
     address: "0.0.0.0:{{ network.collectors.collector_01.port }}"
     version: "2"
 
+transforms:
+  enrich_geo:
+    type: remap
+    inputs:
+      - receive_from_edges
+    source: |-
+      ip = to_string(.src_ip) ?? to_string(.source.ip) ?? ""
+      if ip != "" {
+        city_data = get_enrichment_table_record("geoip_city", {"ip": ip}) ?? {}
+        asn_data = get_enrichment_table_record("geoip_asn", {"ip": ip}) ?? {}
+        .geo.country_code = get(city_data, ["country", "iso_code"]) ?? ""
+        .geo.region_code = get(city_data, ["subdivisions", 0, "iso_code"]) ?? ""
+        .geo.city = get(city_data, ["city", "names", "en"]) ?? ""
+        .geo.latitude = get(city_data, ["location", "latitude"]) ?? null
+        .geo.longitude = get(city_data, ["location", "longitude"]) ?? null
+        .geo.timezone = get(city_data, ["location", "time_zone"]) ?? ""
+        .geo.asn = get(asn_data, ["autonomous_system_number"]) ?? null
+        .geo.isp = get(asn_data, ["autonomous_system_organization"]) ?? ""
+      }
+
 sinks:
   write_to_datalake:
     type: file
     inputs:
-      - receive_from_edges
+      - enrich_geo
     path: "/var/lib/lantana/datalake/bronze/dataset={{ '{{.dataset}}' }}/date=%Y-%m-%d/server={{ '{{.server}}' }}/events.json"
     encoding:
       codec: json
