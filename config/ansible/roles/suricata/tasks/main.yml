@@ -97,6 +97,17 @@
   tags: [suricata, vector]
 
 # --- SURICATA ENABLEMENT ---
+- name: "Deploy custom Lantana Suricata rules"
+  become: true
+  ansible.builtin.copy:
+    src: lantana.rules
+    dest: /var/lib/lantana/honeywall/suricata/rules/lantana.rules
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  notify: "Restart Suricata"
+  tags: [suricata]
+
 - name: "Update Suricata rules"
   become: true
   ansible.builtin.command: "suricata-update --data-dir /var/lib/lantana/honeywall/suricata"

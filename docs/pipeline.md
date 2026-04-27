@@ -1,6 +1,6 @@
 # Lantana: Data Pipeline
 
-The Lantana data pipeline is a Python application that processes honeypot telemetry through a three-tier datalake (bronze, silver, gold), producing enriched Parquet datasets, threat intelligence reports, and STIX bundles. It runs on the Collector zone as a set of daily batch jobs.
+The Lantana data pipeline is a Python application that processes honeypot telemetry through a three-tier datalake (bronze, silver, gold), producing enriched Parquet datasets, threat intelligence reports, STIX bundles, and an operator dashboard. It runs on the Collector zone as a set of daily batch jobs orchestrated by cron.
 
 ---
 
@@ -50,7 +50,7 @@ All data lives under `/var/lib/lantana/datalake/` in Hive-style partitions:
 
 - **Bronze**: One NDJSON file per dataset/date/server combination. Written by Vector. Contains raw event fields plus Vector-added tags (`dataset`, `server`, `operation`) and GeoIP fields (`geo.*`).
 - **Silver**: One Parquet file per partition. Events have OCSF-normalized column names, API enrichment data, and infrastructure IPs replaced with pseudonyms.
-- **Gold**: Aggregated metrics tables (daily summaries, IP reputation, behavioral progression, campaign clusters). Read exclusively from silver.
+- **Gold**: Four aggregated tables per date: `daily_summary`, `ip_reputation`, `behavioral_progression`, `campaign_clusters`. Read exclusively from silver.
 
 Multiple operations coexist via the `operation` column tag, not filesystem partitions.
 
@@ -60,9 +60,9 @@ Multiple operations coexist via the `operation` column tag, not filesystem parti
 
 ### 3.1 Bronze to Silver (daily enrichment)
 
-Entry point: `lantana-enrich` (runs for yesterday's data by default).
+Entry point: `lantana-enrich` (cron: 01:00 UTC, processes yesterday's data).
 
-For each dataset (cowrie, suricata, nftables):
+For each dataset (cowrie, suricata, nftables, dionaea):
 
 1. **Read bronze** NDJSON into a Polars DataFrame
 2. **Extract unique source IPs** from attacker events
@@ -70,7 +70,8 @@ For each dataset (cowrie, suricata, nftables):
    - AbuseIPDB (abuse confidence, report count, ISP)
    - GreyNoise (classification, noise/riot status)
    - Shodan (open ports, services, vulns)
-   - VirusTotal (file hash reputation, for cowrie downloads)
+   - VirusTotal (file hash reputation, for cowrie/dionaea downloads)
+   - PhishStats (phishing URL count per IP)
 4. **Cache results** in SQLite (7-day TTL) to avoid re-querying
 5. **Merge enrichment** columns back into the event DataFrame by source IP
 6. **OCSF normalize** -- rename columns and add OCSF metadata (see Section 4)
@@ -80,12 +81,12 @@ For each dataset (cowrie, suricata, nftables):
 
 ### 3.2 Silver to Gold (daily aggregation)
 
-Entry point: `lantana-transform` (runs for yesterday's data by default).
+Entry point: `lantana-transform` (cron: 02:00 UTC, processes yesterday's data).
 
 Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes 4 gold tables:
 
 #### daily_summary (1 row per date)
-Aggregate counts and top-10 lists: total events, unique IPs, auth attempts/successes/failures, commands executed, findings detected, network events. Top-N lists for usernames, passwords, commands, source countries, and source IPs.
+Aggregate counts and top-10 lists: total events, unique IPs, unique sessions, auth attempts/successes/failures, commands executed, findings detected, network events. Top-N lists for usernames, passwords, commands, source countries, and source IPs.
 
 #### ip_reputation (1 row per unique source IP)
 Per-IP risk profile. Risk score (0-100) weighted composite: AbuseIPDB confidence (30%), auth success (+20), command execution (+25), detection finding (+15), volume (+10 capped). Includes GeoIP, enrichment data, and dataset cross-references.
@@ -102,14 +103,59 @@ Escalation tracking -- the project's core intelligence feature. Classifies each 
 
 Includes escalation timing (seconds between stages), session counts, and automated bot detection heuristic (rapid credential stuffing with >10 attempts and >5 unique passwords within 120 seconds, or GreyNoise noise flag).
 
+#### behavioral_progression_multiday (1 row per unique source IP, 7-day lookback)
+Cross-day escalation tracking. Extends single-day progression by reading a 7-day lookback window of silver data. Detects slow-burn attackers who scan on day 1, attempt credentials on day 3, and go interactive on day 5. Includes:
+
+- `first_seen_date` / `last_seen_date`: calendar day range
+- `active_days`: count of distinct days with events
+- `progression_velocity_days`: days between first scan and highest stage
+- `is_slow_burn`: true if escalation spans 2+ calendar days
+- Per-stage first date: when each stage was first reached
+
 #### campaign_clusters (1 row per cluster)
 Groups IPs by shared credential pairs (username + password). Only clusters with >= 2 unique IPs. Surfaces botnet-scale credential stuffing campaigns.
 
 ### 3.3 Intelligence Output
 
-- **STIX bundles**: Machine-readable threat intelligence (indicators, attack patterns, campaigns)
-- **Discord reports**: Daily brief + weekly summary with Markdown and Mermaid charts
-- **Streamlit dashboard**: Operator console with 5 pages (overview, IP deep-dive, credentials, timeline, STIX export)
+#### STIX 2.1 Bundles
+
+Generated from gold data via `intel/stix.py`. Each bundle contains:
+
+- **Identity**: Operator identity from `reporting.json`
+- **Indicators**: Attacker IPs with risk score >= 40, including STIX patterns (`[ipv4-addr:value = '...']`), confidence scores, and stage-based labels
+- **Campaigns**: Credential clusters mapped to STIX Campaign objects
+- **Relationships**: Links indicators to their associated campaigns
+- **Report**: Wraps all objects for the date with TLP marking from config
+
+OPSEC enforcement: the bundle serializer asserts no infrastructure IPs appear in the output. Gold reads only from redacted silver, providing defense in depth.
+
+Available via the Streamlit dashboard (download button) or programmatic API.
+
+#### Discord Intel Reports
+
+Generated from gold data via `notify/report.py`, sent via `lantana-report`.
+
+**Daily brief** (Markdown file attached to Discord embed):
+- Key metrics table (events, IPs, auth, commands, findings)
+- Mermaid escalation funnel chart (scan -> credential -> authenticated -> interactive)
+- Top 5 attackers by risk score with country and stage
+- Notable escalations (IPs reaching stage 3+)
+- Campaign clusters (shared credential pairs)
+- Top credentials and commands
+
+The Discord embed contains a short summary; the full Markdown report is attached as a `.md` file.
+
+#### Streamlit Dashboard
+
+Entry point: `lantana-dashboard`. Five pages:
+
+1. **Overview** -- Metric cards, event type distribution, auth breakdown, top-N tables
+2. **IP Reputation** -- Risk distribution, filterable IP table with enrichment details, risk slider
+3. **Behavioral Progression** -- Escalation funnel, stage scatter plot, automated vs manual breakdown
+4. **Credentials** -- Campaign cluster table, top username/password pairs
+5. **STIX Export** -- Bundle preview, generate button, JSON download
+
+The dashboard is the operator's personal console -- never shared externally. Peers receive Discord reports and STIX bundles.
 
 ---
 
@@ -127,6 +173,9 @@ The pipeline normalizes bronze events to OCSF v1.3.0 during the bronze-to-silver
 | Suricata alert | `event_type == "alert"` | Detection Finding | 2004 |
 | Suricata (other) | fallback | Network Activity | 4001 |
 | nftables (all) | all rows | Network Activity | 4001 |
+| Dionaea (credential) | `credential_username` present | Authentication | 3002 |
+| Dionaea (FTP command) | `ftp_command` present | Process Activity | 1007 |
+| Dionaea (other) | fallback | Network Activity | 4001 |
 
 ### Cowrie Field Mapping
 
@@ -182,42 +231,131 @@ Generated OCSF columns: `class_uid`, `category_uid`, `severity_id`, `activity_id
 | `interface_out` | `interface_out` | preserve | Egress interface |
 | `length` | `traffic_bytes_in` | rename | Packet length |
 
+### Dionaea Field Mapping
+
+Bronze fields are pre-flattened by Vector: `connection.*` -> `connection_*`, `credentials[]` -> `credential_username`/`credential_password`, `ftp.commands[]` -> `ftp_command`.
+
+| Raw Field | OCSF Field | Action | Notes |
+| --- | --- | --- | --- |
+| `timestamp` | `time` | rename | Event timestamp |
+| `src_ip` | `src_endpoint_ip` | rename | Attacker source IP |
+| `dst_ip` | `dst_endpoint_ip` | rename | Honeypot destination IP |
+| `src_port` | `src_endpoint_port` | rename | Attacker source port |
+| `dst_port` | `dst_endpoint_port` | rename | Honeypot destination port |
+| `connection_protocol` | `connection_info_protocol_name` | rename | Service protocol (smbd, httpd, ftpd, mysqld, mssqld, SipSession) |
+| `connection_transport` | `connection_transport` | preserve | TCP/UDP/TLS transport |
+| `credential_username` | `user_name` | conditional | Login events only; null for plain connections |
+| `credential_password` | `unmapped_password` | conditional | Login events only; credential intel |
+| `ftp_command` | `actor_process_cmd_line` | conditional | FTP command events only |
+| `connection_type` | consumed | map | Only `accept` events reach bronze (filtered in Vector) |
+| `src_hostname` | `src_hostname` | preserve | Reverse DNS hostname if available |
+
+Generated OCSF columns: `class_uid`, `category_uid`, `severity_id`, `activity_id`, `type_uid`, `status_id`, `metadata_version`, `metadata_product_name`, `is_cleartext`, `message`.
+
 ### Columns Preserved Through Normalization
 
 These columns pass through untouched regardless of dataset:
 
 - **Vector tags**: `dataset`, `server`, `operation`
 - **GeoIP** (from Vector MMDB enrichment): `geo.country_code`, `geo.region_code`, `geo.city`, `geo.latitude`, `geo.longitude`, `geo.timezone`, `geo.asn`, `geo.isp`
-- **API enrichment** (from Python providers): `abuseipdb_*`, `greynoise_*`, `shodan_*`, `virustotal_*`
+- **API enrichment** (from Python providers): `abuseipdb_*`, `greynoise_*`, `phishstats_*`, `shodan_*`, `virustotal_*`
 
 ---
 
-## 5. OPSEC Layers
+## 5. OPSEC: Three-Layer IP Redaction Model
 
-Lantana's primary OPSEC concern is external/WAN IP leakage. Three layers enforce this:
+Lantana produces shareable intelligence (Discord reports, STIX bundles). The primary OPSEC concern is **external/WAN IP leakage** -- the public-facing addresses that identify the honeypot on the internet. If an attacker or peer discovers these, they can blacklist the honeypot, fingerprint the setup, or map the operator's infrastructure. Only the honeypot owner should know these addresses.
 
-| Layer | Where | What |
+Three layers enforce this, each catching what the previous layer might miss:
+
+### Layer 1: Vector Noise Filter (Sensor/Honeywall)
+
+**Where**: VRL transforms in each honeypot's Vector pipeline, before data leaves the sensor.
+
+**What**: Drops events where the source IP is not an external attacker. Filtered sources: loopback (`127.0.0.0/8`, `::1`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`). This catches health check probes, inter-zone traffic, and operational noise.
+
+**Why here**: Eliminating noise at the earliest point reduces data volume, prevents internal IPs from reaching the datalake, and avoids polluting enrichment queries with non-attacker IPs.
+
+**Pattern**: Each honeypot role's Vector config includes a `filter_<honeypot>` transform using `ip_cidr_contains!()` against the operation's network prefixes. Every new honeypot role must replicate this filter.
+
+### Layer 2: Silver Redaction (Python Pipeline)
+
+**Where**: `common/redact.py`, called during bronze-to-silver enrichment.
+
+**What**: Replaces infrastructure **destination** IPs with pseudonyms. External/WAN IPs are the primary target (e.g., `172.31.99.129` -> `honeypot-wan`), but internal IPs are also redacted for defense in depth. After replacement, `validate_no_leaks()` scans every string column and asserts zero infrastructure IPs remain -- both direct matches and CIDR containment checks.
+
+**Why here**: Layer 1 filters by source IP; Layer 2 handles destination IPs that appear in event data (the honeypot's own address). This is the last point where the pipeline has access to the real IPs (via `reporting.json` pseudonym map).
+
+**Configuration**: Controlled by `reporting.json` -> `redact.infrastructure_ips`, `redact.infrastructure_cidrs`, and `redact.pseudonym_map`. The Ansible template merges infrastructure IPs from `network.yml` at deploy time.
+
+### Layer 3: Gold/Reports/STIX Absence (Python Pipeline)
+
+**Where**: Gold aggregation, Discord reports, STIX bundles.
+
+**What**: Gold reads exclusively from silver (already redacted). The STIX bundle serializer asserts no infrastructure IPs in the output JSON. Discord reports are generated from gold data only. Reports never contain: honeypot WAN IPs, internal IPs, server hostnames, network topology, SSH admin port, interface names, or CIDRs.
+
+**Why here**: Defense in depth. Even if a bug in Layer 2 allowed a leak into silver, Layer 3 would catch it at output time. The STIX assertion is an explicit programmatic check, not just a data flow guarantee.
+
+---
+
+## 6. Operational Tools
+
+### lantana-prune (retention and disk monitoring)
+
+Entry point: `lantana-prune` (cron: 00:15 UTC daily).
+
+1. **Standard prune**: Delete datalake date partitions and sensor artifacts (downloads, TTY recordings) older than 180 days
+2. **Disk check**: Measure filesystem usage on the datalake volume
+3. **Warning** (>70%): Send Discord notification via `lantana-notify`
+4. **Critical** (>80%): Emergency prune -- delete sensor artifacts older than 14 days (preserves recent forensic evidence), then send critical alert with before/after usage percentages
+
+### lantana-notify (Discord notifications)
+
+Entry point: `lantana-notify --level <info|warning|critical> --title "..." --message "..."`
+
+General-purpose Discord webhook notification utility. Used by:
+- `lantana-prune` for disk alerts
+- `lantana-report` for daily intel briefs
+
+Webhook URL resolution chain: `--webhook-url` CLI flag > `LANTANA_DISCORD_WEBHOOK` env var > `discord_webhook` in `secrets.json`.
+
+Notifications use Discord embeds with color-coded severity (green=info, orange=warning, red=critical) and optional file attachments. Retries 3 times with exponential backoff on failure.
+
+---
+
+## 7. Deployment
+
+The pipeline is deployed by Ansible as part of the `profile_collector` role:
+
+1. **Source sync**: `pipeline/` directory synced to `/opt/lantana/pipeline/src/`
+2. **Virtual environment**: Python 3.13 venv at `/opt/lantana/pipeline/venv/`
+3. **Package install**: `pip install` into the venv
+4. **Cron schedule** (`/etc/cron.d/lantana-pipeline`):
+
+| Time (UTC) | Command | Description |
 | --- | --- | --- |
-| **Layer 1: Vector noise filter** | Sensor/Honeywall | Drops events from non-attacker source IPs (loopback, internal prefixes) before forwarding to collector |
-| **Layer 2: Silver redaction** | Python pipeline | Replaces infrastructure destination IPs with pseudonyms (e.g., `10.50.99.100` -> `honeypot-sensor-01`) + validates zero leaks |
-| **Layer 3: Gold/Reports absence** | Python pipeline | Gold reads only from silver (already redacted). STIX and Discord reports assert no infrastructure addresses |
+| 00:15 | `lantana-prune` | Retention + disk monitoring |
+| 01:00 | `lantana-enrich` | Bronze -> Silver (yesterday) |
+| 02:00 | `lantana-transform` | Silver -> Gold (yesterday) |
+
+All cron jobs run as the `nectar` user (UID 2002), which owns the datalake directories. The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`.
 
 ---
 
-## 6. CLI Entry Points
+## 8. CLI Entry Points
 
 | Command | Module | Description |
 | --- | --- | --- |
-| `lantana-enrich` | `lantana.enrichment.runner` | Bronze-to-silver daily enrichment pipeline |
-| `lantana-transform` | `lantana.transform.runner` | Silver-to-gold aggregation (planned) |
-| `lantana-prune` | `lantana.prune` | Datalake retention and disk monitoring (planned) |
-| `lantana-notify` | `lantana.notify.cli` | Discord webhook notification utility |
-| `lantana-report` | `lantana.notify.discord` | Generate and send Discord intel reports (planned) |
-| `lantana-dashboard` | `lantana.dashboard.app` | Streamlit operator console (planned) |
+| `lantana-enrich` | `lantana.enrichment.runner` | Bronze-to-silver daily enrichment |
+| `lantana-transform` | `lantana.transform.runner` | Silver-to-gold aggregation |
+| `lantana-prune` | `lantana.prune` | Datalake retention + disk monitoring |
+| `lantana-notify` | `lantana.notify.cli` | Discord webhook notification |
+| `lantana-report` | `lantana.notify.discord` | Generate and send Discord intel reports |
+| `lantana-dashboard` | `lantana.dashboard.app` | Streamlit operator console |
 
 ---
 
-## 7. Project Layout
+## 9. Project Layout
 
 ```
 pipeline/
@@ -233,26 +371,29 @@ pipeline/
 │   │   └── schema.py                 # Bronze Polars schema definitions
 │   ├── enrichment/
 │   │   ├── runner.py                 # Main enrichment orchestrator
-│   │   └── providers/                # AbuseIPDB, GreyNoise, Shodan, VirusTotal
+│   │   └── providers/                # AbuseIPDB, GreyNoise, PhishStats, Shodan, VirusTotal
 │   ├── transform/
-│   │   ├── runner.py                 # Gold aggregation orchestrator (planned)
-│   │   └── metrics.py                # Aggregation functions (planned)
+│   │   ├── runner.py                 # Gold aggregation orchestrator
+│   │   └── metrics.py                # 5 metric functions (summary, reputation, progression, multiday progression, clusters)
 │   ├── intel/
-│   │   └── stix.py                   # STIX 2.1 bundle generation (planned)
+│   │   └── stix.py                   # STIX 2.1 bundle generation
 │   ├── notify/
 │   │   ├── cli.py                    # Discord webhook CLI
-│   │   └── discord.py                # Report generation + sending (planned)
-│   ├── dashboard/                    # Streamlit app (planned)
-│   └── prune.py                      # Retention and disk monitoring (planned)
-└── tests/                            # Mirrors src/ structure
+│   │   ├── discord.py                # Notification sending + report CLI entry
+│   │   └── report.py                 # Markdown daily brief generation
+│   ├── dashboard/
+│   │   ├── app.py                    # Streamlit entry point + navigation
+│   │   └── pages/                    # 5 pages: overview, ip_reputation, progression, credentials, stix_export
+│   └── prune.py                      # Retention and disk monitoring
+└── tests/                            # 131 tests mirroring src/ structure
 ```
 
 ---
 
-## 8. Dependencies
+## 10. Dependencies
 
-Core: Polars (DataFrames), httpx (async HTTP), Pydantic (validation), tenacity (retries), structlog (logging), stix2 (STIX 2.1), Streamlit (dashboard).
+**Core**: Polars (DataFrames), httpx (async HTTP), Pydantic (validation), tenacity (retries), structlog (logging), stix2 (STIX 2.1), Streamlit (dashboard).
 
-Dev: pytest, pytest-asyncio, ruff (lint + format), mypy (strict type checking).
+**Dev**: pytest, pytest-asyncio, ruff (lint + format), mypy (strict type checking).
 
-Target runtime: Python 3.13+ (Debian 13 native). Package manager: uv.
+**Target runtime**: Python 3.13+ (Debian 13 native). **Package manager**: uv.

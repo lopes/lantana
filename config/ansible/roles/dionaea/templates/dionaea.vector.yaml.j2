@@ -1,0 +1,55 @@
+# /etc/vector/conf.d/dionaea.yaml
+# Managed by Ansible
+
+sources:
+  in_dionaea:
+    type: file
+    include:
+      - /var/log/lantana/sensor/dionaea/dionaea.json
+    read_from: end
+
+transforms:
+  tag_dionaea:
+    type: remap
+    inputs:
+      - in_dionaea
+    source: |-
+      parsed, err = parse_json(.message)
+      if err == null {
+          . = parsed
+      }
+
+      # Flatten nested connection object to top-level fields
+      if exists(.connection) {
+          .connection_protocol = del(.connection.protocol)
+          .connection_transport = del(.connection.transport)
+          .connection_type = del(.connection.type)
+          del(.connection)
+      }
+
+      # Flatten credentials array (take first entry)
+      if exists(.credentials) && is_array(.credentials) && length!(.credentials) > 0 {
+          .credential_username = .credentials[0].username
+          .credential_password = .credentials[0].password
+      }
+      del(.credentials)
+
+      # Flatten FTP commands (join into single string)
+      if exists(.ftp) && exists(.ftp.commands) && is_array(.ftp.commands) && length!(.ftp.commands) > 0 {
+          .ftp_command = to_string!(.ftp.commands[0].command) + " " + to_string(.ftp.commands[0].arguments) ?? ""
+      }
+      del(.ftp)
+
+      .dataset = "dionaea"
+      .server = "{{ inventory_hostname }}"
+      .operation = "{{ narrative.operation_name }}"
+
+  filter_dionaea:
+    type: filter
+    inputs:
+      - tag_dionaea
+    condition:
+      type: vrl
+      source: |-
+        connection_type = to_string(.connection_type) ?? ""
+        connection_type == "accept" && !starts_with(to_string(.src_ip) ?? "", "127.") && to_string(.src_ip) ?? "" != "::1" && !ip_cidr_contains!("{{ network.prefixes.ipv4 }}", to_string(.src_ip) ?? "0.0.0.0") && !ip_cidr_contains!("{{ network.prefixes.ipv6 }}", to_string(.src_ip) ?? "::")

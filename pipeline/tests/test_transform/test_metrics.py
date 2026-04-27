@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import polars as pl
 import pytest
@@ -18,6 +18,7 @@ from lantana.models.ocsf import (
 )
 from lantana.transform.metrics import (
     compute_behavioral_progression,
+    compute_behavioral_progression_multiday,
     compute_campaign_clusters,
     compute_daily_summary,
     compute_ip_reputation,
@@ -442,3 +443,156 @@ class TestCampaignClusters:
         """Empty silver returns empty clusters."""
         result = compute_campaign_clusters(pl.DataFrame())
         assert result.is_empty()
+
+
+# ---------------------------------------------------------------------------
+# Multi-day behavioral progression
+# ---------------------------------------------------------------------------
+
+
+def _make_silver_row(
+    ip: str,
+    class_uid: int,
+    ts: datetime,
+    *,
+    status_id: int = STATUS_UNKNOWN,
+    user_name: str | None = None,
+    unmapped_password: str | None = None,
+    actor_process_cmd_line: str | None = None,
+) -> dict[str, object]:
+    """Build a single silver-like row for multi-day tests."""
+    return {
+        "class_uid": class_uid,
+        "category_uid": 4 if class_uid == CLASS_NETWORK_ACTIVITY else 3,
+        "severity_id": 2,
+        "activity_id": 1,
+        "type_uid": class_uid * 100 + 1,
+        "time": ts,
+        "message": "test event",
+        "status_id": status_id,
+        "src_endpoint_ip": ip,
+        "src_endpoint_port": 54321,
+        "dst_endpoint_ip": "honeypot-sensor-01",
+        "dst_endpoint_port": 2222,
+        "dataset": "cowrie",
+        "server": "sensor-01",
+        "operation": "op_test",
+        "session": None,
+        "user_name": user_name,
+        "unmapped_password": unmapped_password,
+        "actor_process_cmd_line": actor_process_cmd_line,
+        "finding_title": None,
+        "finding_uid": None,
+        "geo.country_code": "CN",
+        "geo.asn": "4134",
+        "geo.isp": "ChinaNet",
+        "abuseipdb_confidence_score": 50,
+        "greynoise_classification": "malicious",
+        "greynoise_noise": False,
+    }
+
+
+@pytest.fixture()
+def multi_day_silver_frames() -> list[tuple[date, pl.DataFrame]]:
+    """Build silver frames spanning multiple days for one IP.
+
+    IP 203.0.113.50 ("slow-burn"):
+      Day 1 (Apr 20): network scan only -> stage 1
+      Day 3 (Apr 22): credential attempts -> stage 2
+      Day 5 (Apr 24): successful login + commands -> stage 4
+    """
+    day1 = date(2026, 4, 20)
+    day3 = date(2026, 4, 22)
+    day5 = date(2026, 4, 24)
+
+    ip = "203.0.113.50"
+
+    df1 = pl.DataFrame([
+        _make_silver_row(ip, CLASS_NETWORK_ACTIVITY, datetime(2026, 4, 20, 10, 0, tzinfo=UTC)),
+        _make_silver_row(ip, CLASS_NETWORK_ACTIVITY, datetime(2026, 4, 20, 10, 1, tzinfo=UTC)),
+    ])
+
+    df3 = pl.DataFrame([
+        _make_silver_row(
+            ip, CLASS_AUTHENTICATION, datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
+            status_id=STATUS_FAILURE, user_name="root", unmapped_password="admin",
+        ),
+        _make_silver_row(
+            ip, CLASS_AUTHENTICATION, datetime(2026, 4, 22, 14, 1, tzinfo=UTC),
+            status_id=STATUS_FAILURE, user_name="root", unmapped_password="password",
+        ),
+    ])
+
+    df5 = pl.DataFrame([
+        _make_silver_row(
+            ip, CLASS_AUTHENTICATION, datetime(2026, 4, 24, 8, 0, tzinfo=UTC),
+            status_id=STATUS_SUCCESS, user_name="root", unmapped_password="admin",
+        ),
+        _make_silver_row(
+            ip, CLASS_PROCESS_ACTIVITY, datetime(2026, 4, 24, 8, 1, tzinfo=UTC),
+            actor_process_cmd_line="uname -a",
+        ),
+    ])
+
+    return [(day1, df1), (day3, df3), (day5, df5)]
+
+
+class TestMultiDayBehavioralProgression:
+    def test_ip_tracked_across_days(
+        self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]
+    ) -> None:
+        """IP appears in the multi-day output."""
+        result = compute_behavioral_progression_multiday(multi_day_silver_frames)
+        assert result.height == 1
+        assert result.get_column("src_endpoint_ip").to_list() == ["203.0.113.50"]
+
+    def test_first_last_seen_span_days(
+        self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]
+    ) -> None:
+        """first_seen_date and last_seen_date span the full range."""
+        result = compute_behavioral_progression_multiday(multi_day_silver_frames)
+        row = result.row(0, named=True)
+        assert row["first_seen_date"] == date(2026, 4, 20)
+        assert row["last_seen_date"] == date(2026, 4, 24)
+
+    def test_stage_escalation_across_days(
+        self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]
+    ) -> None:
+        """IP reaches stage 4 (interactive) across the multi-day window."""
+        result = compute_behavioral_progression_multiday(multi_day_silver_frames)
+        row = result.row(0, named=True)
+        assert row["max_stage"] == 4
+        assert row["stage_label"] == "interactive"
+
+    def test_progression_velocity(
+        self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]
+    ) -> None:
+        """Progression velocity is days between first_seen and max stage."""
+        result = compute_behavioral_progression_multiday(multi_day_silver_frames)
+        row = result.row(0, named=True)
+        # First seen Apr 20, interactive stage reached Apr 24 -> 4 days
+        assert row["progression_velocity_days"] == 4
+
+    def test_is_slow_burn(
+        self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]
+    ) -> None:
+        """IP that escalates across days is flagged as slow burn."""
+        result = compute_behavioral_progression_multiday(multi_day_silver_frames)
+        row = result.row(0, named=True)
+        assert row["is_slow_burn"] is True
+
+    def test_active_days(
+        self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]
+    ) -> None:
+        """active_days counts distinct calendar days with events."""
+        result = compute_behavioral_progression_multiday(multi_day_silver_frames)
+        row = result.row(0, named=True)
+        assert row["active_days"] == 3
+
+    def test_single_day_not_slow_burn(self, silver_df: pl.DataFrame) -> None:
+        """Single-day data produces is_slow_burn=False."""
+        frames = [(date(2026, 4, 25), silver_df)]
+        result = compute_behavioral_progression_multiday(frames)
+        # All IPs active on single day only
+        slow_burn = result.filter(pl.col("is_slow_burn"))
+        assert slow_burn.height == 0

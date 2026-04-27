@@ -8,6 +8,7 @@ DataFrame (not LazyFrame) and returns a new DataFrame.
 from __future__ import annotations
 
 import hashlib
+from datetime import date  # noqa: TC003 -- used in function signature
 
 import polars as pl
 
@@ -260,6 +261,121 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
         "first_auth_time", "first_success_time", "first_command_time",
         "unique_passwords", "greynoise_noise",
     )
+
+    return result.sort("max_stage", descending=True)
+
+
+def compute_behavioral_progression_multiday(
+    silver_frames: list[tuple[date, pl.DataFrame]],
+) -> pl.DataFrame:
+    """Compute cross-day behavioral progression for attacker IPs.
+
+    Extends single-day progression by tracking IPs across a multi-day
+    lookback window. Detects slow-burn escalation patterns where an IP
+    scans on day 1, attempts credentials on day 3, and goes interactive
+    on day 5.
+
+    Args:
+        silver_frames: List of (date, silver_df) tuples. Runner provides
+            these by reading multiple days of silver data.
+
+    Returns:
+        DataFrame with one row per unique source IP, including cross-day
+        metrics: first/last seen dates, active days, per-stage first dates,
+        progression velocity, and slow-burn flag.
+    """
+    if not silver_frames:
+        return pl.DataFrame()
+
+    # Concatenate all frames with a report_date column
+    parts: list[pl.DataFrame] = []
+    for report_date, df in silver_frames:
+        if not df.is_empty():
+            parts.append(df.with_columns(pl.lit(report_date).alias("report_date")))
+
+    if not parts:
+        return pl.DataFrame()
+
+    combined = pl.concat(parts, how="diagonal_relaxed")
+
+    if combined.is_empty():
+        return pl.DataFrame()
+
+    cls = pl.col("class_uid")
+    sts = pl.col("status_id")
+
+    # Per-IP aggregations across all days
+    grouped = combined.group_by("src_endpoint_ip").agg(
+        pl.col("report_date").min().alias("first_seen_date"),
+        pl.col("report_date").max().alias("last_seen_date"),
+        pl.col("report_date").n_unique().alias("active_days"),
+        pl.col("time").min().alias("first_seen"),
+        pl.col("time").max().alias("last_seen"),
+        (cls == CLASS_NETWORK_ACTIVITY).sum().alias("scan_events"),
+        (cls == CLASS_AUTHENTICATION).sum().alias("auth_attempts"),
+        ((cls == CLASS_AUTHENTICATION) & (sts == STATUS_SUCCESS)).sum().alias("auth_successes"),
+        (cls == CLASS_PROCESS_ACTIVITY).sum().alias("commands_executed"),
+        # Per-stage first date (date of first event reaching that stage)
+        pl.col("report_date")
+        .filter(cls == CLASS_AUTHENTICATION)
+        .min()
+        .alias("credential_first_date"),
+        pl.col("report_date")
+        .filter((cls == CLASS_AUTHENTICATION) & (sts == STATUS_SUCCESS))
+        .min()
+        .alias("authenticated_first_date"),
+        pl.col("report_date")
+        .filter(cls == CLASS_PROCESS_ACTIVITY)
+        .min()
+        .alias("interactive_first_date"),
+    )
+
+    # Compute max_stage (reuse stage logic)
+    result = grouped.with_columns(
+        pl.when(pl.col("commands_executed") > 0)
+        .then(pl.lit(STAGE_INTERACTIVE))
+        .when(pl.col("auth_successes") > 0)
+        .then(pl.lit(STAGE_AUTHENTICATED))
+        .when(pl.col("auth_attempts") > 0)
+        .then(pl.lit(STAGE_CREDENTIAL))
+        .otherwise(pl.lit(STAGE_SCAN))
+        .alias("max_stage"),
+    )
+
+    # Stage label
+    result = result.with_columns(
+        pl.col("max_stage")
+        .replace_strict(STAGE_LABELS, default="unknown")
+        .alias("stage_label"),
+    )
+
+    # Max stage first date (when the highest stage was first reached)
+    result = result.with_columns(
+        pl.when(pl.col("max_stage") == STAGE_INTERACTIVE)
+        .then(pl.col("interactive_first_date"))
+        .when(pl.col("max_stage") == STAGE_AUTHENTICATED)
+        .then(pl.col("authenticated_first_date"))
+        .when(pl.col("max_stage") == STAGE_CREDENTIAL)
+        .then(pl.col("credential_first_date"))
+        .otherwise(pl.col("first_seen_date"))
+        .alias("max_stage_first_date"),
+    )
+
+    # Progression velocity (days between first_seen_date and max_stage_first_date)
+    result = result.with_columns(
+        (pl.col("max_stage_first_date") - pl.col("first_seen_date"))
+        .dt.total_days()
+        .cast(pl.Int64)
+        .alias("progression_velocity_days"),
+    )
+
+    # Slow burn flag: escalated across 2+ calendar days
+    result = result.with_columns(
+        (pl.col("progression_velocity_days") > 0).alias("is_slow_burn"),
+    )
+
+    # Drop intermediate column
+    result = result.drop("max_stage_first_date")
 
     return result.sort("max_stage", descending=True)
 

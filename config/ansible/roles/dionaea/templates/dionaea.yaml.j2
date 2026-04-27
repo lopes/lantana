@@ -1,0 +1,77 @@
+# /etc/lantana/sensor/dionaea/dionaea.yaml
+# Managed by Ansible
+
+logging:
+  default:
+    handlers:
+      - file
+
+  file:
+    filename: /opt/dionaea/var/log/dionaea/dionaea.log
+
+handlers:
+  log_json:
+    handlers:
+      - file_json
+
+    file_json:
+      filename: /opt/dionaea/var/log/dionaea/dionaea.json
+
+services:
+  ftp:
+    bind:
+      - "0.0.0.0:21"
+      - "[::]:21"
+    banner: "{{ narrative.services.ftp.banner }}"
+
+  http:
+    bind:
+      - "0.0.0.0:80"
+      - "[::]:80"
+    headers:
+      Server: "{{ narrative.services.http.server_header }}"
+    root: /opt/dionaea/var/lib/dionaea/wwwroot
+
+  smb:
+    bind:
+      - "0.0.0.0:445"
+      - "[::]:445"
+    os_type: 2
+    native_os: "{{ narrative.host.os_release }}"
+    native_lm: "{{ narrative.services.smb.server_string }}"
+    workgroup: "{{ narrative.services.smb.workgroup }}"
+
+  epmap:
+    bind:
+      - "0.0.0.0:135"
+      - "[::]:135"
+
+  mssql:
+    bind:
+      - "0.0.0.0:1433"
+      - "[::]:1433"
+    version: "{{ narrative.services.mssql.version }}"
+
+  mysql:
+    bind:
+      - "0.0.0.0:3306"
+      - "[::]:3306"
+    version: "{{ narrative.services.mysql.version }}"
+
+  sip:
+    bind:
+      - "0.0.0.0:5060"
+      - "[::]:5060"
+    udp:
+      - "0.0.0.0:5060"
+      - "[::]:5060"
+
+downloads:
+  dir: /opt/dionaea/var/lib/dionaea/binaries
+  tmp_dir: /opt/dionaea/var/lib/dionaea/tmp
+  max_file_size: 52428800
+
+listen:
+  default:
+    - "0.0.0.0"
+    - "::"

@@ -36,6 +36,21 @@ BRONZE_SURICATA_SCHEMA: dict[str, pl.DataType] = {
     "flow_id": pl.Int64,
 }
 
+BRONZE_DIONAEA_SCHEMA: dict[str, pl.DataType] = {
+    "timestamp": pl.Datetime("us"),
+    "connection_type": pl.Utf8,
+    "connection_transport": pl.Utf8,
+    "connection_protocol": pl.Utf8,
+    "src_ip": pl.Utf8,
+    "src_port": pl.Int64,
+    "dst_ip": pl.Utf8,
+    "dst_port": pl.Int64,
+    "src_hostname": pl.Utf8,
+    "credential_username": pl.Utf8,
+    "credential_password": pl.Utf8,
+    "ftp_command": pl.Utf8,
+}
+
 BRONZE_NFTABLES_SCHEMA: dict[str, pl.DataType] = {
     "timestamp": pl.Datetime("us"),
     "action": pl.Utf8,

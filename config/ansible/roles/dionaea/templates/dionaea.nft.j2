@@ -1,0 +1,44 @@
+# /etc/lantana/honeywall/nftables/sensors/dionaea.nft
+# Managed by Ansible
+
+table ip lantana_nat {
+    chain prerouting {
+        iifname $WAN_IF tcp dport 21 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8021
+        iifname $WAN_IF tcp dport 80 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8080
+        iifname $WAN_IF tcp dport 135 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8135
+        iifname $WAN_IF tcp dport 445 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8445
+        iifname $WAN_IF tcp dport 1433 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8433
+        iifname $WAN_IF tcp dport 3306 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8306
+        iifname $WAN_IF tcp dport 5060 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8060
+        iifname $WAN_IF udp dport 5060 dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8060
+    }
+}
+
+table ip6 lantana_nat6 {
+    chain prerouting {
+        iifname $WAN_IF tcp dport 21 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8021
+        iifname $WAN_IF tcp dport 80 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8080
+        iifname $WAN_IF tcp dport 135 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8135
+        iifname $WAN_IF tcp dport 445 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8445
+        iifname $WAN_IF tcp dport 1433 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8433
+        iifname $WAN_IF tcp dport 3306 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8306
+        iifname $WAN_IF tcp dport 5060 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8060
+        iifname $WAN_IF udp dport 5060 dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8060
+    }
+}
+
+table inet lantana_filter {
+    chain input {
+        ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} tcp dport { 8021, 8080, 8135, 8445, 8433, 8306, 8060 } accept
+        ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} tcp dport { 8021, 8080, 8135, 8445, 8433, 8306, 8060 } accept
+        ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} udp dport 8060 accept
+        ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} udp dport 8060 accept
+    }
+
+    chain forward {
+        ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} tcp dport { 8021, 8080, 8135, 8445, 8433, 8306, 8060 } accept
+        ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} tcp dport { 8021, 8080, 8135, 8445, 8433, 8306, 8060 } accept
+        ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} udp dport 8060 accept
+        ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} udp dport 8060 accept
+    }
+}

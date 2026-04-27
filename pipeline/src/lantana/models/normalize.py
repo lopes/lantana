@@ -443,12 +443,158 @@ def normalize_nftables(df: pl.DataFrame) -> pl.DataFrame:
     return result
 
 
+DIONAEA_FIELD_MAP: dict[str, tuple[str, str, str]] = {
+    # --- Renamed ---
+    "timestamp":             ("time", "rename", "Event timestamp"),
+    "src_ip":                ("src_endpoint_ip", "rename", "Attacker source IP"),
+    "dst_ip":                ("dst_endpoint_ip", "rename", "Honeypot destination IP"),
+    "src_port":              ("src_endpoint_port", "rename", "Attacker source port"),
+    "dst_port":              ("dst_endpoint_port", "rename", "Honeypot destination port"),
+    # --- Mapped ---
+    "connection_protocol":   ("connection_info_protocol_name", "rename", "Service protocol name"),
+    # --- Conditional ---
+    "credential_username":   ("user_name", "conditional", "Login events; null otherwise"),
+    "credential_password":   ("unmapped_password", "conditional", "Login events; credential intel"),
+    "ftp_command":           ("actor_process_cmd_line", "conditional", "FTP command events only"),
+    # --- Preserved ---
+    "connection_transport":  ("connection_transport", "preserve", "TCP/UDP/TLS transport"),
+    "src_hostname":          ("src_hostname", "preserve", "Reverse DNS hostname"),
+}
+
+
+def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
+    """Normalize bronze Dionaea events to OCSF columns.
+
+    Event dispatch:
+    - credential_username present -> Authentication (3002)
+    - ftp_command present         -> Process Activity (1007)
+    - other connections           -> Network Activity (4001)
+
+    Bronze fields are pre-flattened by Vector (connection.* -> connection_*,
+    credentials[] -> credential_username/credential_password).
+    """
+    if df.is_empty():
+        return df
+
+    has_credential = (
+        pl.col("credential_username").is_not_null()
+        & (pl.col("credential_username") != "")
+    ) if "credential_username" in df.columns else pl.lit(False)
+
+    has_ftp_command = (
+        pl.col("ftp_command").is_not_null()
+        & (pl.col("ftp_command") != "")
+    ) if "ftp_command" in df.columns else pl.lit(False)
+
+    # OCSF metadata columns + conditional field mappings
+    result = df.with_columns(
+        # class_uid dispatch
+        pl.when(has_credential)
+        .then(pl.lit(CLASS_AUTHENTICATION))
+        .when(has_ftp_command)
+        .then(pl.lit(CLASS_PROCESS_ACTIVITY))
+        .otherwise(pl.lit(CLASS_NETWORK_ACTIVITY))
+        .alias("class_uid"),
+        # category_uid
+        pl.when(has_credential)
+        .then(pl.lit(CATEGORY_IAM))
+        .when(has_ftp_command)
+        .then(pl.lit(CATEGORY_SYSTEM))
+        .otherwise(pl.lit(CATEGORY_NETWORK))
+        .alias("category_uid"),
+        # severity_id: credentials=MEDIUM, commands=MEDIUM, connections=LOW
+        pl.when(has_credential)
+        .then(pl.lit(SEVERITY_MEDIUM))
+        .when(has_ftp_command)
+        .then(pl.lit(SEVERITY_MEDIUM))
+        .otherwise(pl.lit(SEVERITY_LOW))
+        .alias("severity_id"),
+        # activity_id: 1=Logon for auth, 1=Launch for command, 0=Unknown for connection
+        pl.when(has_credential)
+        .then(pl.lit(1))
+        .when(has_ftp_command)
+        .then(pl.lit(1))
+        .otherwise(pl.lit(0))
+        .alias("activity_id"),
+        # status_id: unknown for all (Dionaea doesn't track login success/failure)
+        pl.lit(STATUS_UNKNOWN).alias("status_id"),
+        # Metadata
+        pl.lit(OCSF_VERSION).alias("metadata_version"),
+        pl.lit(PRODUCT_NAME).alias("metadata_product_name"),
+        # Auth-specific: user_name (from credential_username)
+        pl.when(has_credential)
+        .then(pl.col("credential_username"))
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("user_name"),
+        # Auth-specific: unmapped_password (from credential_password)
+        pl.when(has_credential)
+        .then(
+            pl.col("credential_password")
+            if "credential_password" in df.columns
+            else pl.lit(None)
+        )
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("unmapped_password"),
+        # is_cleartext (honeypots always see plaintext credentials)
+        pl.when(has_credential)
+        .then(pl.lit(True))
+        .otherwise(pl.lit(None))
+        .alias("is_cleartext"),
+        # Process-specific: actor_process_cmd_line (from ftp_command)
+        pl.when(has_ftp_command)
+        .then(
+            pl.col("ftp_command")
+            if "ftp_command" in df.columns
+            else pl.lit(None)
+        )
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("actor_process_cmd_line"),
+    )
+
+    # type_uid = class_uid * 100 + activity_id
+    result = result.with_columns(
+        (pl.col("class_uid") * 100 + pl.col("activity_id")).alias("type_uid"),
+    )
+
+    # message from connection_protocol + connection_type
+    result = result.with_columns(
+        (pl.col("connection_protocol") + " " + pl.col("connection_type")).alias("message"),
+    )
+
+    # Rename shared columns
+    rename_map: dict[str, str] = {
+        "src_ip": "src_endpoint_ip",
+        "dst_ip": "dst_endpoint_ip",
+        "src_port": "src_endpoint_port",
+        "dst_port": "dst_endpoint_port",
+        "timestamp": "time",
+        "connection_protocol": "connection_info_protocol_name",
+    }
+    rename_map = {k: v for k, v in rename_map.items() if k in result.columns}
+    result = result.rename(rename_map)
+
+    # Drop raw columns consumed into OCSF equivalents
+    drop_cols = [
+        c
+        for c in ("connection_type", "credential_username", "credential_password", "ftp_command")
+        if c in result.columns
+    ]
+    if drop_cols:
+        result = result.drop(drop_cols)
+
+    return result
+
+
 def normalize_dataset(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
     """Dispatch normalization to the correct per-dataset function."""
     normalizers = {
         "cowrie": normalize_cowrie,
         "suricata": normalize_suricata,
         "nftables": normalize_nftables,
+        "dionaea": normalize_dionaea,
     }
     normalizer = normalizers.get(dataset)
     if normalizer is None:

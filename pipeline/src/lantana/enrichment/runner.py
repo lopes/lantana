@@ -28,6 +28,7 @@ from lantana.common.redact import RedactionConfig, redact_infrastructure_ips, va
 from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.base import EnrichmentResult
 from lantana.enrichment.providers.greynoise import GreyNoiseProvider
+from lantana.enrichment.providers.phishstats import PhishStatsProvider
 from lantana.enrichment.providers.shodan import ShodanProvider
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
 from lantana.models.normalize import normalize_dataset
@@ -37,7 +38,7 @@ logger = structlog.get_logger()
 CACHE_DB_PATH = Path("/var/lib/lantana/datalake/.enrichment_cache.db")
 CACHE_TTL_DAYS = 7
 
-DATASETS = ["cowrie", "suricata", "nftables"]
+DATASETS = ["cowrie", "suricata", "nftables", "dionaea"]
 
 
 def _init_cache(db_path: Path) -> sqlite3.Connection:
@@ -98,7 +99,7 @@ def _extract_unique_ips(df: pl.DataFrame) -> list[str]:
 
 def _extract_unique_hashes(df: pl.DataFrame, sensor_dir: Path) -> list[str]:
     """Scan artifact directories for file hashes to enrich."""
-    download_dirs = list(sensor_dir.glob("*/downloads"))
+    download_dirs = list(sensor_dir.glob("*/downloads")) + list(sensor_dir.glob("*/binaries"))
     hashes: set[str] = set()
     for download_dir in download_dirs:
         for file_path in download_dir.iterdir():
@@ -144,9 +145,14 @@ def _merge_enrichments(
     )
 
 
+_ProviderType = (
+    AbuseIPDBProvider | GreyNoiseProvider | PhishStatsProvider | ShodanProvider | VirusTotalProvider
+)
+
+
 async def _enrich_ips_with_provider(
     provider_name: str,
-    provider: AbuseIPDBProvider | GreyNoiseProvider | ShodanProvider | VirusTotalProvider,
+    provider: _ProviderType,
     ips: list[str],
     cache: sqlite3.Connection,
 ) -> list[EnrichmentResult]:
@@ -183,12 +189,10 @@ async def run_enrichment(
     cache = _init_cache(cache_db_path)
 
     # Initialize providers
-    providers: dict[
-        str,
-        AbuseIPDBProvider | GreyNoiseProvider | ShodanProvider | VirusTotalProvider,
-    ] = {
+    providers: dict[str, _ProviderType] = {
         "abuseipdb": AbuseIPDBProvider(secrets.abuseipdb),
         "greynoise": GreyNoiseProvider(secrets.greynoise),
+        "phishstats": PhishStatsProvider(secrets.phishstats),
         "shodan": ShodanProvider(secrets.shodan),
         "virustotal": VirusTotalProvider(secrets.virustotal),
     }
@@ -214,7 +218,7 @@ async def run_enrichment(
                 logger.info("provider_done", provider=name, enriched=len(results))
 
             # Enrich file hashes with VirusTotal
-            if dataset == "cowrie":
+            if dataset in ("cowrie", "dionaea"):
                 hashes = _extract_unique_hashes(df, sensor_dir)
                 vt = providers["virustotal"]
                 assert isinstance(vt, VirusTotalProvider)

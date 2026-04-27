@@ -11,6 +11,10 @@ ansible_private_key_file: "~/.ssh/id_ed25519"
 lantana:
   mode: "single" # Options: single, multi
 
+sensor_honeypots:
+  - cowrie
+  - dionaea
+
 system:
   users:
     sensor: # Unprivileged user for sensor ownership

@@ -28,3 +28,14 @@ narrative:
     ssh:
       # SSH version must follow RFC 4253 standard
       version: "SSH-2.0-OpenSSH_5.9p1 Debian-5ubuntu1.4"
+    ftp:
+      banner: "220 ProFTPD 1.3.3a Server (finasol-mx-prod-01)"
+    http:
+      server_header: "Apache/2.2.22 (Ubuntu)"
+    smb:
+      workgroup: "FINASOL"
+      server_string: "Samba 3.6.6"
+    mysql:
+      version: "5.5.29-0ubuntu0.12.04.2"
+    mssql:
+      version: "Microsoft SQL Server 2008 R2"

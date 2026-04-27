@@ -11,8 +11,12 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path  # noqa: TC003 -- used in function defaults
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    import polars as pl
 
 from lantana.common.datalake import (
     GOLD_ROOT,
@@ -22,10 +26,13 @@ from lantana.common.datalake import (
 )
 from lantana.transform.metrics import (
     compute_behavioral_progression,
+    compute_behavioral_progression_multiday,
     compute_campaign_clusters,
     compute_daily_summary,
     compute_ip_reputation,
 )
+
+LOOKBACK_DAYS: int = 7
 
 logger = structlog.get_logger()
 
@@ -62,6 +69,23 @@ def run_transform(
             logger.info("gold_written", table=table_name, rows=len(result))
         else:
             logger.info("gold_skip_empty", table=table_name)
+
+    # Multi-day behavioral progression (lookback window)
+    lookback_frames: list[tuple[date, pl.DataFrame]] = []
+    for offset in range(LOOKBACK_DAYS):
+        d = target_date - timedelta(days=offset)
+        lf = read_silver_partition(d, silver_root=silver_root)
+        day_df = lf.collect()
+        if not day_df.is_empty():
+            lookback_frames.append((d, day_df))
+
+    if lookback_frames:
+        multiday = compute_behavioral_progression_multiday(lookback_frames)
+        if not multiday.is_empty():
+            write_gold_table(
+                multiday, "behavioral_progression_multiday", target_date, gold_root=gold_root,
+            )
+            logger.info("gold_written", table="behavioral_progression_multiday", rows=len(multiday))
 
     logger.info("transform_done", date=target_date.isoformat())
 

@@ -111,6 +111,33 @@ def sample_bronze_nftables_ndjson() -> str:
 
 
 @pytest.fixture()
+def sample_bronze_dionaea_ndjson() -> str:
+    """Return sample NDJSON lines representing bronze Dionaea events.
+
+    Fields are pre-flattened by Vector (connection.* -> connection_*,
+    credentials[] -> credential_username/credential_password).
+    3 event types: SMB connection, MySQL credential, FTP command.
+    """
+    return (
+        '{"timestamp":"2026-04-25T10:00:00","connection_type":"accept",'
+        '"connection_transport":"tcp","connection_protocol":"smbd",'
+        '"src_ip":"203.0.113.50","src_port":54321,'
+        '"dst_ip":"10.50.99.100","dst_port":445,'
+        '"src_hostname":""}\n'
+        '{"timestamp":"2026-04-25T10:01:00","connection_type":"accept",'
+        '"connection_transport":"tcp","connection_protocol":"mysqld",'
+        '"src_ip":"198.51.100.22","src_port":12345,'
+        '"dst_ip":"10.50.99.100","dst_port":3306,'
+        '"src_hostname":"","credential_username":"root","credential_password":"admin"}\n'
+        '{"timestamp":"2026-04-25T10:02:00","connection_type":"accept",'
+        '"connection_transport":"tcp","connection_protocol":"ftpd",'
+        '"src_ip":"203.0.113.50","src_port":54322,'
+        '"dst_ip":"10.50.99.100","dst_port":21,'
+        '"src_hostname":"","ftp_command":"USER anonymous"}\n'
+    )
+
+
+@pytest.fixture()
 def tmp_datalake(tmp_path: Path) -> Path:
     """Create a temporary datalake directory structure for testing."""
     for layer in ("bronze", "silver", "gold"):

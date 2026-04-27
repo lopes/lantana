@@ -1,0 +1,53 @@
+# /etc/containers/systemd/{{ system.users.sensor.name }}/dionaea.container
+# Managed by Ansible
+
+[Unit]
+Description=Dionaea Malware Honeypot Sensor
+After=network-online.target
+
+[Container]
+Image=docker.io/dinotools/dionaea:latest
+ContainerName=sensor-dionaea
+Network=pasta
+
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8021:21
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8021:21
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8080:80
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8080:80
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8135:135
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8135:135
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8445:445
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8445:445
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8433:1433
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8433:1433
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8306:3306
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8306:3306
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8060:5060
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8060:5060
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8060:5060/udp
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8060:5060/udp
+
+# Hardening settings
+DropCapability=ALL
+NoNewPrivileges=true
+ReadOnly=true
+VolatileTmp=true
+SecurityLabelDisable=false
+HealthCheck=CMD-SHELL echo | nc -w 3 localhost 445 || exit 1
+HealthCheckInterval=30s
+HealthCheckTimeout=5s
+HealthCheckRetries=3
+
+# Resource limits (higher than Cowrie: handles more protocols + stores malware)
+PodmanArgs=--cpus=1.0 --memory=512m
+
+# Volumes: Z/z for SELinux isolation, U for subUID ownership mapping
+Volume=/etc/lantana/sensor/dionaea/dionaea.yaml:/opt/dionaea/etc/dionaea/dionaea.yaml:ro,Z
+Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw,z,U
+Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw,z,U
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

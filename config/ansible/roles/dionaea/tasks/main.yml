@@ -1,0 +1,135 @@
+---
+# --- SYSTEM PREPARATION ---
+- name: "Create Dionaea configuration directory"
+  become: true
+  ansible.builtin.file:
+    path: /etc/lantana/sensor/dionaea
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  tags: [dionaea]
+
+- name: "Create Dionaea data directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0755"
+  loop:
+    - /var/log/lantana/sensor/dionaea
+    - /var/lib/lantana/sensor/dionaea
+  tags: [dionaea]
+
+- name: "Create Dionaea artifact directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0775"
+  loop:
+    - /var/lib/lantana/sensor/dionaea/binaries
+    - /var/lib/lantana/sensor/dionaea/wwwroot
+    - /var/lib/lantana/sensor/dionaea/tmp
+  tags: [dionaea]
+
+- name: "Enable linger for sensor-user"
+  become: true
+  ansible.builtin.command: "loginctl enable-linger {{ system.users.sensor.name }}"
+  args:
+    creates: "/var/lib/systemd/linger/{{ system.users.sensor.name }}"
+  tags: [dionaea]
+
+# --- CONFIGURATION FILES ---
+- name: "Deploy Dionaea configuration template"
+  become: true
+  ansible.builtin.template:
+    src: "dionaea.yaml.j2"
+    dest: /etc/lantana/sensor/dionaea/dionaea.yaml
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  tags: [dionaea]
+
+- name: "Create the sensor-user Quadlet directory"
+  become: true
+  ansible.builtin.file:
+    dest: "/home/{{ system.users.sensor.name }}/.config/containers/"
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0700"
+  tags: [dionaea]
+
+- name: "Ensure the Quadlet folder is root-owned"
+  become: true
+  ansible.builtin.file:
+    path: "/home/{{ system.users.sensor.name }}/.config/containers/systemd"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  tags: [dionaea]
+
+- name: "Deploy Quadlet definition"
+  become: true
+  ansible.builtin.template:
+    src: dionaea.container.j2
+    dest: "/home/{{ system.users.sensor.name }}/.config/containers/systemd/dionaea.container"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  tags: [dionaea]
+
+- name: "Start Dionaea container"
+  become: true
+  become_user: "{{ system.users.sensor.name }}"
+  ansible.builtin.systemd:
+    name: "dionaea"
+    state: started
+    enabled: true
+    scope: user
+    daemon_reload: true
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+  tags: [dionaea]
+
+- name: "Publish the Dionaea ports"
+  become: true
+  ansible.builtin.template:
+    src: dionaea.nft.j2
+    dest: /etc/lantana/honeywall/nftables/sensors/dionaea.nft
+    owner: "root"
+    group: "root"
+    mode: "0600"
+  tags: [dionaea, nftables]
+
+- name: "Reload nftables for Dionaea"
+  become: true
+  ansible.builtin.service:
+    name: nftables
+    state: reloaded
+  tags: [dionaea, nftables]
+
+# --- LOGGING ---
+- name: "Deploy Vector configuration"
+  become: true
+  ansible.builtin.template:
+    src: dionaea.vector.yaml.j2
+    dest: /etc/vector/conf.d/dionaea.yaml
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  tags: [dionaea, vector]
+
+- name: "Restart Vector"
+  become: true
+  ansible.builtin.service:
+    name: vector
+    state: restarted
+    enabled: true
+  tags: [dionaea, vector]

@@ -10,6 +10,7 @@ import pytest
 from lantana.models.normalize import (
     normalize_cowrie,
     normalize_dataset,
+    normalize_dionaea,
     normalize_nftables,
     normalize_suricata,
 )
@@ -277,6 +278,113 @@ class TestNormalizeNftables:
 
 
 # ---------------------------------------------------------------------------
+# Dionaea normalization
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeDionaea:
+    def test_connection_maps_to_network_activity(
+        self, sample_bronze_dionaea_ndjson: str
+    ) -> None:
+        """Plain connection (no credentials/commands) -> class_uid=4001."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        smb_row = result.filter(pl.col("connection_info_protocol_name") == "smbd")
+        assert smb_row.height == 1
+        row = smb_row.row(0, named=True)
+        assert row["class_uid"] == CLASS_NETWORK_ACTIVITY
+        assert row["category_uid"] == 4
+
+    def test_credential_maps_to_authentication(
+        self, sample_bronze_dionaea_ndjson: str
+    ) -> None:
+        """Event with credential_username -> class_uid=3002."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        auth_rows = result.filter(pl.col("class_uid") == CLASS_AUTHENTICATION)
+        assert auth_rows.height == 1
+        row = auth_rows.row(0, named=True)
+        assert row["user_name"] == "root"
+        assert row["unmapped_password"] == "admin"
+        assert row["category_uid"] == 3
+
+    def test_ftp_command_maps_to_process_activity(
+        self, sample_bronze_dionaea_ndjson: str
+    ) -> None:
+        """Event with ftp_command -> class_uid=1007."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        cmd_rows = result.filter(pl.col("class_uid") == CLASS_PROCESS_ACTIVITY)
+        assert cmd_rows.height == 1
+        row = cmd_rows.row(0, named=True)
+        assert row["actor_process_cmd_line"] == "USER anonymous"
+
+    def test_column_renames(self, sample_bronze_dionaea_ndjson: str) -> None:
+        """Bronze columns renamed to OCSF equivalents."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        assert "src_endpoint_ip" in result.columns
+        assert "dst_endpoint_ip" in result.columns
+        assert "src_endpoint_port" in result.columns
+        assert "dst_endpoint_port" in result.columns
+        assert "time" in result.columns
+        # Original names should not remain
+        assert "src_ip" not in result.columns
+        assert "dst_ip" not in result.columns
+        assert "timestamp" not in result.columns
+
+    def test_metadata_columns(self, sample_bronze_dionaea_ndjson: str) -> None:
+        """Every row has OCSF metadata columns."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        assert result.get_column("metadata_version").unique().to_list() == [OCSF_VERSION]
+        assert result.get_column("metadata_product_name").unique().to_list() == [PRODUCT_NAME]
+
+    def test_protocol_preserved(self, sample_bronze_dionaea_ndjson: str) -> None:
+        """connection_protocol preserved as connection_info_protocol_name."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        assert "connection_info_protocol_name" in result.columns
+        assert "connection_protocol" not in result.columns
+        protocols = result.get_column("connection_info_protocol_name").to_list()
+        assert "smbd" in protocols
+        assert "mysqld" in protocols
+        assert "ftpd" in protocols
+
+    def test_transport_preserved(self, sample_bronze_dionaea_ndjson: str) -> None:
+        """connection_transport preserved for network analysis."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        assert "connection_transport" in result.columns
+
+    def test_password_preserved_for_credential_events(
+        self, sample_bronze_dionaea_ndjson: str
+    ) -> None:
+        """credential_password mapped to unmapped_password for credential intel."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        assert "unmapped_password" in result.columns
+        assert "credential_password" not in result.columns
+        auth_rows = result.filter(pl.col("class_uid") == CLASS_AUTHENTICATION)
+        passwords = auth_rows.get_column("unmapped_password").to_list()
+        assert "admin" in passwords
+
+    def test_severity_by_event_type(self, sample_bronze_dionaea_ndjson: str) -> None:
+        """Credentials=MEDIUM, commands=MEDIUM, connections=LOW."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        # Connection event (SMB): LOW=2
+        smb = result.filter(pl.col("class_uid") == CLASS_NETWORK_ACTIVITY)
+        assert smb.get_column("severity_id").to_list() == [2]
+        # Credential event (MySQL): MEDIUM=3
+        auth = result.filter(pl.col("class_uid") == CLASS_AUTHENTICATION)
+        assert auth.get_column("severity_id").to_list() == [3]
+        # Command event (FTP): MEDIUM=3
+        cmd = result.filter(pl.col("class_uid") == CLASS_PROCESS_ACTIVITY)
+        assert cmd.get_column("severity_id").to_list() == [3]
+
+
+# ---------------------------------------------------------------------------
 # Dataset dispatcher
 # ---------------------------------------------------------------------------
 
@@ -295,6 +403,11 @@ class TestNormalizeDataset:
     def test_dispatches_nftables(self, sample_bronze_nftables_ndjson: str) -> None:
         df = _ndjson_to_df(sample_bronze_nftables_ndjson)
         result = normalize_dataset(df, "nftables")
+        assert "class_uid" in result.columns
+
+    def test_dispatches_dionaea(self, sample_bronze_dionaea_ndjson: str) -> None:
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dataset(df, "dionaea")
         assert "class_uid" in result.columns
 
     def test_unknown_dataset_raises(self) -> None:
