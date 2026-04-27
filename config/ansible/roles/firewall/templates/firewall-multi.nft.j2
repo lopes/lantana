@@ -1,106 +1,108 @@
-# NEED TO VALIDATE LOGIC.
-
 #!/usr/sbin/nft -f
 # /etc/lantana/honeywall/nftables/firewall.nft
-# Managed by Ansible
+# Managed by Ansible — Multi-node deployment
 
-flush ruleset
-
-define admin_ssh_port = {{ ansible_port }}
-
-# Backend Definitions
-define target_ssh_telnet = 10.0.1.2
-define target_web = 10.0.1.3
-
-# -------------------------------------------------------------------
-# NAT TABLE: Handles Port Forwarding (DNAT)
-# -------------------------------------------------------------------
-# Update the table definition to 'inet' to support both v4 and v6
-table inet lantana_nat {
+# --- NAT TABLE: Port Forwarding (DNAT) + Masquerade ---
+table ip lantana_nat {
     chain prerouting {
         type nat hook prerouting priority -100; policy accept;
-
-        # IPv4 DNAT
-        ip daddr <YOUR_PUBLIC_IPV4> tcp dport { 22, 23 } dnat to 10.0.1.2
-        ip daddr <YOUR_PUBLIC_IPV4> tcp dport { 80, 443 } dnat to 10.0.1.3
-
-        # IPv6 DNAT (If you are NATing IPv6 to internal private IPv6)
-        # Note: You need to define the internal IPv6 addresses first
-        # ip6 daddr <YOUR_PUBLIC_IPV6> tcp dport { 22, 23 } dnat to <INTERNAL_IPV6_A>
-        # ip6 daddr <YOUR_PUBLIC_IPV6> tcp dport { 80, 443 } dnat to <INTERNAL_IPV6_B>
+        # Plugins hook here for DNAT (loaded from sensors/*.nft)
     }
-
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
+
+        # Masquerade sensor egress traffic
+        ip saddr $SENSOR_IP4 oifname $WAN_IF masquerade
     }
 }
 
-# -------------------------------------------------------------------
-# FILTER TABLE: Handles Security & Logging
-# -------------------------------------------------------------------
-table inet lantana_guard {
+table ip6 lantana_nat6 {
+    chain prerouting {
+        type nat hook prerouting priority -100; policy accept;
+    }
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+        ip6 saddr $SENSOR_IP6 oifname $WAN_IF masquerade
+    }
+}
+
+# --- FILTER TABLE ---
+table inet lantana_filter {
     set allowed_egress_ports {
         type inet_service
         elements = { 53, 80, 123, 443 }
     }
 
-    # 1. GATE: The Logic Core
-    chain lockdown_gate {
-        return
-    }
-
-    # 2. INPUT DEFENSE: Traffic destined for the Firewall itself
-    chain host_defense {
+    # 1. INPUT: Traffic destined for the honeywall itself
+    chain input {
         type filter hook input priority 0; policy drop;
 
-        # Allow Loopback
+        # Core safety & state
         iifname "lo" accept
-
-        # Allow Established connections
         ct state established,related accept
+        ct state invalid drop
 
-        # Allow Admin SSH (on custom port)
-        tcp dport $admin_ssh_port accept
+        # Anti-evasion: block rogue RAs on LAN
+        iifname $LAN_IF icmpv6 type nd-router-advert drop
 
-        # Allow IPv6 Neighbor Discovery
-        icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+        # Management: admin SSH on custom port
+        tcp dport {{ ansible_port }} accept
 
-        # Log and Drop anything else hitting the firewall directly
-        ct state new counter log prefix "[LANTANA_INPUT_DROP] "
+        # Allow Vector telemetry from sensors and collectors on LAN
+        iifname $LAN_IF ip saddr $COLLECTOR_IP4 tcp dport {{ network.collectors.collector_01.port }} accept
+        iifname $LAN_IF ip6 saddr $COLLECTOR_IP6 tcp dport {{ network.collectors.collector_01.port }} accept
+
+        # ICMP/ICMPv6 - rate limited
+        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, echo-request, echo-reply } limit rate 10/second burst 20 packets accept
+        ip protocol icmp icmp type echo-request limit rate 10/second burst 20 packets accept
+        ip protocol icmp icmp type { destination-unreachable, time-exceeded } accept
     }
 
-    # 3. FORWARD DEFENSE: Traffic passing THROUGH to Backends
-    chain forward_defense {
+    # 2. FORWARD: Traffic passing through the honeywall
+    chain forward {
         type filter hook forward priority 0; policy drop;
 
-        # Allow established traffic to flow back and forth
+        # Core state
         ct state established,related accept
+        ct state invalid drop
 
-        # Log new forwarded connections (The Honeypot Traffic)
-        ct state new counter log prefix "[LANTANA_FORWARD_HONEYPOT] "
-
-        # [GATE] Check Defcon Status
-        jump lockdown_gate
-
-        # Explicitly allow the forwarded traffic defined in NAT
-        ip daddr $target_ssh_telnet tcp dport { 22, 23 } accept
-        ip daddr $target_web tcp dport { 80, 443 } accept
+        # Strict egress containment: block new outbound from sensors
+        iifname $LAN_IF oifname $WAN_IF ct state new limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP_EGRESS] " drop
     }
 
-    # 4. EGRESS: Traffic initiated by the Firewall itself
-    chain egress_host {
+    # 3. OUTPUT: Traffic initiated by the honeywall itself
+    chain output {
         type filter hook output priority 0; policy drop;
 
+        # Core traffic
         oifname "lo" accept
         ct state established,related accept
 
-        # ICMPv6 necessary for network operation
-        icmpv6 type { echo-request, echo-reply, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+        # Allow LAN communication (honeywall to sensors/collectors)
+        oifname $LAN_IF accept
 
-        # Allow Firewall to update, sync time, and run DNS
+        # Maintenance: DNS, HTTP, NTP, HTTPS
         udp dport @allowed_egress_ports accept
         tcp dport @allowed_egress_ports accept
 
-        log prefix "[LANTANA_OUTPUT_BLOCK] "
+        # ICMP/ICMPv6
+        ip protocol icmp accept
+        meta l4proto icmpv6 accept
+
+        # Log drops
+        limit rate 5/minute log prefix "[LANTANA_OUTPUT_DROP] "
+    }
+}
+
+# --- LOAD PLUGINS ---
+include "/etc/lantana/honeywall/nftables/sensors/*.nft"
+
+# --- TRAILING RULES: TSHOOT LOGGING & DROP ---
+table inet lantana_filter {
+    chain input {
+        limit rate 10/minute burst 5 packets log prefix "[LANTANA_INPUT_DROP] "
+    }
+    chain forward {
+        limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP] "
     }
 }

@@ -50,9 +50,10 @@ table inet lantana_filter {
         iifname $SENSOR_IF ip saddr $COLLECTOR_IPS_V4 tcp dport {{ network.collectors.collector_01.port }} accept
         iifname $SENSOR_IF ip6 saddr $COLLECTOR_IPS_V6 tcp dport {{ network.collectors.collector_01.port }} accept
 
-        # 4. ICMP/v6
-        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, echo-request, echo-reply } accept
-        ip protocol icmp accept
+        # 4. ICMP/v6 - rate limited
+        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, echo-request, echo-reply } limit rate 10/second burst 20 packets accept
+        ip protocol icmp icmp type echo-request limit rate 10/second burst 20 packets accept
+        ip protocol icmp icmp type { destination-unreachable, time-exceeded } accept
     }
 
     chain forward {
