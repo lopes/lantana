@@ -1,9 +1,24 @@
 #!/bin/bash
 # /usr/local/sbin/lantana-prune
 # Managed by Ansible
+# NOTE: This shell script is a temporary placeholder. Phase 1 replaces it
+# with a Python implementation (lantana-prune entry point) that adds disk
+# monitoring and Discord notifications.
+
+set -euo pipefail
 
 LAKE_DIR="/var/lib/lantana/datalake"
-DATE=$(date +%Y-%m-%d)
+SENSOR_DIR="/var/lib/lantana/sensor"
 RETENTION_DAYS=180
 
-find "$LAKE_DIR" -name "*.parquet" -type f -mtime +"$RETENTION_DAYS" -delete
+# Prune datalake files (Parquet and JSON)
+find "$LAKE_DIR" \( -name "*.parquet" -o -name "*.json" \) -type f -mtime +"$RETENTION_DAYS" -delete
+
+# Prune honeypot artifacts (downloads, TTY recordings)
+if [ -d "$SENSOR_DIR" ]; then
+    find "$SENSOR_DIR" -path "*/downloads/*" -type f -mtime +"$RETENTION_DAYS" -delete
+    find "$SENSOR_DIR" -path "*/tty/*" -type f -mtime +"$RETENTION_DAYS" -delete
+fi
+
+# Clean up empty directories
+find "$LAKE_DIR" -type d -empty -delete 2>/dev/null || true
