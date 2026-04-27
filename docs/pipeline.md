@@ -80,14 +80,30 @@ For each dataset (cowrie, suricata, nftables):
 
 ### 3.2 Silver to Gold (daily aggregation)
 
-Entry point: `lantana-transform` (planned, not yet implemented).
+Entry point: `lantana-transform` (runs for yesterday's data by default).
 
-Reads silver Parquet and produces aggregated gold tables:
+Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes 4 gold tables:
 
-- **Daily summary**: Event counts, unique IPs, top credentials, protocol distribution
-- **IP reputation**: Per-IP risk scores combining API enrichment with behavioral signals
-- **Behavioral progression**: Scanner-to-escalation tracking per IP over time
-- **Campaign clusters**: Attack pattern grouping by shared credentials, commands, or timing
+#### daily_summary (1 row per date)
+Aggregate counts and top-10 lists: total events, unique IPs, auth attempts/successes/failures, commands executed, findings detected, network events. Top-N lists for usernames, passwords, commands, source countries, and source IPs.
+
+#### ip_reputation (1 row per unique source IP)
+Per-IP risk profile. Risk score (0-100) weighted composite: AbuseIPDB confidence (30%), auth success (+20), command execution (+25), detection finding (+15), volume (+10 capped). Includes GeoIP, enrichment data, and dataset cross-references.
+
+#### behavioral_progression (1 row per unique source IP)
+Escalation tracking -- the project's core intelligence feature. Classifies each IP into stages:
+
+| Stage | Label | Criteria |
+| --- | --- | --- |
+| 1 | scan | Only network events (nftables) |
+| 2 | credential | Login attempts present |
+| 3 | authenticated | At least one successful login |
+| 4 | interactive | Commands executed post-auth |
+
+Includes escalation timing (seconds between stages), session counts, and automated bot detection heuristic (rapid credential stuffing with >10 attempts and >5 unique passwords within 120 seconds, or GreyNoise noise flag).
+
+#### campaign_clusters (1 row per cluster)
+Groups IPs by shared credential pairs (username + password). Only clusters with >= 2 unique IPs. Surfaces botnet-scale credential stuffing campaigns.
 
 ### 3.3 Intelligence Output
 
