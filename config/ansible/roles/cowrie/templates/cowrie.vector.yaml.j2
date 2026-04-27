@@ -20,3 +20,14 @@ transforms:
       }
       .dataset = "cowrie"
       .server = "{{ inventory_hostname }}"
+      .operation = "{{ narrative.operation_name }}"
+
+  filter_cowrie:
+    type: filter
+    inputs:
+      - tag_cowrie
+    condition:
+      type: vrl
+      source: |-
+        src = to_string(.src_ip) ?? ""
+        !starts_with(src, "127.") && src != "::1" && !ip_cidr_contains!("{{ network.prefixes.ipv4 }}", src) && !ip_cidr_contains!("{{ network.prefixes.ipv6 }}", src)
