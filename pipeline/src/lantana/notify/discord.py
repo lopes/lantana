@@ -65,4 +65,53 @@ async def send_notification(
 
 def generate_and_send() -> None:
     """CLI entry point for lantana-report: generate daily report and send to Discord."""
-    raise NotImplementedError("TODO -- task 1.10")
+    import asyncio
+    import tempfile
+    from datetime import date, timedelta
+    from pathlib import Path
+
+    from lantana.common.config import load_reporting, load_secrets
+    from lantana.common.datalake import read_gold_table
+    from lantana.notify.report import generate_daily_brief, generate_embed_summary
+
+    yesterday = date.today() - timedelta(days=1)
+    secrets = load_secrets()
+    reporting = load_reporting()
+
+    if not secrets.discord_webhook:
+        logger.warning("no_discord_webhook", hint="Set discord_webhook in secrets.json")
+        return
+
+    # Read gold tables
+    summary = read_gold_table("daily_summary", yesterday)
+    reputation = read_gold_table("ip_reputation", yesterday)
+    progression = read_gold_table("behavioral_progression", yesterday)
+    clusters = read_gold_table("campaign_clusters", yesterday)
+
+    # Generate report
+    brief = generate_daily_brief(
+        yesterday, summary, reputation, progression, clusters,
+        reporting.operation.name,
+    )
+    embed_text = generate_embed_summary(yesterday, summary, progression)
+
+    # Write report to temp file for attachment
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".md",
+        prefix=f"lantana-brief-{yesterday.isoformat()}-",
+        delete=False,
+    ) as f:
+        f.write(brief)
+        report_path = Path(f.name)
+
+    try:
+        asyncio.run(send_notification(
+            webhook_url=secrets.discord_webhook,
+            level="info",
+            title=f"Lantana Daily Brief -- {yesterday.isoformat()}",
+            message=embed_text,
+            attachment_path=str(report_path),
+        ))
+    finally:
+        report_path.unlink(missing_ok=True)
