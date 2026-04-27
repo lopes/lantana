@@ -9,7 +9,7 @@ ansible_private_key_file: "~/.ssh/id_ed25519"
 
 # --- LANTANA PLATFORM CONFIGURATION ---
 lantana:
-  mode: "single" # Options: single, multi
+  mode: "multi" # Options: single, multi
 
 system:
   users:

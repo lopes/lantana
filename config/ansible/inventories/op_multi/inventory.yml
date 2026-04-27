@@ -1,12 +1,5 @@
 all:
   children:
-    single_nodes:
-      hosts:
-        sn-01:
-          ansible_host: 192.168.1.10
-          node_hostname: sn-01
-          honeywallde_role: "single node sensor"
-
     honeywall_nodes:
       hosts:
         honeywall-01:
@@ -20,7 +13,7 @@ all:
           ansible_host: 192.168.1.12
           node_hostname: low-01
           node_role: "low-interaction sensor"
-          honeypots:
+          sensor_honeypots:
             - cowrie
             - dionaea
 
@@ -29,7 +22,7 @@ all:
         high-01:
           ansible_host: 192.168.1.13
           node_hostname: high-01
-        collectornode_role: "high-interaction sensor"
+          node_role: "high-interaction sensor"
 
     collector_nodes:
       hosts:

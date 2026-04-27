@@ -1,0 +1,30 @@
+---
+# --- NETWORK TOPOLOGY & ADDRESSING ---
+network:
+  prefixes:
+    ipv4: "10.10.10.0/24"
+    ipv6: "fd10:10:10::/64"
+
+  honeywall:
+    wan: # Internet-facing interface
+      interface: "eth0"
+      ipv4: "192.0.2.1/24"
+      ipv6: "2001:db8:1::1/64"
+      gateway:
+        ipv4: "192.0.2.2"
+        ipv6: "2001:db8:1::2"
+    lan: # Internal LAN interface connecting to sensors/collectors
+      interface: "eth1"
+      ipv4: "10.10.10.1/24"
+      ipv6: "fd10:10:10::1/64"
+
+  collectors:
+    collector_01:
+      ipv4: "10.10.10.20/24"
+      ipv6: "fd10:10:10::20/64"
+      port: 48123
+
+  sensors:
+    sensor_01:
+      ipv4: "10.10.10.10/24"
+      ipv6: "fd10:10:10::10/64"
