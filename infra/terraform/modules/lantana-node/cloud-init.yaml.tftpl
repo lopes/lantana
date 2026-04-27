@@ -1,0 +1,19 @@
+#cloud-config
+users:
+  - name: ${admin_user}
+    groups: sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - python3
+  - openssh-server
+
+runcmd:
+  - sed -i 's/#Port 22/Port 60090/' /etc/ssh/sshd_config
+  - systemctl restart sshd
