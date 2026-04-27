@@ -2,6 +2,8 @@
 # --- DECEPTION NARRATIVE ---
 narrative:
   operation_name: "Single-mode"
+  sector: "Technology"
+  start_date: "2026-01-01"
 
   # Organizational Identity (Used for SSL certs, HTTP banners, etc.)
   identity:

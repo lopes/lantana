@@ -1,0 +1,24 @@
+---
+# --- CTI REPORTING CONFIGURATION ---
+# Only data unique to reporting lives here.
+# Operation context comes from narrative.yml, IPs from network.yml.
+reporting:
+  # Operator identity (who produces the intelligence)
+  operator:
+    name: "Operator Name"
+    handle: "operator_handle"
+    contact: "https://example.com"
+    pgp_fingerprint: ""
+
+  # Intelligence sharing policy
+  sharing:
+    tlp: "GREEN" # TLP:CLEAR, TLP:GREEN, TLP:AMBER, TLP:RED
+    community: "Lantana Threat Intel"
+    discord_channel: "lantana-intel"
+
+  # OPSEC: pseudonym labels for infrastructure IPs in shared outputs
+  # The actual IPs to redact are derived from network.yml at template render time
+  pseudonym_map:
+    wan: "honeypot-wan"
+    sensor_01: "honeypot-sensor-01"
+    collector_01: "honeypot-collector-01"
