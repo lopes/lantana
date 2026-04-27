@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from pydantic import BaseModel
+
+DEFAULT_SECRETS_PATH = Path("/etc/lantana/collector/secrets.json")
+DEFAULT_REPORTING_PATH = Path("/etc/lantana/collector/reporting.json")
 
 
 class SecretsConfig(BaseModel):
@@ -61,11 +65,13 @@ class ReportingConfig(BaseModel):
     redact: RedactConfig
 
 
-def load_secrets(path: Path) -> SecretsConfig:
+def load_secrets(path: Path = DEFAULT_SECRETS_PATH) -> SecretsConfig:
     """Load and validate secrets.json."""
-    raise NotImplementedError("TODO")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return SecretsConfig.model_validate(raw)
 
 
-def load_reporting(path: Path) -> ReportingConfig:
+def load_reporting(path: Path = DEFAULT_REPORTING_PATH) -> ReportingConfig:
     """Load and validate reporting.json."""
-    raise NotImplementedError("TODO")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return ReportingConfig.model_validate(raw)
