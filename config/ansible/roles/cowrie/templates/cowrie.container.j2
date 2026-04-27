@@ -21,6 +21,13 @@ NoNewPrivileges=true
 ReadOnly=true
 VolatileTmp=true
 SecurityLabelDisable=false
+HealthCheck=CMD-SHELL echo | nc -w 3 localhost 2222 | grep -q SSH || exit 1
+HealthCheckInterval=30s
+HealthCheckTimeout=5s
+HealthCheckRetries=3
+
+# Resource limits
+PodmanArgs=--cpus=0.5 --memory=256m
 
 # Volumes: Z/z for SELinux isolation, U for subUID ownership mapping
 Volume=/etc/lantana/sensor/cowrie/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro,Z
