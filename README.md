@@ -128,8 +128,8 @@ git clone https://github.com/lopes/lantana.git
 cd lantana
 ```
 
-> [!IMPORTANT]
-> In the future, we'll use **Terraform** to deploy VMs but it's not implemented yet, so we assume there's a VM with [Debian 13](https://www.debian.org/) available and the operator has the right credentials to reach and administrate it through SSH. SSH is configured to use certificates, avoid passwords, and use a custom port.
+> [!TIP]
+> **Terraform** support is available under `infra/terraform/` for VMware/vSphere environments. Copy `terraform.tfvars.example` to `terraform.tfvars`, fill in your values, and run `terraform apply` to provision VMs automatically. Alternatively, you can provision a VM with [Debian 13](https://www.debian.org/) manually and ensure the operator has SSH access to it.
 
 ### Step 2: Define the Operation and Narrative
 Each deployment is an "Operation" with its own inventory (Ansible). You define the behavior of your honeypots—such as exposed services, SSH banners, and vulnerable versions—within the `narrative.yml` file for that specific operation. Lantana comes with two operations as examples, one for single-node mode and the other fo for multi-node mode, and it's highly recommended to "clone" them to avoid starting operations from scratch. For the sake of this quick start guide, we'll show how to clone the `op_single` operation into `op_alpha`.
@@ -151,13 +151,22 @@ ansible-vault create inventories/op_alpha/group_vars/all/vault.yml
 
 `vault.yml` structure:
 
-```text
+```yaml
+# API keys for enrichment providers
 vault_apikey_virustotal: ""
 vault_apikey_abuseipdb: ""
 vault_apikey_greynoise: ""
 vault_apikey_shodan: ""
 vault_apikey_phishstats: ""
+
+# MaxMind GeoLite2 license key (free account at maxmind.com)
+vault_maxmind_license_key: ""
+
+# Notification webhooks
 vault_webhook_discord: ""
+
+# Become password (optional — alternative to --ask-become-pass)
+# vault_become_password: ""
 ```
 
 ### Step 3: Prepare the Node
