@@ -29,6 +29,7 @@ DST_IP_COLUMNS: list[str] = [
     "local_ip",
     "dst_host",
     "destination.ip",
+    "dst_endpoint_ip",
 ]
 
 
@@ -85,11 +86,11 @@ def validate_no_leaks(df: pl.DataFrame, config: RedactionConfig) -> bool:
             # CIDR match
             try:
                 addr = ipaddress.ip_address(val)
-                for net in cidr_nets:
-                    if addr in net:
-                        msg = f"Infrastructure IP leak: {val} (in {net}) found in column '{col_name}'"
-                        raise ValueError(msg)
             except ValueError:
                 continue  # Not an IP address string, skip
+            for net in cidr_nets:
+                if addr in net:
+                    msg = f"Infrastructure IP leak: {val} (in {net}) found in column '{col_name}'"
+                    raise ValueError(msg)
 
     return True

@@ -30,6 +30,7 @@ from lantana.enrichment.providers.base import EnrichmentResult
 from lantana.enrichment.providers.greynoise import GreyNoiseProvider
 from lantana.enrichment.providers.shodan import ShodanProvider
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
+from lantana.models.normalize import normalize_dataset
 
 logger = structlog.get_logger()
 
@@ -229,8 +230,11 @@ async def run_enrichment(
             # Merge enrichment data into events
             enriched_df = _merge_enrichments(df, enrichments)
 
+            # OCSF normalization: rename columns to OCSF schema
+            normalized_df = normalize_dataset(enriched_df, dataset)
+
             # OPSEC Layer 2: redact infrastructure IPs
-            redacted_df = redact_infrastructure_ips(enriched_df, redact_config)
+            redacted_df = redact_infrastructure_ips(normalized_df, redact_config)
 
             # Validate no leaks before writing
             validate_no_leaks(redacted_df, redact_config)
