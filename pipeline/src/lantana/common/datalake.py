@@ -25,7 +25,6 @@ def read_bronze_ndjson(
     """
     date_str = target_date.isoformat()
     pattern = f"dataset={dataset}" if dataset else "dataset=*"
-    glob_path = bronze_root / pattern / f"date={date_str}" / "server=*" / "events.json"
 
     matching_files = list(bronze_root.glob(
         f"{pattern}/date={date_str}/server=*/events.json"
@@ -114,6 +113,35 @@ def write_gold_table(
     output_path = output_dir / "summary.parquet"
     df.write_parquet(output_path)
     return output_path
+
+
+def read_gold_table(
+    table_name: str,
+    target_date: date,
+    gold_root: Path = GOLD_ROOT,
+) -> pl.DataFrame:
+    """Read a gold-layer Parquet table for a given date."""
+    date_str = target_date.isoformat()
+    path = gold_root / table_name / f"date={date_str}" / "summary.parquet"
+    if not path.exists():
+        return pl.DataFrame()
+    return pl.read_parquet(path)
+
+
+def list_gold_dates(
+    table_name: str,
+    gold_root: Path = GOLD_ROOT,
+) -> list[date]:
+    """List available dates for a gold table, sorted descending (newest first)."""
+    table_dir = gold_root / table_name
+    if not table_dir.exists():
+        return []
+    dates: list[date] = []
+    for entry in table_dir.iterdir():
+        if entry.is_dir() and entry.name.startswith("date="):
+            date_str = entry.name[5:]  # strip "date="
+            dates.append(date.fromisoformat(date_str))
+    return sorted(dates, reverse=True)
 
 
 def _extract_partition_value(parts: tuple[str, ...], key: str) -> str:

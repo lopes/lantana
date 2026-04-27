@@ -10,7 +10,9 @@ import polars as pl
 import pytest
 
 from lantana.common.datalake import (
+    list_gold_dates,
     read_bronze_ndjson,
+    read_gold_table,
     read_silver_partition,
     write_gold_table,
     write_silver_partition,
@@ -80,3 +82,31 @@ def test_write_gold_table_creates_parquet(tmp_path: Path) -> None:
     assert path.exists()
     assert "daily_summary" in str(path)
     assert "date=2026-04-25" in str(path)
+
+
+def test_read_gold_table_roundtrip(tmp_path: Path) -> None:
+    """Write gold, read back, verify data matches."""
+    df = pl.DataFrame({"total_events": [100], "unique_ips": [42]})
+    write_gold_table(df, "daily_summary", date(2026, 4, 25), gold_root=tmp_path)
+    result = read_gold_table("daily_summary", date(2026, 4, 25), gold_root=tmp_path)
+    assert len(result) == 1
+    assert result.get_column("total_events").to_list() == [100]
+
+
+def test_read_gold_table_missing_date(tmp_path: Path) -> None:
+    """Gold reader returns empty DataFrame for missing dates."""
+    result = read_gold_table("daily_summary", date(2099, 1, 1), gold_root=tmp_path)
+    assert result.is_empty()
+
+
+def test_list_gold_dates(tmp_path: Path) -> None:
+    """List available gold dates, sorted newest first."""
+    for d in [date(2026, 4, 23), date(2026, 4, 25), date(2026, 4, 24)]:
+        write_gold_table(pl.DataFrame({"x": [1]}), "daily_summary", d, gold_root=tmp_path)
+    dates = list_gold_dates("daily_summary", gold_root=tmp_path)
+    assert dates == [date(2026, 4, 25), date(2026, 4, 24), date(2026, 4, 23)]
+
+
+def test_list_gold_dates_empty(tmp_path: Path) -> None:
+    """Empty gold returns empty list."""
+    assert list_gold_dates("nonexistent", gold_root=tmp_path) == []
