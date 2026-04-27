@@ -5,6 +5,7 @@
     name: systemd-networkd
     state: started
     enabled: true
+  tags: [network]
 
 - name: "[Single] Create ltn0 virtual interface (netdev)"
   become: true
@@ -15,6 +16,7 @@
     group: root
     mode: "0644"
   notify: "Restart systemd-networkd"
+  tags: [network]
 
 - name: "[Single] Configure IPs on ltn0 (network)"
   become: true
@@ -25,3 +27,4 @@
     group: root
     mode: "0644"
   notify: "Restart systemd-networkd"
+  tags: [network]

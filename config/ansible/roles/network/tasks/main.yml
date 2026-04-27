@@ -14,6 +14,7 @@
     group: root
     mode: "0644"
   notify: "Reload sysctl"
+  tags: [network]
 
 # --- FIREWALL DEFINITIONS ---
 - name: "Deploy network variables for nftables"
@@ -24,6 +25,7 @@
     owner: root
     group: root
     mode: "0600"
+  tags: [network, nftables]
 
 - name: "Set nftables to use network configuration"
   become: true
@@ -41,6 +43,7 @@
     mode: "0755"
     validate: /usr/sbin/nft -c -f %s
   notify: "Reload nftables"
+  tags: [network, nftables]
 
 - name: "Enable nftables service"
   become: true
@@ -48,15 +51,18 @@
     name: nftables
     state: started
     enabled: true
+  tags: [network, nftables]
 
 # --- MODE SPECIFIC CONFIGURATION ---
 - name: "Configure Single Node specific networking"
-  include_tasks: single_node.yml
+  ansible.builtin.include_tasks: single_node.yml
   when: lantana.mode == "single"
+  tags: [network]
 
 - name: "Configure Multi Node specific networking"
-  include_tasks: multi_node.yml
+  ansible.builtin.include_tasks: multi_node.yml
   when: lantana.mode == "multi"
+  tags: [network]
 
 # --- SERVICE RESTART ---
 - name: "Restart systemd-networkd"
@@ -66,3 +72,4 @@
     state: restarted
   async: 45
   poll: 0
+  tags: [network]

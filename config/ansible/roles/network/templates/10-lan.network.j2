@@ -1,0 +1,9 @@
+# /etc/systemd/network/10-lan.network
+# Managed by Ansible — Multi-node honeywall LAN interface
+
+[Match]
+Name={{ network.honeywall.lan.interface }}
+
+[Network]
+Address={{ network.honeywall.lan.ipv4 }}
+Address={{ network.honeywall.lan.ipv6 }}

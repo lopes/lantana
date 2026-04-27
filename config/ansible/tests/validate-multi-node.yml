@@ -1,0 +1,301 @@
+---
+# =========================================================
+# PLAY 1: HONEYWALL VALIDATION
+# =========================================================
+- name: "VALIDATION: Honeywall Node"
+  hosts: honeywall_nodes
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: "Force load network variables"
+      ansible.builtin.include_vars:
+        file: "{{ inventory_dir }}/group_vars/all/network.yml"
+
+  tasks:
+    # ---------------------------------------------------------
+    # NETWORK INTERFACES
+    # ---------------------------------------------------------
+    - name: "Check WAN interface exists"
+      ansible.builtin.command: "ip addr show {{ network.honeywall.wan.interface }}"
+      register: wan_check
+      changed_when: false
+
+    - name: "Check LAN interface exists"
+      ansible.builtin.command: "ip addr show {{ network.honeywall.lan.interface }}"
+      register: lan_check
+      changed_when: false
+
+    - name: "Assert LAN has gateway IPs"
+      ansible.builtin.assert:
+        that:
+          - "network.honeywall.lan.ipv4.split('/')[0] in lan_check.stdout"
+        fail_msg: "LAN interface missing gateway IP {{ network.honeywall.lan.ipv4 }}"
+
+    - name: "Check IPv4 forwarding is enabled"
+      ansible.builtin.command: sysctl net.ipv4.ip_forward
+      register: ipv4_fwd
+      changed_when: false
+
+    - name: "Assert forwarding enabled"
+      ansible.builtin.assert:
+        that:
+          - "'= 1' in ipv4_fwd.stdout"
+        fail_msg: "IPv4 forwarding is not enabled"
+
+    # ---------------------------------------------------------
+    # FIREWALL
+    # ---------------------------------------------------------
+    - name: "Check nftables ruleset"
+      ansible.builtin.command: nft list ruleset
+      register: nft_check
+      changed_when: false
+
+    - name: "Assert firewall tables exist"
+      ansible.builtin.assert:
+        that:
+          - "'table inet lantana_filter' in nft_check.stdout"
+          - "'chain input' in nft_check.stdout"
+          - "'chain forward' in nft_check.stdout"
+          - "'table ip lantana_nat' in nft_check.stdout"
+        fail_msg: "Critical firewall tables are missing"
+
+    - name: "Assert plugin include directory exists"
+      ansible.builtin.stat:
+        path: /etc/lantana/honeywall/nftables/sensors
+      register: plugin_dir
+
+    - name: "Verify plugin directory"
+      ansible.builtin.assert:
+        that: plugin_dir.stat.exists
+        fail_msg: "Honeypot nftables plugin directory missing"
+
+    # ---------------------------------------------------------
+    # SURICATA
+    # ---------------------------------------------------------
+    - name: "Check Suricata service"
+      ansible.builtin.service_facts:
+
+    - name: "Assert Suricata is running"
+      ansible.builtin.assert:
+        that:
+          - "'suricata.service' in ansible_facts.services"
+          - "ansible_facts.services['suricata.service'].state == 'running'"
+        fail_msg: "Suricata is not running"
+
+    # ---------------------------------------------------------
+    # SSH
+    # ---------------------------------------------------------
+    - name: "Check SSH admin port"
+      ansible.builtin.wait_for:
+        port: "{{ ansible_port }}"
+        state: started
+        timeout: 5
+        connect_timeout: 2
+      register: ssh_check
+      ignore_errors: true
+
+    - name: "Assert SSH port reachable"
+      ansible.builtin.assert:
+        that: "not ssh_check.failed"
+        fail_msg: "SSH Port {{ ansible_port }} is unreachable"
+
+    # ---------------------------------------------------------
+    # VECTOR
+    # ---------------------------------------------------------
+    - name: "Check Vector service"
+      ansible.builtin.service_facts:
+
+    - name: "Assert Vector is running"
+      ansible.builtin.assert:
+        that:
+          - "'vector.service' in ansible_facts.services"
+          - "ansible_facts.services['vector.service'].state == 'running'"
+        fail_msg: "Vector is not running on honeywall"
+
+# =========================================================
+# PLAY 2: SENSOR (LOW-INTERACTION) VALIDATION
+# =========================================================
+- name: "VALIDATION: Low-Interaction Sensor Node"
+  hosts: sensor_low_nodes
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ---------------------------------------------------------
+    # USERS
+    # ---------------------------------------------------------
+    - name: "Check sensor user exists"
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ system.users.sensor.name }}"
+      register: sensor_user
+
+    - name: "Assert sensor user UID"
+      ansible.builtin.assert:
+        that:
+          - "sensor_user.ansible_facts.getent_passwd[system.users.sensor.name][1]|int == system.users.sensor.uid"
+        fail_msg: "Sensor user {{ system.users.sensor.name }} has wrong UID"
+
+    # ---------------------------------------------------------
+    # PODMAN
+    # ---------------------------------------------------------
+    - name: "Check Podman is installed"
+      ansible.builtin.command: podman --version
+      register: podman_check
+      changed_when: false
+
+    - name: "Assert Podman available"
+      ansible.builtin.assert:
+        that: podman_check.rc == 0
+        fail_msg: "Podman is not installed"
+
+    # ---------------------------------------------------------
+    # SENSOR DIRECTORIES
+    # ---------------------------------------------------------
+    - name: "Check sensor directories"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/lantana/sensor
+        - /var/log/lantana/sensor
+        - /var/lib/lantana/sensor
+      register: sensor_dirs
+
+    - name: "Assert sensor directories exist"
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "Directory {{ item.item }} is missing"
+      loop: "{{ sensor_dirs.results }}"
+
+    # ---------------------------------------------------------
+    # VECTOR
+    # ---------------------------------------------------------
+    - name: "Check Vector service"
+      ansible.builtin.service_facts:
+
+    - name: "Assert Vector is running"
+      ansible.builtin.assert:
+        that:
+          - "'vector.service' in ansible_facts.services"
+          - "ansible_facts.services['vector.service'].state == 'running'"
+        fail_msg: "Vector is not running on sensor"
+
+    - name: "Check Vector forward config exists"
+      ansible.builtin.stat:
+        path: /etc/vector/conf.d/forward.yaml
+      register: vector_fwd
+
+    - name: "Assert Vector forward config"
+      ansible.builtin.assert:
+        that: vector_fwd.stat.exists
+        fail_msg: "Vector forward config is missing"
+
+# =========================================================
+# PLAY 3: COLLECTOR VALIDATION
+# =========================================================
+- name: "VALIDATION: Collector Node"
+  hosts: collector_nodes
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: "Force load network variables"
+      ansible.builtin.include_vars:
+        file: "{{ inventory_dir }}/group_vars/all/network.yml"
+
+  tasks:
+    # ---------------------------------------------------------
+    # USERS
+    # ---------------------------------------------------------
+    - name: "Check collector user exists"
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ system.users.collector.name }}"
+      register: collector_user
+
+    - name: "Assert collector user UID"
+      ansible.builtin.assert:
+        that:
+          - "collector_user.ansible_facts.getent_passwd[system.users.collector.name][1]|int == system.users.collector.uid"
+        fail_msg: "Collector user {{ system.users.collector.name }} has wrong UID"
+
+    # ---------------------------------------------------------
+    # DATALAKE
+    # ---------------------------------------------------------
+    - name: "Check datalake directories"
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      loop:
+        - { path: "/var/lib/lantana/datalake/bronze", owner: "{{ system.users.collector.name }}" }
+        - { path: "/var/lib/lantana/datalake/silver", owner: "{{ system.users.collector.name }}" }
+        - { path: "/var/lib/lantana/datalake/gold", owner: "{{ system.users.collector.name }}" }
+      register: lake_dirs
+
+    - name: "Assert datalake directories exist with correct ownership"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.pw_name == item.item.owner
+        fail_msg: "Datalake directory {{ item.item.path }} failed validation"
+      loop: "{{ lake_dirs.results }}"
+
+    # ---------------------------------------------------------
+    # VECTOR RECEIVER
+    # ---------------------------------------------------------
+    - name: "Check Vector receiver port is listening"
+      ansible.builtin.wait_for:
+        port: "{{ network.collectors.collector_01.port }}"
+        state: started
+        timeout: 10
+        connect_timeout: 5
+      register: vector_port
+      ignore_errors: true
+
+    - name: "Assert Vector receiver is listening"
+      ansible.builtin.assert:
+        that: "not vector_port.failed"
+        fail_msg: "Vector receiver is not listening on port {{ network.collectors.collector_01.port }}"
+
+    # ---------------------------------------------------------
+    # SECRETS & CONFIG
+    # ---------------------------------------------------------
+    - name: "Check secrets file"
+      ansible.builtin.stat:
+        path: /etc/lantana/collector/secrets.json
+      register: secrets_file
+
+    - name: "Assert secrets file deployed"
+      ansible.builtin.assert:
+        that:
+          - secrets_file.stat.exists
+          - secrets_file.stat.mode == "0600"
+        fail_msg: "Secrets file missing or wrong permissions"
+
+    # ---------------------------------------------------------
+    # CRON JOBS
+    # ---------------------------------------------------------
+    - name: "Check cron jobs"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/cron.d/lantana-prune
+      register: cron_check
+
+    - name: "Assert cron jobs exist"
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "Cron job {{ item.item }} is missing"
+      loop: "{{ cron_check.results }}"
+
+    - name: "Check lantana-prune is executable"
+      ansible.builtin.stat:
+        path: /usr/local/sbin/lantana-prune
+      register: prune_script
+
+    - name: "Assert prune script is executable"
+      ansible.builtin.assert:
+        that:
+          - prune_script.stat.exists
+          - prune_script.stat.executable
+        fail_msg: "lantana-prune is missing or not executable"

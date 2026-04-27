@@ -4,6 +4,7 @@
   become: true
   ansible.builtin.apt:
     update_cache: true
+  tags: [base]
 
 - name: "Install basic packages"
   become: true
@@ -11,6 +12,7 @@
     name:
       - cron
       - rsyslog
+  tags: [base]
 
 # --- BASIC SYSTEM SETUP ---
 - name: "Set system timezone to UTC"
@@ -20,6 +22,7 @@
   notify:
     - Restart rsyslog
     - Restart cron
+  tags: [base]
 
 - name: "Ensure hostname is resolvable in /etc/hosts"
   become: true
@@ -29,12 +32,14 @@
     block: |
       127.0.1.1 {{ inventory_hostname }}
       ::1 localhost ip6-localhost ip6-loopback {{ inventory_hostname }}
+  tags: [base]
 
 - name: "Configure system hostname"
   become: true
   ansible.builtin.hostname:
     name: "{{ inventory_hostname }}"
     use: systemd
+  tags: [base]
 
 - name: "Deploy system MOTD banner"
   become: true
@@ -44,6 +49,7 @@
     owner: root
     group: root
     mode: "0644"
+  tags: [base]
 
 # -- BASE DIRECTORIES ---
 - name: "Create base directories"
@@ -60,6 +66,7 @@
     - /etc/lantana/logrotate.d/00_00
     - /var/log/lantana
     - /var/lib/lantana
+  tags: [base]
 
 - name: "Setup log rotation"
   become: true
@@ -70,9 +77,12 @@
       0 0 * * * root /usr/sbin/logrotate -f /etc/lantana/logrotate.d/00_00/*
 
     mode: "0644"
+  tags: [base]
 
 - name: "Deploy SSH"
-  include_tasks: ssh.yml
+  ansible.builtin.include_tasks: ssh.yml
+  tags: [ssh]
 
 - name: "Deploy Vector"
-  include_tasks: vector.yml
+  ansible.builtin.include_tasks: vector.yml
+  tags: [vector]

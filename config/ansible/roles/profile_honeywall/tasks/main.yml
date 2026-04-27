@@ -11,6 +11,7 @@
   loop:
     - /etc/lantana/honeywall
     - /etc/lantana/honeywall/nftables
+  tags: [nftables]
 
 - name: "Create honeywall directories"
   become: true
@@ -25,6 +26,7 @@
     - /var/log/lantana/honeywall/auth
     - /var/log/lantana/honeywall/audit
     - /var/log/lantana/honeywall/nftables
+  tags: [nftables]
 
 # --- AUDITD SETUP ---
 - name: "Ensure auditd packages are installed"
@@ -34,6 +36,7 @@
       - auditd
       - audispd-plugins
     state: present
+  tags: [nftables]
 
 - name: "Configure auditd to NOT write local logs (Rsyslog handles it)"
   become: true
@@ -42,6 +45,7 @@
     regexp: "^write_logs"
     line: "write_logs = no"
   notify: "Restart auditd"
+  tags: [nftables]
 
 # --- AUDIT AND AUTHENTICATION LOGGING ---
 - name: "Log audit and authentication events"
@@ -56,9 +60,11 @@
     - 20-audit.conf
     - 30-auth.conf
   notify: "Restart rsyslog"
+  tags: [nftables]
 
 - name: "Forces handler to flush immediately"
   ansible.builtin.meta: flush_handlers
+  tags: [nftables]
 
 - name: "Log rotation of authentication events"
   become: true
@@ -68,6 +74,7 @@
     owner: root
     group: root
     mode: "0644"
+  tags: [nftables]
 
 - name: "Log rotation of audit events"
   become: true
@@ -77,6 +84,7 @@
     owner: root
     group: root
     mode: "0644"
+  tags: [nftables]
 
 - name: "Deploy Vector forwarder configuration"
   become: true
@@ -87,3 +95,4 @@
     group: "root"
     mode: "0644"
   notify: "Restart Vector"
+  tags: [nftables, vector]

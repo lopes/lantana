@@ -9,6 +9,7 @@
     group: root
     mode: "0644"
   notify: "Restart rsyslog"
+  tags: [nftables]
 
 - name: "Setup log rotation of firewall connections"
   become: true
@@ -18,6 +19,7 @@
     owner: root
     group: root
     mode: "0644"
+  tags: [nftables]
 
 - name: "Deploy Vector configuration"
   become: true
@@ -27,6 +29,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  tags: [nftables, vector]
 
 - name: "Restart Vector"
   become: true
@@ -34,12 +37,15 @@
     name: vector
     state: restarted
     enabled: true
+  tags: [nftables, vector]
 
 # --- MODE SPECIFIC CONFIGURATION ---
 - name: "Configure single node firewall"
-  include_tasks: single_node.yml
+  ansible.builtin.include_tasks: single_node.yml
   when: lantana.mode == "single"
+  tags: [nftables]
 
 - name: "Configure multi node firewall"
-  include_tasks: multi_node.yml
+  ansible.builtin.include_tasks: multi_node.yml
   when: lantana.mode == "multi"
+  tags: [nftables]

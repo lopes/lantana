@@ -8,6 +8,7 @@
     owner: root
     group: root
     mode: "0755"
+  tags: [nftables]
 
 - name: "[Single] Create generic placeholder rule to prevent glob errors"
   become: true
@@ -17,6 +18,7 @@
     owner: root
     group: root
     mode: "0600"
+  tags: [nftables]
 
 # --- RULE DEPLOYMENT ---
 - name: "[Single] Deploy firewall configuration template"
@@ -27,6 +29,7 @@
     owner: root
     group: root
     mode: "0600"
+  tags: [nftables]
 
 - name: "[Single] Update nftables.conf to load firewall logic"
   become: true
@@ -46,6 +49,7 @@
     mode: "0755"
     validate: /usr/sbin/nft -c -f %s
   notify: "Reload nftables"
+  tags: [nftables]
 
 # --- SERVICE STATE ---
 - name: "[Single] Ensure nftables service is enabled and started"
@@ -54,6 +58,7 @@
     name: nftables
     state: started
     enabled: true
+  tags: [nftables]
 
 # --- APPLY NEW FIREWALL RULESET ---
 - name: "[Single] Reload nftables ruleset"
@@ -63,13 +68,16 @@
     state: reloaded
   async: 15
   poll: 0
+  tags: [nftables]
 
 - name: "[Single] Reset SSH connection to clear firewall state"
   become: true
   ansible.builtin.meta: reset_connection
+  tags: [nftables]
 
 - name: "[Single] Wait for SSH to become available again"
   become: true
   ansible.builtin.wait_for_connection:
     timeout: 30
     delay: 2
+  tags: [nftables]

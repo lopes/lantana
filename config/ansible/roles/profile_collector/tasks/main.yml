@@ -2,14 +2,15 @@
 # --- COLLECTOR USER ---
 - name: "Manage collector user group"
   become: true
-  group:
+  ansible.builtin.group:
     gid: "{{ system.users.collector.uid }}"
     name: "{{ system.users.collector.name }}"
     state: present
+  tags: [collector]
 
 - name: "Manage collector system user"
   become: true
-  user:
+  ansible.builtin.user:
     uid: "{{ system.users.collector.uid }}"
     name: "{{ system.users.collector.name }}"
     group: "{{ system.users.collector.name }}"
@@ -17,6 +18,7 @@
     create_home: false
     system: true
     state: present
+  tags: [collector]
 
 - name: "Add Vector user to collector group"
   become: true
@@ -25,6 +27,7 @@
     groups: "{{ system.users.collector.name }}"
     append: true
   notify: "Restart Vector"
+  tags: [collector, vector]
 
 # -- COLLECTOR DIRECTORIES ---
 - name: "Create collector config directory"
@@ -37,6 +40,7 @@
     mode: "0755"
   loop:
     - /etc/lantana/collector
+  tags: [collector]
 
 - name: "Create datalake directory"
   become: true
@@ -51,9 +55,10 @@
     - /var/lib/lantana/datalake/bronze
     - /var/lib/lantana/datalake/silver
     - /var/lib/lantana/datalake/gold
+  tags: [collector]
 
 # --- SECRETS FILE ---
-- name: Deploy API credentials template
+- name: "Deploy API credentials template"
   become: true
   ansible.builtin.template:
     src: secrets.json.j2
@@ -62,6 +67,7 @@
     group: "{{ system.users.collector.name }}"
     mode: "0600"
   no_log: true
+  tags: [collector]
 
 # --- LANTANA-PRUNE DEPLOYMENT ---
 - name: "Deploy lantana-prune script"
@@ -71,7 +77,8 @@
     dest: /usr/local/sbin
     owner: root
     group: root
-    mode: "0644"
+    mode: "0755"
+  tags: [collector]
 
 - name: "Add periodic pruning"
   become: true
@@ -79,6 +86,7 @@
     dest: /etc/cron.d/lantana-prune
     content: "15 0 * * * root /usr/local/sbin/lantana-prune\n"
     mode: "0644"
+  tags: [collector]
 
 # --- LOG RECEIVER ---
 - name: "Deploy Vector receiver configuration"
@@ -90,3 +98,4 @@
     group: "root"
     mode: "0644"
   notify: "Restart Vector"
+  tags: [collector, vector]

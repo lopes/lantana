@@ -6,6 +6,7 @@
     gid: "{{ system.users.sensor.uid }}"
     name: "{{ system.users.sensor.name }}"
     state: present
+  tags: [honeypots]
 
 - name: "Manage container system user"
   become: true
@@ -17,6 +18,7 @@
     create_home: true
     system: true
     state: present
+  tags: [honeypots]
 
 - name: "Ensure sensor-user has subuid/subgid for rootless Podman"
   become: true
@@ -31,6 +33,7 @@
   loop:
     - /etc/subgid
     - /etc/subuid
+  tags: [honeypots]
 
 # -- SENSOR DIRECTORIES ---
 - name: "Create sensor config directory"
@@ -43,6 +46,7 @@
     mode: "0755"
   loop:
     - /etc/lantana/sensor
+  tags: [honeypots]
 
 - name: "Create sensor collector directories"
   become: true
@@ -55,6 +59,7 @@
   loop:
     - /var/log/lantana/sensor
     - /var/lib/lantana/sensor
+  tags: [honeypots]
 
 # --- HONEYPOTS LOG ROTATION --
 - name: "Set the honeypots log rotation"
@@ -65,6 +70,7 @@
     owner: root
     group: root
     mode: "0644"
+  tags: [honeypots]
 
 # --- PODMAN INSTALLATION ---
 - name: "Install podman"
@@ -72,6 +78,7 @@
   ansible.builtin.apt:
     name: podman
     update_cache: true
+  tags: [honeypots]
 
 # --- LOG FORWARDING ---
 - name: "Deploy Vector forwarder configuration"
@@ -83,3 +90,4 @@
     group: "root"
     mode: "0644"
   notify: "Restart Vector"
+  tags: [honeypots, vector]

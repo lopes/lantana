@@ -1,0 +1,5 @@
+---
+- name: "Profile sensor high is not yet implemented"
+  ansible.builtin.debug:
+    msg: "High-interaction sensor profile is reserved for future implementation"
+  tags: [honeypots]

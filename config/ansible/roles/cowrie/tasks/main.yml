@@ -8,6 +8,7 @@
     owner: "root"
     group: "root"
     mode: "0755"
+  tags: [cowrie]
 
 - name: "Create Cowrie data directories"
   become: true
@@ -20,6 +21,7 @@
   loop:
     - /var/log/lantana/sensor/cowrie
     - /var/lib/lantana/sensor/cowrie
+  tags: [cowrie]
 
 - name: "Create Cowrie artifact directories"
   become: true
@@ -34,12 +36,14 @@
     - /var/lib/lantana/sensor/cowrie/tty
     - /var/lib/lantana/sensor/cowrie/downloads
     - /var/lib/lantana/sensor/cowrie/misc
+  tags: [cowrie]
 
 - name: "Enable linger for sensor-user"
   become: true
   ansible.builtin.command: "loginctl enable-linger {{ system.users.sensor.name }}"
   args:
     creates: "/var/lib/systemd/linger/{{ system.users.sensor.name }}"
+  tags: [cowrie]
 
 # --- CONFIGURATION FILES ---
 - name: "Deploy Cowrie configuration template"
@@ -50,6 +54,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  tags: [cowrie]
 
 - name: "Create the sensor-user Quadlet directory"
   become: true
@@ -59,6 +64,7 @@
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
     mode: "0700"
+  tags: [cowrie]
 
 - name: "Ensure the Quadlet folder is root-owned"
   become: true
@@ -68,6 +74,7 @@
     owner: "root"
     group: "root"
     mode: "0755"
+  tags: [cowrie]
 
 - name: "Deploy Quadlet definition"
   become: true
@@ -77,6 +84,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  tags: [cowrie]
 
 - name: "Start Cowrie container"
   become: true
@@ -89,6 +97,7 @@
     daemon_reload: true
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+  tags: [cowrie]
 
 - name: "Publish the Cowrie ports"
   become: true
@@ -98,12 +107,14 @@
     owner: "root"
     group: "root"
     mode: "0600"
+  tags: [cowrie, nftables]
 
 - name: "Reload nftables for Cowrie"
   become: true
   ansible.builtin.service:
     name: nftables
     state: reloaded
+  tags: [cowrie, nftables]
 
 # --- LOGGING ---
 - name: "Deploy Vector configuration"
@@ -114,6 +125,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  tags: [cowrie, vector]
 
 - name: "Restart Vector"
   become: true
@@ -121,3 +133,4 @@
     name: vector
     state: restarted
     enabled: true
+  tags: [cowrie, vector]

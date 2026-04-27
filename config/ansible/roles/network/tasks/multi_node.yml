@@ -1,1 +1,19 @@
 ---
+- name: "[Multi] Enable systemd-networkd"
+  become: true
+  ansible.builtin.service:
+    name: systemd-networkd
+    state: started
+    enabled: true
+  tags: [network]
+
+- name: "[Multi] Configure LAN interface with gateway IPs"
+  become: true
+  ansible.builtin.template:
+    src: "10-lan.network.j2"
+    dest: /etc/systemd/network/10-lan.network
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Restart systemd-networkd"
+  tags: [network]
