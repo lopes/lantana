@@ -103,11 +103,27 @@ lantana/
 
 ## OPSEC Requirements
 
-- Honeypot destination IPs must NEVER appear in shared outputs (reports, STIX, Discord)
-- Bronze datalake keeps raw IPs for internal debugging
-- Silver layer pseudonymizes infrastructure IPs (redaction config in `reporting.yml`)
-- Gold layer and all external outputs are infrastructure-free
-- Reports include operation/operator attribution but never infrastructure details
+Lantana produces shareable intelligence (Discord reports, STIX bundles). The primary OPSEC concern is **external/WAN IP leakage** -- the public-facing addresses that identify the honeypot on the internet. If an attacker or peer discovers these, they can blacklist the honeypot, fingerprint the setup, or map the operator's infrastructure. Only the honeypot owner should know these addresses. OPSEC is enforced at every layer:
+
+### Layer 1: Vector telemetry (noise suppression)
+- Every honeypot Vector pipeline must include a `filter_<honeypot>` transform that drops events from non-attacker source IPs before forwarding to the collector
+- Dropped sources: loopback (`127.0.0.0/8`, `::1`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`)
+- This catches health check probes, inter-zone traffic, and operational noise at the earliest possible point
+- Pattern: use VRL `ip_cidr_contains!()` against the operation's network prefixes from inventory
+- **Every new honeypot role in Phase 2+ must replicate this filter** -- see `cowrie.vector.yaml.j2` as the reference
+
+### Layer 2: Silver datalake (pseudonymization)
+- During bronze-to-silver enrichment, all operation-related IPs are replaced with pseudonyms (e.g., `honeypot-sensor-01`)
+- **External/WAN IPs are the primary redaction target** -- these are the public addresses in `network.honeywall.wan.ipv4/ipv6` that appear as destination IPs in attacker events
+- Internal IPs (`network.prefixes.*`, sensor/collector addresses) are also redacted for defense in depth
+- Controlled by `reporting.yml` → `redact.infrastructure_ips` and `redact.pseudonym_map`
+- Validation assertion: zero operation-related IPs (external or internal) in output Parquet before writing
+
+### Layer 3: Gold / Reports / STIX (complete absence)
+- Gold aggregation reads only from silver (already redacted)
+- STIX bundles assert no operation-related addresses in any indicator object
+- Discord reports generated exclusively from gold data
+- Reports never contain: honeypot WAN IPs, internal IPs, server hostnames, network topology, SSH admin port, interface names, CIDRs
 
 ## Datalake Architecture
 
