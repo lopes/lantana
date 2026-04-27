@@ -19,6 +19,7 @@ class SecretsConfig(BaseModel):
     abuseipdb: str
     greynoise: str
     phishstats: str
+    discord_webhook: str = ""
 
 
 class OperatorConfig(BaseModel):

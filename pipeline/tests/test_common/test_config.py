@@ -58,6 +58,20 @@ def test_load_secrets(secrets_file: Path) -> None:
     assert isinstance(config, SecretsConfig)
     assert config.virustotal == "vt-key-123"
     assert config.abuseipdb == "abuse-key-789"
+    assert config.discord_webhook == ""  # defaults to empty when not in file
+
+
+def test_load_secrets_with_discord_webhook(tmp_path: Path) -> None:
+    """Secrets file with discord_webhook parses correctly."""
+    data = {
+        "virustotal": "vt", "shodan": "sh", "abuseipdb": "ab",
+        "greynoise": "gn", "phishstats": "ps",
+        "discord_webhook": "https://discord.com/api/webhooks/123/abc",
+    }
+    path = tmp_path / "secrets.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    config = load_secrets(path)
+    assert config.discord_webhook == "https://discord.com/api/webhooks/123/abc"
 
 
 def test_load_secrets_missing_key(tmp_path: Path) -> None:
