@@ -83,13 +83,13 @@ For each dataset (cowrie, suricata, nftables, dionaea):
 
 Entry point: `lantana-transform` (cron: 02:00 UTC, processes yesterday's data).
 
-Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes 4 gold tables:
+Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes 5 gold tables:
 
 #### daily_summary (1 row per date)
-Aggregate counts and top-10 lists: total events, unique IPs, unique sessions, auth attempts/successes/failures, commands executed, findings detected, network events. Top-N lists for usernames, passwords, commands, source countries, and source IPs.
+Aggregate counts and top-10 lists: total events, unique IPs, unique sessions, auth attempts/successes/failures, commands executed, findings detected, network events, downloads captured. Top-N lists for usernames, passwords, commands, source countries, source IPs, download URLs, and download hashes (SHA256).
 
 #### ip_reputation (1 row per unique source IP)
-Per-IP risk profile. Risk score (0-100) weighted composite: AbuseIPDB confidence (30%), auth success (+20), command execution (+25), detection finding (+15), volume (+10 capped). Includes GeoIP, enrichment data, and dataset cross-references.
+Per-IP risk profile. Risk score (0-100) weighted composite: AbuseIPDB confidence (30%), auth success (+20), command execution (+25), detection finding (+15), malware download (+20), volume (+10 capped). Includes GeoIP, enrichment data, and dataset cross-references.
 
 #### behavioral_progression (1 row per unique source IP)
 Escalation tracking -- the project's core intelligence feature. Classifies each IP into stages:
@@ -122,7 +122,8 @@ Groups IPs by shared credential pairs (username + password). Only clusters with 
 Generated from gold data via `intel/stix.py`. Each bundle contains:
 
 - **Identity**: Operator identity from `reporting.json`
-- **Indicators**: Attacker IPs with risk score >= 40, including STIX patterns (`[ipv4-addr:value = '...']`), confidence scores, and stage-based labels
+- **Indicators**: Attacker IPs with risk score >= 40, including STIX patterns (`[ipv4-addr:value = '...']`), confidence scores, and stage-based labels. Slow-burn IPs (multi-day escalation) get a `slow-burn-escalation` label. When multi-day progression data is available, `valid_from` uses the IP's `first_seen_date`.
+- **Malware**: Captured file hashes from `daily_summary.top_download_hashes`, with `stix2.Malware` objects and file-hash indicators (`[file:hashes.'SHA-256' = '...']`)
 - **Campaigns**: Credential clusters mapped to STIX Campaign objects
 - **Relationships**: Links indicators to their associated campaigns
 - **Report**: Wraps all objects for the date with TLP marking from config
@@ -136,11 +137,12 @@ Available via the Streamlit dashboard (download button) or programmatic API.
 Generated from gold data via `notify/report.py`, sent via `lantana-report`.
 
 **Daily brief** (Markdown file attached to Discord embed):
-- Key metrics table (events, IPs, auth, commands, findings)
+- Key metrics table (events, IPs, auth, commands, findings, downloads)
 - Mermaid escalation funnel chart (scan -> credential -> authenticated -> interactive)
 - Top 5 attackers by risk score with country and stage
 - Notable escalations (IPs reaching stage 3+)
 - Campaign clusters (shared credential pairs)
+- Malware captured (download count, top URLs, top SHA256 hashes)
 - Top credentials and commands
 
 The Discord embed contains a short summary; the full Markdown report is attached as a `.md` file.
@@ -151,7 +153,7 @@ Entry point: `lantana-dashboard`. Five pages:
 
 1. **Overview** -- Metric cards, event type distribution, auth breakdown, top-N tables
 2. **IP Reputation** -- Risk distribution, filterable IP table with enrichment details, risk slider
-3. **Behavioral Progression** -- Escalation funnel, stage scatter plot, automated vs manual breakdown
+3. **Behavioral Progression** -- Escalation funnel, stage scatter plot, automated vs manual breakdown, multi-day progression (slow-burn IPs, velocity distribution)
 4. **Credentials** -- Campaign cluster table, top username/password pairs
 5. **STIX Export** -- Bundle preview, generate button, JSON download
 
@@ -169,6 +171,7 @@ The pipeline normalizes bronze events to OCSF v1.3.0 during the bronze-to-silver
 | --- | --- | --- | --- |
 | Cowrie `cowrie.login.*` | `eventid starts with "cowrie.login"` | Authentication | 3002 |
 | Cowrie `cowrie.command.*` | `eventid starts with "cowrie.command"` | Process Activity | 1007 |
+| Cowrie `cowrie.session.file_download` | `eventid == "cowrie.session.file_download"` | File Activity | 1001 |
 | Cowrie (other) | fallback | Network Activity | 4001 |
 | Suricata alert | `event_type == "alert"` | Detection Finding | 2004 |
 | Suricata (other) | fallback | Network Activity | 4001 |
@@ -191,6 +194,9 @@ The pipeline normalizes bronze events to OCSF v1.3.0 during the bronze-to-silver
 | `password` | `unmapped_password` | conditional | Login only; credential intel |
 | `input` | `actor_process_cmd_line` | conditional | Command events only; null for others |
 | `protocol` | `auth_protocol` / `connection_info_protocol_name` | conditional | Login: auth_protocol. Others: protocol name |
+| `shasum` | `file_hash_sha256` | conditional | File download events only; SHA256 hash |
+| `url` | `file_url` | conditional | File download events only; download source URL |
+| `outfile` | `file_path` | conditional | File download events only; local file path |
 | `session` | `session` | preserve | Session ID for behavioral progression |
 | `message` | `message` | preserve | Human-readable event description |
 | `sensor` | `sensor` | preserve | Source sensor hostname |
@@ -385,7 +391,7 @@ pipeline/
 │   │   ├── app.py                    # Streamlit entry point + navigation
 │   │   └── pages/                    # 5 pages: overview, ip_reputation, progression, credentials, stix_export
 │   └── prune.py                      # Retention and disk monitoring
-└── tests/                            # 131 tests mirroring src/ structure
+└── tests/                            # 140 tests mirroring src/ structure
 ```
 
 ---

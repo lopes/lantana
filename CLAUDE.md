@@ -47,7 +47,7 @@ Each deployment is an Ansible inventory under `config/ansible/inventories/op_*`.
 - `vault.yml` - encrypted API keys (VirusTotal, AbuseIPDB, GreyNoise, Shodan, PhishStats, Discord)
 
 ### Role Hierarchy
-- **Atomic roles** do one thing: `base`, `cowrie`, `suricata`, `firewall`, `network`
+- **Atomic roles** do one thing: `base`, `cowrie`, `dionaea`, `suricata`, `firewall`, `network`
 - **Composite roles** (`profile_*`) group atomic roles into zone archetypes via meta-dependencies: `profile_honeywall`, `profile_collector`, `profile_sensor_low`
 - **Playbooks** select a "Plate" (e.g., `deploy_single.yml`) then add "Toppings" (honeypots via `deploy_honeypots.yml`)
 
@@ -72,6 +72,7 @@ lantana/
   config/ansible/     # Host configuration (Ansible roles, playbooks, inventories)
   infra/terraform/    # Infrastructure provisioning (VMware/vSphere VMs)
   pipeline/           # Data processing pipeline (Python: enrichment, analysis, dashboard)
+  scripts/            # Operational scripts (VPS data fetch, injection, dashboard, malware quarantine)
   docs/               # Project documentation including roadmap
 ```
 
