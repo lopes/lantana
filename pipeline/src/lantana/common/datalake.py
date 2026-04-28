@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
 from pathlib import Path
 
 import polars as pl
 
-BRONZE_ROOT: Path = Path("/var/lib/lantana/datalake/bronze")
-SILVER_ROOT: Path = Path("/var/lib/lantana/datalake/silver")
-GOLD_ROOT: Path = Path("/var/lib/lantana/datalake/gold")
+BRONZE_ROOT: Path = Path(os.environ.get("LANTANA_BRONZE_ROOT", "/var/lib/lantana/datalake/bronze"))
+SILVER_ROOT: Path = Path(os.environ.get("LANTANA_SILVER_ROOT", "/var/lib/lantana/datalake/silver"))
+GOLD_ROOT: Path = Path(os.environ.get("LANTANA_GOLD_ROOT", "/var/lib/lantana/datalake/gold"))
 
 
 def read_bronze_ndjson(
@@ -46,7 +47,28 @@ def read_bronze_ndjson(
             continue
 
         records = [json.loads(line) for line in lines]
-        df = pl.DataFrame(records)
+
+        # Real honeypot logs have mixed-type fields (e.g., a field is a
+        # string in some events but an empty list in others).  Coerce
+        # list/dict values to JSON strings so Polars gets a uniform schema.
+        for rec in records:
+            for k, v in rec.items():
+                if isinstance(v, (list, dict)):
+                    rec[k] = json.dumps(v)
+
+        df = pl.DataFrame(records, infer_schema_length=None)
+
+        # Ensure timestamp is Datetime (raw logs store it as string).
+        # Cowrie uses "Z" suffix, Suricata uses "+0000". Strip both
+        # and parse as naive datetime (all events are UTC).
+        if "timestamp" in df.columns and df.schema["timestamp"] == pl.Utf8:
+            ts = (
+                df.get_column("timestamp")
+                .str.replace(r"[+-]\d{4}$", "")
+                .str.replace(r"Z$", "")
+                .str.to_datetime(strict=False)
+            )
+            df = df.with_columns(ts.alias("timestamp"))
 
         # Add partition columns if not already present
         if "dataset" not in df.columns:

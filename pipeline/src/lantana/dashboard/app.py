@@ -47,11 +47,11 @@ def main() -> None:
 
     d = selected_date
     pages = st.navigation([
-        st.Page(lambda: overview.render(d), title="Overview"),
-        st.Page(lambda: ip_reputation.render(d), title="IP Reputation"),
-        st.Page(lambda: progression.render(d), title="Progression"),
-        st.Page(lambda: credentials.render(d), title="Credentials"),
-        st.Page(lambda: stix_export.render(d), title="STIX Export"),
+        st.Page(lambda: overview.render(d), title="Overview", url_path="overview"),
+        st.Page(lambda: ip_reputation.render(d), title="IP Reputation", url_path="ip-reputation"),
+        st.Page(lambda: progression.render(d), title="Progression", url_path="progression"),
+        st.Page(lambda: credentials.render(d), title="Credentials", url_path="credentials"),
+        st.Page(lambda: stix_export.render(d), title="STIX Export", url_path="stix-export"),
     ])
     pages.run()
 
