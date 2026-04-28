@@ -58,6 +58,13 @@ def read_bronze_ndjson(
 
         df = pl.DataFrame(records, infer_schema_length=None)
 
+        # Normalize IPv4-mapped IPv6 addresses (::ffff:1.2.3.4 -> 1.2.3.4)
+        ip_cols = [c for c in ("src_ip", "dst_ip", "dest_ip") if c in df.columns and df.schema[c] == pl.Utf8]
+        if ip_cols:
+            df = df.with_columns(
+                pl.col(c).str.replace(r"^::ffff:", "").alias(c) for c in ip_cols
+            )
+
         # Ensure timestamp is Datetime (raw logs store it as string).
         # Cowrie uses "Z" suffix, Suricata uses "+0000". Strip both
         # and parse as naive datetime (all events are UTC).
