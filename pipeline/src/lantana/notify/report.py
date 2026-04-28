@@ -116,6 +116,24 @@ def generate_daily_brief(
             )
         lines.append("")
 
+    # Malware captured
+    downloads = row.get("downloads_captured", 0)
+    if downloads and downloads > 0:
+        lines.append("## Malware Captured\n")
+        lines.append(f"**{downloads}** file(s) downloaded by attackers\n")
+        download_urls = row.get("top_download_urls", [])
+        if download_urls:
+            lines.append("**Top URLs:**")
+            for url in download_urls[:5]:
+                lines.append(f"- `{url}`")
+            lines.append("")
+        download_hashes = row.get("top_download_hashes", [])
+        if download_hashes:
+            lines.append("**Top Hashes (SHA256):**")
+            for h in download_hashes[:5]:
+                lines.append(f"- `{h}`")
+            lines.append("")
+
     # Top credentials
     usernames = row.get("top_usernames", [])
     passwords = row.get("top_passwords", [])

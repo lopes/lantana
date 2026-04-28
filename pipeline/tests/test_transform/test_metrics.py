@@ -10,6 +10,7 @@ import pytest
 from lantana.models.ocsf import (
     CLASS_AUTHENTICATION,
     CLASS_DETECTION_FINDING,
+    CLASS_FILE_ACTIVITY,
     CLASS_NETWORK_ACTIVITY,
     CLASS_PROCESS_ACTIVITY,
     STATUS_FAILURE,
@@ -153,6 +154,40 @@ def silver_df() -> pl.DataFrame:
             "greynoise_noise": True,
         })
 
+    # --- attacker-1: file download (malware) ---
+    rows.append({
+        "class_uid": CLASS_FILE_ACTIVITY,
+        "category_uid": 1,
+        "severity_id": 4,
+        "activity_id": 2,
+        "type_uid": 100102,
+        "time": _ts(minute=2, second=30),
+        "message": "Downloaded URL",
+        "status_id": STATUS_UNKNOWN,
+        "src_endpoint_ip": "203.0.113.50",
+        "src_endpoint_port": 54321,
+        "dst_endpoint_ip": "honeypot-sensor-01",
+        "dst_endpoint_port": 2222,
+        "dataset": "cowrie",
+        "server": "sensor-01",
+        "operation": "op_test",
+        "session": "sess-a1",
+        "user_name": None,
+        "unmapped_password": None,
+        "actor_process_cmd_line": None,
+        "finding_title": None,
+        "finding_uid": None,
+        "file_hash_sha256": "e3b0c44298fc1c149afbf4c8996fb924",
+        "file_url": "http://malware.example.com/payload.sh",
+        "file_path": "/tmp/payload.sh",
+        "geo.country_code": "CN",
+        "geo.asn": "4134",
+        "geo.isp": "ChinaNet",
+        "abuseipdb_confidence_score": 85,
+        "greynoise_classification": "malicious",
+        "greynoise_noise": True,
+    })
+
     # --- attacker-1: suricata alert ---
     rows.append({
         "class_uid": CLASS_DETECTION_FINDING,
@@ -269,9 +304,9 @@ class TestDailySummary:
         result = compute_daily_summary(silver_df)
         assert result.height == 1
         row = result.row(0, named=True)
-        # 2 nft(a1) + 3 auth(a1) + 2 cmd(a1) + 1 alert(a1)
-        # + 15 auth(a2) + 3 nft(a3) = 26
-        assert row["total_events"] == 26
+        # 2 nft(a1) + 3 auth(a1) + 2 cmd(a1) + 1 download(a1) + 1 alert(a1)
+        # + 15 auth(a2) + 3 nft(a3) = 27
+        assert row["total_events"] == 27
         assert row["unique_source_ips"] == 3
         assert row["auth_attempts"] == 18  # 3 (a1) + 15 (a2)
         assert row["auth_successes"] == 1
@@ -313,14 +348,15 @@ class TestIPReputation:
         result = compute_ip_reputation(silver_df)
         a1 = result.filter(pl.col("src_endpoint_ip") == "203.0.113.50")
         row = a1.row(0, named=True)
-        assert row["total_events"] == 8
+        assert row["total_events"] == 9
         assert row["auth_attempts"] == 3
         assert row["auth_successes"] == 1
         assert row["commands_executed"] == 2
         assert row["findings_triggered"] == 1
-        # Has auth success (+20), commands (+25), findings (+15),
-        # abuseipdb 85*0.3=25.5, volume min(3,100)*0.1=0.3 -> ~85.8
-        assert row["risk_score"] >= 80
+        assert row["downloads"] == 1
+        # Has auth success (+20), commands (+25), findings (+15), downloads (+20),
+        # abuseipdb 85*0.3=25.5, volume min(3,100)*0.1=0.3 -> capped at 100
+        assert row["risk_score"] >= 95
 
     def test_scanner_low_risk(self, silver_df: pl.DataFrame) -> None:
         """Scanner-only IP has lower risk score."""

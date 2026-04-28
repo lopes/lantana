@@ -17,7 +17,7 @@ from lantana.common.config import (
 
 @pytest.fixture()
 def sample_bronze_cowrie_ndjson() -> str:
-    """Return 3 sample NDJSON lines representing bronze Cowrie events."""
+    """Return 4 sample NDJSON lines representing bronze Cowrie events."""
     return (
         '{"timestamp":"2026-04-25T10:00:00","eventid":"cowrie.login.success",'
         '"src_ip":"203.0.113.50","src_port":54321,"dst_ip":"10.50.99.100",'
@@ -34,6 +34,14 @@ def sample_bronze_cowrie_ndjson() -> str:
         '"dst_port":2222,"session":"def456","protocol":"ssh",'
         '"username":"admin","password":"password123","input":"","message":"login attempt",'
         '"sensor":"sensor-01"}\n'
+        '{"timestamp":"2026-04-25T10:03:00","eventid":"cowrie.session.file_download",'
+        '"src_ip":"203.0.113.50","src_port":54321,"dst_ip":"10.50.99.100",'
+        '"dst_port":2222,"session":"abc123","protocol":"ssh",'
+        '"username":"","password":"","input":"",'
+        '"shasum":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",'
+        '"url":"http://malware.example.com/payload.sh",'
+        '"outfile":"/tmp/payload.sh",'
+        '"message":"Downloaded URL","sensor":"sensor-01"}\n'
     )
 
 

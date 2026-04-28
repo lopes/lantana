@@ -15,6 +15,7 @@ import polars as pl
 from lantana.models.ocsf import (
     CLASS_AUTHENTICATION,
     CLASS_DETECTION_FINDING,
+    CLASS_FILE_ACTIVITY,
     CLASS_NETWORK_ACTIVITY,
     CLASS_PROCESS_ACTIVITY,
     STATUS_FAILURE,
@@ -76,6 +77,7 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
         (cls == CLASS_PROCESS_ACTIVITY).sum().alias("commands_executed"),
         (cls == CLASS_DETECTION_FINDING).sum().alias("findings_detected"),
         (cls == CLASS_NETWORK_ACTIVITY).sum().alias("network_events"),
+        (cls == CLASS_FILE_ACTIVITY).sum().alias("downloads_captured"),
     )
 
     # Top-N lists as list columns
@@ -85,6 +87,8 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
         "top_commands": [_top_n(silver, "actor_process_cmd_line")],
         "top_source_countries": [_top_n(silver, "geo.country_code")],
         "top_source_ips": [_top_n(silver, "src_endpoint_ip")],
+        "top_download_urls": [_top_n(silver, "file_url")],
+        "top_download_hashes": [_top_n(silver, "file_hash_sha256")],
     })
 
     return pl.concat([scalars, lists], how="horizontal")
@@ -98,6 +102,7 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     - +20 if auth_successes > 0
     - +25 if commands_executed > 0
     - +15 if findings_triggered > 0
+    - +20 if downloads > 0 (malware delivery)
     - +min(auth_attempts, 100) * 0.1 (max 10)
     """
     if silver.is_empty():
@@ -115,6 +120,7 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
         pl.col("unmapped_password").drop_nulls().n_unique().alias("unique_passwords"),
         (cls == CLASS_PROCESS_ACTIVITY).sum().alias("commands_executed"),
         (cls == CLASS_DETECTION_FINDING).sum().alias("findings_triggered"),
+        (cls == CLASS_FILE_ACTIVITY).sum().alias("downloads"),
         pl.col("time").min().alias("first_seen"),
         pl.col("time").max().alias("last_seen"),
         pl.col("geo.country_code").first().alias("geo_country"),
@@ -131,6 +137,7 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
             + pl.when(pl.col("auth_successes") > 0).then(20.0).otherwise(0.0)
             + pl.when(pl.col("commands_executed") > 0).then(25.0).otherwise(0.0)
             + pl.when(pl.col("findings_triggered") > 0).then(15.0).otherwise(0.0)
+            + pl.when(pl.col("downloads") > 0).then(20.0).otherwise(0.0)
             + pl.min_horizontal(pl.col("auth_attempts").cast(pl.Float64), pl.lit(100.0)) * 0.1
         )
         .clip(0.0, 100.0)

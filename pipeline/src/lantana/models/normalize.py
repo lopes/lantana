@@ -23,6 +23,7 @@ from lantana.models.ocsf import (
     CATEGORY_SYSTEM,
     CLASS_AUTHENTICATION,
     CLASS_DETECTION_FINDING,
+    CLASS_FILE_ACTIVITY,
     CLASS_NETWORK_ACTIVITY,
     CLASS_PROCESS_ACTIVITY,
     OCSF_VERSION,
@@ -116,10 +117,10 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize bronze Cowrie events to OCSF columns.
 
     Event dispatch:
-    - cowrie.login.*           -> Authentication (3002)
-    - cowrie.command.*         -> Process Activity (1007)
-    - cowrie.session.file_download -> File Activity (1001) -- future
-    - other                    -> Network Activity (4001)
+    - cowrie.login.*                -> Authentication (3002)
+    - cowrie.command.*              -> Process Activity (1007)
+    - cowrie.session.file_download  -> File Activity (1001)
+    - other                         -> Network Activity (4001)
     """
     if df.is_empty():
         return df
@@ -128,6 +129,7 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
 
     is_login = eventid_col.str.starts_with("cowrie.login")
     is_command = eventid_col.str.starts_with("cowrie.command")
+    is_file_download = eventid_col == "cowrie.session.file_download"
     is_login_success = eventid_col == "cowrie.login.success"
 
     # OCSF metadata columns + conditional field mappings
@@ -137,27 +139,33 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit(CLASS_AUTHENTICATION))
         .when(is_command)
         .then(pl.lit(CLASS_PROCESS_ACTIVITY))
+        .when(is_file_download)
+        .then(pl.lit(CLASS_FILE_ACTIVITY))
         .otherwise(pl.lit(CLASS_NETWORK_ACTIVITY))
         .alias("class_uid"),
         # category_uid
         pl.when(is_login)
         .then(pl.lit(CATEGORY_IAM))
-        .when(is_command)
+        .when(is_command | is_file_download)
         .then(pl.lit(CATEGORY_SYSTEM))
         .otherwise(pl.lit(CATEGORY_NETWORK))
         .alias("category_uid"),
-        # severity_id
-        pl.when(is_login_success)
+        # severity_id: file_download=HIGH (malware delivery)
+        pl.when(is_file_download)
+        .then(pl.lit(SEVERITY_HIGH))
+        .when(is_login_success)
         .then(pl.lit(SEVERITY_MEDIUM))
         .when(is_command)
         .then(pl.lit(SEVERITY_MEDIUM))
         .otherwise(pl.lit(SEVERITY_LOW))
         .alias("severity_id"),
-        # activity_id: 1=Logon for login, 1=Launch for command
+        # activity_id: 1=Logon for login, 1=Launch for command, 2=Read for download
         pl.when(is_login)
         .then(pl.lit(1))
         .when(is_command)
         .then(pl.lit(1))
+        .when(is_file_download)
+        .then(pl.lit(2))
         .otherwise(pl.lit(0))
         .alias("activity_id"),
         # status_id: success/failure for login, unknown for others
@@ -205,6 +213,24 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("actor_process_cmd_line"),
+        # File-specific: file_hash_sha256 (from shasum)
+        pl.when(is_file_download)
+        .then(pl.col("shasum") if "shasum" in df.columns else pl.lit(None))
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("file_hash_sha256"),
+        # File-specific: file_url
+        pl.when(is_file_download)
+        .then(pl.col("url") if "url" in df.columns else pl.lit(None))
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("file_url"),
+        # File-specific: file_path (from outfile)
+        pl.when(is_file_download)
+        .then(pl.col("outfile") if "outfile" in df.columns else pl.lit(None))
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("file_path"),
     )
 
     # type_uid = class_uid * 100 + activity_id
@@ -225,7 +251,12 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
 
     # Drop raw columns that have been mapped to OCSF equivalents
     drop_cols = [
-        c for c in ("eventid", "username", "password", "input", "protocol") if c in result.columns
+        c
+        for c in (
+            "eventid", "username", "password", "input", "protocol",
+            "shasum", "url", "outfile",
+        )
+        if c in result.columns
     ]
     if drop_cols:
         result = result.drop(drop_cols)

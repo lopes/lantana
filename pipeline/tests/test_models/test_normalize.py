@@ -17,6 +17,7 @@ from lantana.models.normalize import (
 from lantana.models.ocsf import (
     CLASS_AUTHENTICATION,
     CLASS_DETECTION_FINDING,
+    CLASS_FILE_ACTIVITY,
     CLASS_NETWORK_ACTIVITY,
     CLASS_PROCESS_ACTIVITY,
     OCSF_VERSION,
@@ -134,6 +135,44 @@ class TestNormalizeCowrie:
         # Command events get the protocol name
         cmd_rows = result.filter(pl.col("class_uid") == CLASS_PROCESS_ACTIVITY)
         assert cmd_rows.get_column("connection_info_protocol_name").to_list() == ["ssh"]
+
+    def test_file_download_maps_to_file_activity(
+        self, sample_bronze_cowrie_ndjson: str
+    ) -> None:
+        """cowrie.session.file_download -> class_uid=1001, severity=HIGH."""
+        df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
+        result = normalize_cowrie(df)
+        downloads = result.filter(pl.col("class_uid") == CLASS_FILE_ACTIVITY)
+        assert downloads.height == 1
+        row = downloads.row(0, named=True)
+        assert row["category_uid"] == 1  # CATEGORY_SYSTEM
+        assert row["severity_id"] == 4  # HIGH
+
+    def test_download_hash_preserved(
+        self, sample_bronze_cowrie_ndjson: str
+    ) -> None:
+        """SHA256 hash mapped to file_hash_sha256; raw shasum column dropped."""
+        df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
+        result = normalize_cowrie(df)
+        assert "file_hash_sha256" in result.columns
+        assert "shasum" not in result.columns
+        downloads = result.filter(pl.col("class_uid") == CLASS_FILE_ACTIVITY)
+        sha = downloads.get_column("file_hash_sha256").to_list()[0]
+        assert sha.startswith("e3b0c44298fc1c")
+
+    def test_download_url_preserved(
+        self, sample_bronze_cowrie_ndjson: str
+    ) -> None:
+        """Download URL mapped to file_url; raw url/outfile columns dropped."""
+        df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
+        result = normalize_cowrie(df)
+        assert "file_url" in result.columns
+        assert "file_path" in result.columns
+        assert "url" not in result.columns
+        assert "outfile" not in result.columns
+        downloads = result.filter(pl.col("class_uid") == CLASS_FILE_ACTIVITY)
+        assert "malware.example.com" in downloads.get_column("file_url").to_list()[0]
+        assert downloads.get_column("file_path").to_list()[0] == "/tmp/payload.sh"
 
 
 # ---------------------------------------------------------------------------

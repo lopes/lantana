@@ -53,6 +53,7 @@ def _make_indicators(
     progression: pl.DataFrame,
     identity: stix2.Identity,
     tlp: stix2.MarkingDefinition,
+    multiday_progression: pl.DataFrame | None = None,
 ) -> list[stix2.Indicator]:
     """Create Indicator objects for high-risk IPs."""
     if reputation.is_empty():
@@ -70,7 +71,15 @@ def _make_indicators(
             ip_prog = progression.filter(pl.col("src_endpoint_ip") == ip)
             if ip_prog.height > 0:
                 stage = ip_prog.row(0, named=True)["stage_label"]
-                labels = _STAGE_LABELS.get(stage, labels)
+                labels = list(_STAGE_LABELS.get(stage, labels))
+
+        # Multi-day: add slow-burn label
+        if multiday_progression is not None and not multiday_progression.is_empty():
+            ip_md = multiday_progression.filter(pl.col("src_endpoint_ip") == ip)
+            if ip_md.height > 0:
+                md_row = ip_md.row(0, named=True)
+                if md_row.get("is_slow_burn"):
+                    labels.append("slow-burn-escalation")
 
         description_parts = [
             f"Risk score: {row['risk_score']:.1f}",
@@ -85,7 +94,16 @@ def _make_indicators(
         if row["commands_executed"] > 0:
             description_parts.append(f"Commands: {row['commands_executed']}")
 
+        # Multi-day: use first_seen_date for valid_from if available
         valid_from = row.get("first_seen")
+        if multiday_progression is not None and not multiday_progression.is_empty():
+            ip_md = multiday_progression.filter(pl.col("src_endpoint_ip") == ip)
+            if ip_md.height > 0:
+                first_date = ip_md.row(0, named=True).get("first_seen_date")
+                if isinstance(first_date, date):
+                    valid_from = datetime(
+                        first_date.year, first_date.month, first_date.day, tzinfo=UTC,
+                    )
         if valid_from is None or not isinstance(valid_from, datetime):
             valid_from = datetime.now(tz=UTC)
 
@@ -164,12 +182,57 @@ def _make_relationships(
     return relationships
 
 
+def _make_malware_indicators(
+    summary: pl.DataFrame,
+    identity: stix2.Identity,
+    tlp: stix2.MarkingDefinition,
+) -> tuple[list[stix2.Malware], list[stix2.Indicator]]:
+    """Create Malware and file-hash Indicator objects from captured samples."""
+    if summary.is_empty():
+        return [], []
+
+    row = summary.row(0, named=True)
+    hashes: list[str] = row.get("top_download_hashes", []) or []
+    if not hashes:
+        return [], []
+
+    malware_objects: list[stix2.Malware] = []
+    hash_indicators: list[stix2.Indicator] = []
+
+    for sha256 in hashes:
+        malware = stix2.Malware(
+            name=f"sample-{sha256[:12]}",
+            description=f"Malware sample captured by honeypot (SHA256: {sha256})",
+            is_family=False,
+            hashes={"SHA-256": sha256},
+            created_by_ref=identity.id,
+            object_marking_refs=[tlp.id],
+        )
+        malware_objects.append(malware)
+
+        indicator = stix2.Indicator(
+            name=f"file-{sha256[:12]}",
+            description="Malware hash captured by honeypot",
+            pattern=f"[file:hashes.'SHA-256' = '{sha256}']",
+            pattern_type="stix",
+            valid_from=datetime.now(tz=UTC),
+            labels=["malicious-activity"],
+            created_by_ref=identity.id,
+            object_marking_refs=[tlp.id],
+        )
+        hash_indicators.append(indicator)
+
+    return malware_objects, hash_indicators
+
+
 def generate_bundle(
     gold_date: date,
     reporting: ReportingConfig,
     reputation: pl.DataFrame,
     progression: pl.DataFrame,
     clusters: pl.DataFrame,
+    summary: pl.DataFrame | None = None,
+    multiday_progression: pl.DataFrame | None = None,
 ) -> stix2.Bundle:
     """Generate a STIX 2.1 bundle from gold-layer data for a given date."""
     tlp = _TLP_MAP.get(reporting.sharing.tlp.upper(), stix2.TLP_GREEN)
@@ -177,7 +240,9 @@ def generate_bundle(
 
     objects: list[object] = [identity]
 
-    indicators = _make_indicators(reputation, progression, identity, tlp)
+    indicators = _make_indicators(
+        reputation, progression, identity, tlp, multiday_progression,
+    )
     objects.extend(indicators)
 
     campaigns = _make_campaigns(clusters, identity, tlp)
@@ -185,6 +250,12 @@ def generate_bundle(
 
     relationships = _make_relationships(indicators, campaigns, clusters, identity)
     objects.extend(relationships)
+
+    # Malware objects from captured file hashes
+    if summary is not None:
+        malware_objects, hash_indicators = _make_malware_indicators(summary, identity, tlp)
+        objects.extend(malware_objects)
+        objects.extend(hash_indicators)
 
     # Create a Report wrapping all objects
     if len(objects) > 1:  # more than just the identity

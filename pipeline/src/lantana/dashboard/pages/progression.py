@@ -85,3 +85,60 @@ def render(selected_date: date) -> None:
         hide_index=True,
         use_container_width=True,
     )
+
+    # --- Multi-day progression ---
+    st.divider()
+    st.header("Multi-Day Progression (7-day lookback)")
+
+    multiday = read_gold_table("behavioral_progression_multiday", selected_date)
+    if multiday.is_empty():
+        st.info("No multi-day progression data available for this date.")
+        return
+
+    # Slow-burn IPs
+    slow_burn = multiday.filter(pl.col("is_slow_burn"))
+    sb_col, total_col, _ = st.columns(3)
+    sb_col.metric("Slow-Burn IPs", slow_burn.height)
+    total_col.metric("Total IPs (7-day)", multiday.height)
+
+    st.divider()
+
+    # Velocity distribution
+    if "progression_velocity_days" in multiday.columns:
+        st.subheader("Progression Velocity (days to max stage)")
+        velocity_df = (
+            multiday
+            .filter(pl.col("progression_velocity_days") > 0)
+            .select(
+                pl.col("progression_velocity_days").alias("Days"),
+            )
+        )
+        if not velocity_df.is_empty():
+            st.bar_chart(
+                velocity_df.group_by("Days").len().sort("Days").to_pandas(),
+                x="Days",
+                y="len",
+            )
+
+    st.divider()
+
+    # Slow-burn details table
+    if not slow_burn.is_empty():
+        st.subheader("Slow-Burn Attackers")
+        multiday_cols = [
+            "src_endpoint_ip",
+            "max_stage",
+            "stage_label",
+            "first_seen_date",
+            "last_seen_date",
+            "active_days",
+            "progression_velocity_days",
+        ]
+        available = [c for c in multiday_cols if c in slow_burn.columns]
+        st.dataframe(
+            slow_burn.select(available)
+            .sort("progression_velocity_days", descending=True)
+            .to_pandas(),
+            hide_index=True,
+            use_container_width=True,
+        )
