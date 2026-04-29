@@ -19,6 +19,8 @@ def generate_daily_brief(
     progression: pl.DataFrame,
     clusters: pl.DataFrame,
     operation_name: str,
+    geographic: pl.DataFrame | None = None,
+    detection: pl.DataFrame | None = None,
 ) -> str:
     """Generate a Markdown daily intelligence brief from gold tables."""
     if summary.is_empty():
@@ -44,6 +46,36 @@ def generate_daily_brief(
     lines.append(f"| IDS Findings | {row['findings_detected']:,} |")
     lines.append(f"| Network Events | {row['network_events']:,} |")
     lines.append("")
+
+    # Geographic origin
+    if geographic is not None and not geographic.is_empty():
+        geo_row = geographic.row(0, named=True)
+        lines.append("## Geographic Origin\n")
+
+        countries = geo_row.get("top_countries", [])
+        if countries:
+            lines.append("**Top Countries:**\n")
+            lines.append("| Country | Unique IPs |")
+            lines.append("|---------|-----------|")
+            for entry in countries[:5]:
+                parts = entry.split(":")
+                lines.append(f"| {parts[0]} | {parts[1]} |")
+            lines.append("")
+
+        asns = geo_row.get("top_asns", [])
+        if asns:
+            lines.append("**Top ASNs:**\n")
+            lines.append("| ASN | ISP | Unique IPs |")
+            lines.append("|-----|-----|-----------|")
+            for entry in asns[:3]:
+                parts = entry.split(":")
+                asn_info = parts[0] if parts else ""
+                count = parts[1] if len(parts) > 1 else "0"
+                asn_parts = asn_info.split("|")
+                asn = asn_parts[0] if asn_parts else ""
+                isp = asn_parts[1] if len(asn_parts) > 1 else ""
+                lines.append(f"| {asn} | {isp} | {count} |")
+            lines.append("")
 
     # Escalation funnel (Mermaid)
     if not progression.is_empty():
@@ -81,6 +113,26 @@ def generate_daily_brief(
             )
         lines.append("")
 
+    # Threat actor attribution
+    if not reputation.is_empty() and "greynoise_name" in reputation.columns:
+        named = reputation.filter(
+            pl.col("greynoise_name").is_not_null()
+            & (pl.col("greynoise_name") != "")
+            & (pl.col("greynoise_name") != "unknown")
+        )
+        if named.height > 0:
+            lines.append("## Threat Actor Attribution\n")
+            lines.append("IPs with known threat actor labels (GreyNoise):\n")
+            lines.append("| Actor | IP | Classification |")
+            lines.append("|-------|----|---------------|")
+            for r in named.head(5).iter_rows(named=True):
+                lines.append(
+                    f"| {r['greynoise_name']} "
+                    f"| {r['src_endpoint_ip']} "
+                    f"| {r.get('greynoise_class', '?')} |"
+                )
+            lines.append("")
+
     # Notable escalations (stage 3+)
     if not progression.is_empty():
         escalated = progression.filter(pl.col("max_stage") >= 3)
@@ -107,6 +159,19 @@ def generate_daily_brief(
             lines.append(
                 f"- **{r['shared_username']}:{r['shared_password']}** — "
                 f"{r['ip_count']} IPs ({ip_str})"
+            )
+        lines.append("")
+
+    # Detection highlights
+    if detection is not None and not detection.is_empty():
+        lines.append("## Detection Highlights\n")
+        lines.append("Top Suricata rules triggered:\n")
+        lines.append("| Rule | Events | Unique IPs |")
+        lines.append("|------|--------|-----------|")
+        for r in detection.head(5).iter_rows(named=True):
+            title = r.get("finding_title", "unknown")
+            lines.append(
+                f"| {title} | {r['event_count']:,} | {r['unique_ips']:,} |"
             )
         lines.append("")
 

@@ -98,3 +98,25 @@ def render(selected_date: date) -> None:
                 pl.DataFrame({"Country": countries, "Rank": range(1, len(countries) + 1)}),
                 hide_index=True,
             )
+
+    st.divider()
+
+    # Geographic summary
+    geo_df = read_gold_table("geographic_summary", selected_date)
+    if not geo_df.is_empty():
+        geo_row = geo_df.row(0, named=True)
+        asn_col, _ = st.columns(2)
+        with asn_col:
+            st.subheader("Top ASNs")
+            asn_entries = geo_row.get("top_asns", [])
+            if asn_entries:
+                asn_rows = []
+                for entry in asn_entries:
+                    parts = entry.split(":")
+                    asn_info = parts[0] if parts else ""
+                    count = parts[1] if len(parts) > 1 else "0"
+                    asn_parts = asn_info.split("|")
+                    asn = asn_parts[0] if asn_parts else ""
+                    isp = asn_parts[1] if len(asn_parts) > 1 else ""
+                    asn_rows.append({"ASN": asn, "ISP": isp, "Unique IPs": int(count)})
+                st.dataframe(pl.DataFrame(asn_rows), hide_index=True)

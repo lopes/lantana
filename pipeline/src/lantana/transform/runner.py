@@ -3,7 +3,7 @@
 Daily workflow:
 1. Read all silver Parquet for the target date (cross-dataset)
 2. Collect LazyFrame once into eager DataFrame
-3. Compute 4 gold metric tables
+3. Compute 6 gold metric tables
 4. Write each to gold layer
 """
 
@@ -29,6 +29,8 @@ from lantana.transform.metrics import (
     compute_behavioral_progression_multiday,
     compute_campaign_clusters,
     compute_daily_summary,
+    compute_detection_findings,
+    compute_geographic_summary,
     compute_ip_reputation,
 )
 
@@ -60,6 +62,8 @@ def run_transform(
         ("ip_reputation", compute_ip_reputation),
         ("behavioral_progression", compute_behavioral_progression),
         ("campaign_clusters", compute_campaign_clusters),
+        ("geographic_summary", compute_geographic_summary),
+        ("detection_findings", compute_detection_findings),
     ]
 
     for table_name, compute_fn in tables:

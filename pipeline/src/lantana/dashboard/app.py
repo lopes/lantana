@@ -7,7 +7,15 @@ from datetime import date, timedelta
 import streamlit as st
 
 from lantana.common.datalake import GOLD_ROOT, list_gold_dates
-from lantana.dashboard.pages import credentials, ip_reputation, overview, progression, stix_export
+from lantana.dashboard.pages import (
+    credentials,
+    findings,
+    geography,
+    ip_reputation,
+    overview,
+    progression,
+    stix_export,
+)
 
 
 def _setup_sidebar() -> date:
@@ -47,10 +55,12 @@ def main() -> None:
     pages = st.navigation(
         [
             st.Page(lambda: overview.render(d), title="Overview", url_path="overview"),
+            st.Page(lambda: geography.render(d), title="Geography", url_path="geography"),
             st.Page(
                 lambda: ip_reputation.render(d), title="IP Reputation", url_path="ip-reputation"
             ),
             st.Page(lambda: progression.render(d), title="Progression", url_path="progression"),
+            st.Page(lambda: findings.render(d), title="Findings", url_path="findings"),
             st.Page(lambda: credentials.render(d), title="Credentials", url_path="credentials"),
             st.Page(lambda: stix_export.render(d), title="STIX Export", url_path="stix-export"),
         ]

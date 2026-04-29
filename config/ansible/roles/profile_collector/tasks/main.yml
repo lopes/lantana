@@ -29,7 +29,7 @@
   notify: "Restart Vector"
   tags: [collector, vector]
 
-# -- COLLECTOR DIRECTORIES ---
+# --- COLLECTOR DIRECTORIES ---
 - name: "Create collector config directory"
   become: true
   ansible.builtin.file:
@@ -188,7 +188,7 @@
   ansible.builtin.copy:
     dest: /etc/cron.d/lantana-pipeline
     content: |
-      # Lantana data pipeline -- managed by Ansible
+      # Lantana data pipeline — managed by Ansible
       # Prune: daily at 00:15 UTC (180-day retention + disk monitoring)
       15 0 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-prune
       # Enrich: daily at 01:00 UTC (yesterday's bronze -> silver)

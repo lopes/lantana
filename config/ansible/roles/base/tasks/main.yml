@@ -51,7 +51,7 @@
     mode: "0644"
   tags: [base]
 
-# -- BASE DIRECTORIES ---
+# --- BASE DIRECTORIES ---
 - name: "Create base directories"
   become: true
   ansible.builtin.file:

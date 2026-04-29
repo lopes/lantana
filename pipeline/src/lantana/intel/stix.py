@@ -81,16 +81,37 @@ def _make_indicators(
                 if md_row.get("is_slow_burn"):
                     labels.append("slow-burn-escalation")
 
+        # Named threat actor
+        if row.get("greynoise_name") and row["greynoise_name"] not in ("", "unknown"):
+            labels.append(row["greynoise_name"])
+
         description_parts = [
             f"Risk score: {row['risk_score']:.1f}",
             f"Events: {row['total_events']}",
         ]
         if row.get("geo_country"):
-            description_parts.append(f"Country: {row['geo_country']}")
+            geo_str = row["geo_country"]
+            if row.get("geo_city"):
+                geo_str = f"{row['geo_city']}, {geo_str}"
+            description_parts.append(f"Location: {geo_str}")
+        if row.get("geo_asn"):
+            asn_str = str(row["geo_asn"])
+            if row.get("geo_isp"):
+                asn_str += f" ({row['geo_isp']})"
+            description_parts.append(f"ASN: {asn_str}")
         if row["auth_attempts"] > 0:
-            description_parts.append(f"Auth: {row.get('auth_successes', 0)}/{row['auth_attempts']}")
+            description_parts.append(
+                f"Auth: {row.get('auth_successes', 0)}/{row['auth_attempts']}"
+            )
         if row["commands_executed"] > 0:
             description_parts.append(f"Commands: {row['commands_executed']}")
+        if row.get("vt_malicious") and row["vt_malicious"] > 0:
+            description_parts.append(
+                f"VT detections: {row['vt_malicious']}"
+            )
+        if row.get("shodan_vulns") and row["shodan_vulns"]:
+            vuln_count = len(str(row["shodan_vulns"]).split(","))
+            description_parts.append(f"Known CVEs: {vuln_count}")
 
         # Multi-day: use first_seen_date for valid_from if available
         valid_from = row.get("first_seen")
@@ -232,6 +253,40 @@ def _make_malware_indicators(
     return malware_objects, hash_indicators
 
 
+def _make_finding_indicators(
+    detection: pl.DataFrame,
+    identity: stix2.Identity,
+    tlp: stix2.MarkingDefinition,
+) -> list[stix2.Indicator]:
+    """Create Indicator objects from detection findings with broad IP coverage."""
+    if detection.is_empty():
+        return []
+
+    # Only rules triggered by >= 5 unique IPs are worth sharing as intel
+    broad_rules = detection.filter(pl.col("unique_ips") >= 5)
+    indicators: list[stix2.Indicator] = []
+
+    for row in broad_rules.iter_rows(named=True):
+        title = row.get("finding_title", "unknown")
+        indicators.append(
+            stix2.Indicator(
+                name=f"rule-{title}",
+                description=(
+                    f"IDS rule triggered by {row['unique_ips']} unique source IPs "
+                    f"({row['event_count']} events). Category: {row.get('category', 'unknown')}."
+                ),
+                pattern="[network-traffic:extensions.'http-request-ext'.request_method = 'alert']",
+                pattern_type="stix",
+                valid_from=row.get("first_seen") or datetime.now(tz=UTC),
+                labels=["anomalous-activity"],
+                created_by_ref=identity.id,
+                object_marking_refs=[tlp.id],
+            )
+        )
+
+    return indicators
+
+
 def generate_bundle(
     gold_date: date,
     reporting: ReportingConfig,
@@ -240,6 +295,7 @@ def generate_bundle(
     clusters: pl.DataFrame,
     summary: pl.DataFrame | None = None,
     multiday_progression: pl.DataFrame | None = None,
+    detection: pl.DataFrame | None = None,
 ) -> stix2.Bundle:
     """Generate a STIX 2.1 bundle from gold-layer data for a given date."""
     tlp = _TLP_MAP.get(reporting.sharing.tlp.upper(), stix2.TLP_GREEN)
@@ -267,6 +323,11 @@ def generate_bundle(
         malware_objects, hash_indicators = _make_malware_indicators(summary, identity, tlp)
         objects.extend(malware_objects)
         objects.extend(hash_indicators)
+
+    # Finding-based indicators from detection rules
+    if detection is not None:
+        finding_indicators = _make_finding_indicators(detection, identity, tlp)
+        objects.extend(finding_indicators)
 
     # Create a Report wrapping all objects
     if len(objects) > 1:  # more than just the identity

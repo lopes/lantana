@@ -35,7 +35,7 @@
     - /etc/subuid
   tags: [honeypots]
 
-# -- SENSOR DIRECTORIES ---
+# --- SENSOR DIRECTORIES ---
 - name: "Create sensor config directory"
   become: true
   ansible.builtin.file:

@@ -22,6 +22,8 @@ from lantana.transform.metrics import (
     compute_behavioral_progression_multiday,
     compute_campaign_clusters,
     compute_daily_summary,
+    compute_detection_findings,
+    compute_geographic_summary,
     compute_ip_reputation,
 )
 
@@ -632,3 +634,206 @@ class TestMultiDayBehavioralProgression:
         # All IPs active on single day only
         slow_burn = result.filter(pl.col("is_slow_burn"))
         assert slow_burn.height == 0
+
+
+# ---------------------------------------------------------------------------
+# geographic_summary
+# ---------------------------------------------------------------------------
+
+
+class TestGeographicSummary:
+    def test_top_countries(self, silver_df: pl.DataFrame) -> None:
+        """top_countries contains country:count entries."""
+        result = compute_geographic_summary(silver_df)
+        assert not result.is_empty()
+        countries = result.row(0, named=True)["top_countries"]
+        assert isinstance(countries, list)
+        assert len(countries) > 0
+        # Each entry should be "CC:N" format
+        assert ":" in countries[0]
+
+    def test_empty_data(self) -> None:
+        """Empty DataFrame returns empty result."""
+        assert compute_geographic_summary(pl.DataFrame()).is_empty()
+
+    def test_missing_geo_columns(self) -> None:
+        """DataFrame without geo columns returns empty."""
+        df = pl.DataFrame({"src_endpoint_ip": ["1.2.3.4"]})
+        assert compute_geographic_summary(df).is_empty()
+
+
+# ---------------------------------------------------------------------------
+# detection_findings
+# ---------------------------------------------------------------------------
+
+
+class TestDetectionFindings:
+    def test_groups_by_rule(self, silver_df: pl.DataFrame) -> None:
+        """Returns one row per unique finding_title."""
+        result = compute_detection_findings(silver_df)
+        if result.is_empty():
+            pytest.skip("No findings in test fixture")
+        assert "finding_title" in result.columns
+        assert "event_count" in result.columns
+        assert "unique_ips" in result.columns
+
+    def test_empty_data(self) -> None:
+        """Empty DataFrame returns empty result."""
+        assert compute_detection_findings(pl.DataFrame()).is_empty()
+
+    def test_no_findings(self) -> None:
+        """DataFrame with no detection findings returns empty."""
+        df = pl.DataFrame({
+            "class_uid": [CLASS_NETWORK_ACTIVITY],
+            "finding_title": [None],
+            "src_endpoint_ip": ["1.2.3.4"],
+            "severity_id": [3],
+            "time": [_ts()],
+        })
+        assert compute_detection_findings(df).is_empty()
+
+
+# ---------------------------------------------------------------------------
+# enhanced risk scoring
+# ---------------------------------------------------------------------------
+
+
+class TestEnhancedRiskScoring:
+    def test_vt_malicious_boosts_score(self) -> None:
+        """vt_malicious_count >= 3 adds +10 to risk score."""
+        base = {
+            "class_uid": CLASS_NETWORK_ACTIVITY,
+            "category_uid": 4,
+            "severity_id": 3,
+            "activity_id": 5,
+            "type_uid": 400105,
+            "time": _ts(),
+            "message": "test",
+            "status_id": STATUS_UNKNOWN,
+            "src_endpoint_ip": "1.2.3.4",
+            "src_endpoint_port": 12345,
+            "dst_endpoint_ip": "honeypot-01",
+            "dst_endpoint_port": 22,
+            "dataset": "nftables",
+            "server": "test",
+            "operation": "test",
+            "session": None,
+            "user_name": None,
+            "unmapped_password": None,
+            "actor_process_cmd_line": None,
+            "finding_title": None,
+            "finding_uid": None,
+            "geo.country_code": "US",
+            "geo.asn": "1234",
+            "geo.isp": "TestISP",
+            "abuseipdb_confidence_score": 0,
+            "greynoise_classification": None,
+            "greynoise_noise": False,
+        }
+        # Without VT
+        df_no_vt = pl.DataFrame([base])
+        r1 = compute_ip_reputation(df_no_vt)
+        score_no_vt = r1.row(0, named=True)["risk_score"]
+
+        # With VT malicious >= 3
+        row_vt = {**base, "vt_malicious_count": 5}
+        df_vt = pl.DataFrame([row_vt])
+        r2 = compute_ip_reputation(df_vt)
+        score_vt = r2.row(0, named=True)["risk_score"]
+
+        assert score_vt >= score_no_vt + 10
+
+    def test_shodan_vulns_boosts_score(self) -> None:
+        """Non-empty shodan_vulns adds +10 to risk score."""
+        base = {
+            "class_uid": CLASS_NETWORK_ACTIVITY,
+            "category_uid": 4,
+            "severity_id": 3,
+            "activity_id": 5,
+            "type_uid": 400105,
+            "time": _ts(),
+            "message": "test",
+            "status_id": STATUS_UNKNOWN,
+            "src_endpoint_ip": "1.2.3.4",
+            "src_endpoint_port": 12345,
+            "dst_endpoint_ip": "honeypot-01",
+            "dst_endpoint_port": 22,
+            "dataset": "nftables",
+            "server": "test",
+            "operation": "test",
+            "session": None,
+            "user_name": None,
+            "unmapped_password": None,
+            "actor_process_cmd_line": None,
+            "finding_title": None,
+            "finding_uid": None,
+            "geo.country_code": "US",
+            "geo.asn": "1234",
+            "geo.isp": "TestISP",
+            "abuseipdb_confidence_score": 0,
+            "greynoise_classification": None,
+            "greynoise_noise": False,
+        }
+        df_no_vuln = pl.DataFrame([base])
+        r1 = compute_ip_reputation(df_no_vuln)
+        score_no_vuln = r1.row(0, named=True)["risk_score"]
+
+        row_vuln = {**base, "shodan_vulns": "CVE-2021-1234,CVE-2022-5678"}
+        df_vuln = pl.DataFrame([row_vuln])
+        r2 = compute_ip_reputation(df_vuln)
+        score_vuln = r2.row(0, named=True)["risk_score"]
+
+        assert score_vuln >= score_no_vuln + 10
+
+    def test_optional_columns_present_when_available(self) -> None:
+        """When enrichment columns exist, they appear in the output."""
+        base = {
+            "class_uid": CLASS_NETWORK_ACTIVITY,
+            "category_uid": 4,
+            "severity_id": 3,
+            "activity_id": 5,
+            "type_uid": 400105,
+            "time": _ts(),
+            "message": "test",
+            "status_id": STATUS_UNKNOWN,
+            "src_endpoint_ip": "1.2.3.4",
+            "src_endpoint_port": 12345,
+            "dst_endpoint_ip": "honeypot-01",
+            "dst_endpoint_port": 22,
+            "dataset": "nftables",
+            "server": "test",
+            "operation": "test",
+            "session": None,
+            "user_name": None,
+            "unmapped_password": None,
+            "actor_process_cmd_line": None,
+            "finding_title": None,
+            "finding_uid": None,
+            "geo.country_code": "US",
+            "geo.asn": "1234",
+            "geo.isp": "TestISP",
+            "geo.city": "New York",
+            "geo.latitude": 40.7128,
+            "geo.longitude": -74.006,
+            "abuseipdb_confidence_score": 50,
+            "abuseipdb_total_reports": 25,
+            "greynoise_classification": "malicious",
+            "greynoise_name": "Mirai",
+            "greynoise_noise": True,
+            "shodan_ports": "22,80,443",
+            "shodan_os": "Linux",
+            "shodan_vulns": "CVE-2021-1234",
+            "shodan_org": "Hetzner",
+            "vt_malicious_count": 5,
+            "vt_ip_reputation": -10,
+            "phishstats_url_count": 3,
+        }
+        df = pl.DataFrame([base])
+        result = compute_ip_reputation(df)
+        row = result.row(0, named=True)
+
+        assert row["geo_city"] == "New York"
+        assert row["greynoise_name"] == "Mirai"
+        assert row["shodan_ports"] == "22,80,443"
+        assert row["vt_malicious"] == 5
+        assert row["phishstats_urls"] == 3

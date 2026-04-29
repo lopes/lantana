@@ -11,6 +11,7 @@ dependencies = [
     "tenacity>=9.0",
     "structlog>=24.0",
     "stix2>=3.0",
+    "plotly>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +42,10 @@ python_version = "3.13"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["stix2", "stix2.*", "plotly", "plotly.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

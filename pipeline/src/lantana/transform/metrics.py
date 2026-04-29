@@ -39,6 +39,13 @@ STAGE_LABELS: dict[int, str] = {
 TOP_N: int = 10
 
 
+def _optional_first(df: pl.DataFrame, col: str, alias: str) -> pl.Expr:
+    """Return first() aggregation for a column, or null literal if column is absent."""
+    if col in df.columns:
+        return pl.col(col).first().alias(alias)
+    return pl.lit(None).alias(alias)
+
+
 def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[str]:
     """Extract top-N most frequent non-null values from a column."""
     if col not in df.columns:
@@ -99,13 +106,17 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
 def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     """Compute per-IP reputation scores from enrichment and behavioral data.
 
-    Risk score formula (0-100):
+    Risk score formula (0-100, clipped):
     - abuseipdb_score * 0.3 (max 30)
     - +20 if auth_successes > 0
     - +25 if commands_executed > 0
     - +15 if findings_triggered > 0
     - +20 if downloads > 0 (malware delivery)
     - +min(auth_attempts, 100) * 0.1 (max 10)
+    - +10 if vt_malicious_count >= 3
+    - +10 if shodan_vulns present
+    - +10 if phishstats_url_count > 0
+    - +5  if abuseipdb_total_reports >= 10
     """
     if silver.is_empty():
         return pl.DataFrame()
@@ -113,7 +124,8 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
 
-    grouped = silver.group_by("src_endpoint_ip").agg(
+    # Core columns always present in silver
+    core_aggs: list[pl.Expr] = [
         pl.len().alias("total_events"),
         pl.col("dataset").unique().alias("datasets"),
         (cls == CLASS_AUTHENTICATION).sum().alias("auth_attempts"),
@@ -130,7 +142,26 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
         pl.col("geo.isp").first().alias("geo_isp"),
         pl.col("abuseipdb_confidence_score").first().alias("abuseipdb_score"),
         pl.col("greynoise_classification").first().alias("greynoise_class"),
-    )
+    ]
+
+    # Optional enrichment columns (may be absent in test data or partial runs)
+    optional = [
+        ("geo.city", "geo_city"),
+        ("geo.latitude", "geo_latitude"),
+        ("geo.longitude", "geo_longitude"),
+        ("abuseipdb_total_reports", "abuseipdb_reports"),
+        ("greynoise_name", "greynoise_name"),
+        ("shodan_ports", "shodan_ports"),
+        ("shodan_os", "shodan_os"),
+        ("shodan_vulns", "shodan_vulns"),
+        ("shodan_org", "shodan_org"),
+        ("vt_malicious_count", "vt_malicious"),
+        ("vt_ip_reputation", "vt_reputation"),
+        ("phishstats_url_count", "phishstats_urls"),
+    ]
+    enrichment_aggs = [_optional_first(silver, col, alias) for col, alias in optional]
+
+    grouped = silver.group_by("src_endpoint_ip").agg(core_aggs + enrichment_aggs)
 
     # Compute risk score
     result = grouped.with_columns(
@@ -141,6 +172,15 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
             + pl.when(pl.col("findings_triggered") > 0).then(15.0).otherwise(0.0)
             + pl.when(pl.col("downloads") > 0).then(20.0).otherwise(0.0)
             + pl.min_horizontal(pl.col("auth_attempts").cast(pl.Float64), pl.lit(100.0)) * 0.1
+            # Additional enrichment signals
+            + pl.when(pl.col("vt_malicious").fill_null(0) >= 3).then(10.0).otherwise(0.0)
+            + pl.when(
+                pl.col("shodan_vulns").is_not_null() & (pl.col("shodan_vulns") != "")
+            ).then(10.0).otherwise(0.0)
+            + pl.when(pl.col("phishstats_urls").fill_null(0) > 0).then(10.0).otherwise(0.0)
+            + pl.when(
+                pl.col("abuseipdb_reports").fill_null(0) >= 10
+            ).then(5.0).otherwise(0.0)
         )
         .clip(0.0, 100.0)
         .alias("risk_score"),
@@ -440,3 +480,122 @@ def compute_campaign_clusters(silver: pl.DataFrame) -> pl.DataFrame:
         "first_seen",
         "last_seen",
     ).sort("ip_count", descending=True)
+
+
+def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
+    """Compute geographic distribution of attack origins.
+
+    Returns a single-row DataFrame with top countries, cities, and ASNs
+    encoded as list columns (same pattern as daily_summary).
+    """
+    if silver.is_empty() or "geo.country_code" not in silver.columns:
+        return pl.DataFrame()
+
+    # Top countries by unique IPs
+    countries = (
+        silver.filter(pl.col("geo.country_code").is_not_null())
+        .group_by("geo.country_code")
+        .agg(
+            pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
+            pl.len().alias("total_events"),
+        )
+        .sort("unique_ips", descending=True)
+        .head(TOP_N)
+    )
+    top_countries = countries.select(
+        pl.concat_str(
+            [pl.col("geo.country_code"), pl.lit(":"), pl.col("unique_ips").cast(pl.Utf8)],
+            separator="",
+        ).alias("entry")
+    ).get_column("entry").to_list()
+
+    # Top cities by unique IPs (with lat/lon for mapping)
+    top_cities: list[str] = []
+    if "geo.city" in silver.columns:
+        cities = (
+            silver.filter(
+                pl.col("geo.city").is_not_null() & (pl.col("geo.city") != "")
+            )
+            .group_by("geo.city", "geo.country_code", "geo.latitude", "geo.longitude")
+            .agg(
+                pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
+                pl.len().alias("total_events"),
+            )
+            .sort("unique_ips", descending=True)
+            .head(20)
+        )
+        top_cities = cities.select(
+            pl.concat_str(
+                [
+                    pl.col("geo.city"), pl.lit(","),
+                    pl.col("geo.country_code"), pl.lit(":"),
+                    pl.col("unique_ips").cast(pl.Utf8),
+                ],
+                separator="",
+            ).alias("entry")
+        ).get_column("entry").to_list()
+
+    # Top ASNs by unique IPs
+    top_asns: list[str] = []
+    if "geo.asn" not in silver.columns:
+        return pl.DataFrame({
+            "top_countries": [top_countries],
+            "top_cities": [top_cities],
+            "top_asns": [top_asns],
+        })
+
+    asns = (
+        silver.filter(pl.col("geo.asn").is_not_null() & (pl.col("geo.asn") != ""))
+        .group_by("geo.asn", "geo.isp")
+        .agg(
+            pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
+            pl.len().alias("total_events"),
+        )
+        .sort("unique_ips", descending=True)
+        .head(TOP_N)
+    )
+    top_asns = asns.select(
+        pl.concat_str(
+            [
+                pl.col("geo.asn"), pl.lit("|"),
+                pl.col("geo.isp").fill_null(""), pl.lit(":"),
+                pl.col("unique_ips").cast(pl.Utf8),
+            ],
+            separator="",
+        ).alias("entry")
+    ).get_column("entry").to_list()
+
+    return pl.DataFrame({
+        "top_countries": [top_countries],
+        "top_cities": [top_cities],
+        "top_asns": [top_asns],
+    })
+
+
+def compute_detection_findings(silver: pl.DataFrame) -> pl.DataFrame:
+    """Compute detection finding statistics from Suricata alerts.
+
+    Returns one row per rule with event count, unique IPs, and severity.
+    Top 20 rules by event count.
+    """
+    if silver.is_empty() or "finding_title" not in silver.columns:
+        return pl.DataFrame()
+
+    findings = silver.filter(pl.col("class_uid") == CLASS_DETECTION_FINDING)
+    if findings.is_empty():
+        return pl.DataFrame()
+
+    # Group by finding_title
+    aggs: list[pl.Expr] = [
+        pl.len().alias("event_count"),
+        pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
+        pl.col("severity_id").mode().first().alias("severity_id"),
+        pl.col("time").min().alias("first_seen"),
+        pl.col("time").max().alias("last_seen"),
+    ]
+    if "finding_category" in findings.columns:
+        aggs.append(pl.col("finding_category").first().alias("category"))
+
+    result = findings.group_by("finding_title").agg(aggs)
+
+    return result.sort("event_count", descending=True).head(20)

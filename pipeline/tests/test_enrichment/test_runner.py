@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from lantana.enrichment.providers.base import EnrichmentError, EnrichmentResult
+from lantana.enrichment.providers.base import EnrichmentResult
 from lantana.enrichment.runner import (
     ErrorAccumulator,
     _classify_http_error,
@@ -19,7 +19,6 @@ from lantana.enrichment.runner import (
     _record_error,
     _write_error_summary,
 )
-
 
 # --- _classify_http_error ---
 
@@ -104,7 +103,11 @@ class TestWriteErrorSummary:
 
     def test_appends_to_existing(self, tmp_path: Path) -> None:
         errors_path = tmp_path / "enrichment_errors.json"
-        errors_path.write_text('{"date": "2026-04-27", "provider": "shodan", "error_type": "timeout", "count": 1, "message": "old"}\n')
+        old_entry = json.dumps({
+            "date": "2026-04-27", "provider": "shodan",
+            "error_type": "timeout", "count": 1, "message": "old",
+        })
+        errors_path.write_text(old_entry + "\n")
 
         errors: ErrorAccumulator = {}
         _record_error(errors, "abuseipdb", "rate_limit", "429")
@@ -166,7 +169,9 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider("test_provider", provider, ["1.2.3.4"], cache, errors)
+        results = await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
         cache.close()
 
         assert results == []
@@ -180,7 +185,9 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider("test_provider", provider, ["1.2.3.4"], cache, errors)
+        results = await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
         cache.close()
 
         assert results == []
@@ -193,7 +200,9 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider("test_provider", provider, ["1.2.3.4"], cache, errors)
+        results = await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
         cache.close()
 
         assert results == []
@@ -212,7 +221,9 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider("test_provider", provider, ["1.2.3.4"], cache, errors)
+        results = await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
         cache.close()
 
         assert len(results) == 1

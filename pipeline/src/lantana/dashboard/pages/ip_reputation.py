@@ -64,12 +64,21 @@ def render(selected_date: date) -> None:
         "risk_level",
         "total_events",
         "geo_country",
+        "geo_city",
         "auth_attempts",
         "auth_successes",
         "commands_executed",
         "findings_triggered",
         "abuseipdb_score",
+        "abuseipdb_reports",
         "greynoise_class",
+        "greynoise_name",
+        "vt_malicious",
+        "phishstats_urls",
+        "shodan_ports",
+        "shodan_os",
+        "shodan_vulns",
+        "shodan_org",
     ]
     available_cols = [c for c in display_cols if c in display_df.columns]
 
