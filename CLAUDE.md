@@ -104,7 +104,7 @@ lantana/
 - **Pylance strict mode**: all types declared, no `Any` escape hatches, full type annotations on all function signatures and return types
 - **TDD**: write tests first, then implement. Every module has a corresponding test file mirroring the `src/` structure
 - **Functional programming style**: pure functions for data transforms, Pydantic models for structured data, push IO to the edges. Prefer Polars expression chains over imperative loops. Minimize side effects.
-- **Boring, reliable tooling only**: Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit. No exotic or trendy dependencies.
+- **Boring, reliable tooling only**: Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly. No exotic or trendy dependencies.
 - **Linting/formatting**: `ruff` for linting + formatting, `mypy` strict for type checking, `pytest` for tests
 - **Package manager**: `uv`
 
@@ -124,7 +124,7 @@ Lantana produces shareable intelligence (Discord reports, STIX bundles). The pri
 - Dropped sources: loopback (`127.0.0.0/8`, `::1`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`)
 - This catches health check probes, inter-zone traffic, and operational noise at the earliest possible point
 - Pattern: use VRL `ip_cidr_contains!()` against the operation's network prefixes from inventory
-- **Every new honeypot role in Phase 2+ must replicate this filter** — see `cowrie.vector.yaml.j2` as the reference
+- **Every new honeypot role must replicate this filter** — see `cowrie.vector.yaml.j2` as the reference
 
 ### Layer 2: Silver datalake (pseudonymization)
 

@@ -18,7 +18,7 @@ git clone https://github.com/lopes/lantana.git
 cd lantana
 ```
 
-Provision a [Debian 13](https://www.debian.org/) host (VM or bare metal). Terraform support for VMware/vSphere is available under `infra/terraform/`.
+Provision a [Debian 13](https://www.debian.org/) host (VM or bare metal). Terraform support for Proxmox is available under `infra/terraform/environments/proxmox/`.
 
 ### 2. Create an operation
 
