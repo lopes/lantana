@@ -1,67 +1,58 @@
-# --- VSPHERE CONNECTION ---
-variable "vsphere_server" {
-  description = "vSphere server hostname or IP"
+# --- PROXMOX CONNECTION ---
+variable "proxmox_endpoint" {
+  description = "Proxmox API endpoint (e.g. https://pve.example.com:8006)"
   type        = string
 }
 
-variable "vsphere_user" {
-  description = "vSphere username"
+variable "proxmox_username" {
+  description = "Proxmox username (e.g. root@pam)"
   type        = string
 }
 
-variable "vsphere_password" {
-  description = "vSphere password"
+variable "proxmox_password" {
+  description = "Proxmox password"
   type        = string
   sensitive   = true
 }
 
-variable "vsphere_allow_unverified_ssl" {
-  description = "Allow unverified SSL connections to vSphere"
+variable "proxmox_insecure" {
+  description = "Skip TLS certificate verification"
   type        = bool
   default     = false
 }
 
 # --- INFRASTRUCTURE ---
-variable "datacenter" {
-  description = "vSphere datacenter name"
-  type        = string
-}
-
-variable "cluster" {
-  description = "vSphere cluster name"
+variable "node_name" {
+  description = "Proxmox node to deploy VMs on"
   type        = string
 }
 
 variable "datastore" {
-  description = "vSphere datastore name"
+  description = "Proxmox datastore for VM disks (e.g. local-lvm)"
   type        = string
+  default     = "local-lvm"
 }
 
-variable "resource_pool" {
-  description = "vSphere resource pool name"
+variable "snippets_datastore" {
+  description = "Proxmox datastore for cloud-init snippets (must have snippets content type enabled)"
   type        = string
-  default     = ""
+  default     = "local"
 }
 
-variable "vm_folder" {
-  description = "vSphere VM folder"
-  type        = string
-  default     = "lantana"
-}
-
-variable "vm_template" {
-  description = "Debian 13 VM template name to clone"
-  type        = string
+variable "template_vm_id" {
+  description = "VM ID of the Debian 13 template to clone"
+  type        = number
 }
 
 # --- NETWORKING ---
-variable "wan_network" {
-  description = "vSphere port group for WAN (internet-facing)"
+variable "wan_bridge" {
+  description = "Proxmox bridge for WAN (internet-facing, e.g. vmbr0)"
   type        = string
+  default     = "vmbr0"
 }
 
-variable "lan_network" {
-  description = "vSphere port group for LAN (internal, multi-node only)"
+variable "lan_bridge" {
+  description = "Proxmox bridge for LAN (internal, multi-node only, e.g. vmbr1)"
   type        = string
   default     = null
 }
@@ -91,7 +82,7 @@ variable "ssh_public_key" {
 
 # --- SINGLE-NODE SIZING ---
 variable "single_node_cpus" {
-  description = "vCPUs for single-node VM"
+  description = "CPU cores for single-node VM"
   type        = number
   default     = 2
 }

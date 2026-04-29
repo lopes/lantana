@@ -1,0 +1,28 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit secrets.
+
+# --- Proxmox Connection ---
+proxmox_endpoint = "https://pve.example.com:8006"
+proxmox_username = "root@pam"
+proxmox_password = "CHANGE_ME"
+proxmox_insecure = false
+
+# --- Infrastructure ---
+node_name          = "pve"
+datastore          = "local-lvm"
+snippets_datastore = "local" # Must have "snippets" content type enabled
+template_vm_id     = 9000    # VM ID of your Debian 13 template
+
+# --- Networking ---
+wan_bridge = "vmbr0"
+lan_bridge = "vmbr1" # Only needed for multi-node
+
+# --- Deployment ---
+operation_name  = "lantana"
+deployment_mode = "single" # "single" or "multi"
+ssh_public_key  = "ssh-ed25519 AAAA... user@host"
+
+# --- Single-node sizing ---
+single_node_cpus   = 2
+single_node_memory = 4096
+single_node_disk   = 60
