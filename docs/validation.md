@@ -8,10 +8,12 @@ A day-by-day checklist for validating a fresh Lantana deployment. Covers infrast
 
 ### 0.1 Provision the host
 
-Either use Terraform (VMware Fusion / vSphere):
+Either use Terraform (Proxmox):
+
 ```bash
-cd infra/terraform
+cd infra/terraform/environments/proxmox
 cp terraform.tfvars.example terraform.tfvars  # fill in your values
+terraform init
 terraform apply
 ```
 
@@ -35,6 +37,7 @@ Edit these files under `inventories/op_myop/group_vars/all/`:
 | `reporting.yml` | Operator identity, TLP, pseudonym map |
 
 Create the vault:
+
 ```bash
 ansible-vault create inventories/op_myop/group_vars/all/vault.yml
 ```
@@ -49,6 +52,7 @@ ansible-playbook -i inventories/op_myop/inventory.yml playbooks/deploy_honeypots
 ### 0.4 Validate infrastructure
 
 Run the validation playbook:
+
 ```bash
 ansible-playbook -i inventories/op_myop/inventory.yml tests/validate-single-node.yml -vvv
 ```
@@ -56,12 +60,14 @@ ansible-playbook -i inventories/op_myop/inventory.yml tests/validate-single-node
 Then SSH to the host and check manually:
 
 **System users:**
+
 ```bash
 id stigma    # UID 2001, sensor user
 id nectar    # UID 2002, collector user
 ```
 
 **Directories exist:**
+
 ```bash
 ls -la /etc/lantana/sensor/cowrie/          # Cowrie config
 ls -la /etc/lantana/sensor/dionaea/         # Dionaea config (if deployed)
@@ -76,15 +82,17 @@ ls -la /var/lib/lantana/collector/geoip/    # GeoLite2-City.mmdb, GeoLite2-ASN.m
 ```
 
 **Config files deployed:**
+
 ```bash
 cat /etc/lantana/sensor/cowrie/cowrie.cfg | head -5     # Should show narrative hostname
 cat /etc/lantana/sensor/dionaea/dionaea.yaml | head -5  # Should show service config
 cat /etc/lantana/collector/reporting.json | python3 -m json.tool | head -10
-# secrets.json: DO NOT cat -- contains API keys. Just verify it exists:
+# secrets.json: DO NOT cat — contains API keys. Just verify it exists:
 test -f /etc/lantana/collector/secrets.json && echo "OK"
 ```
 
 **Containers running:**
+
 ```bash
 sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user status cowrie
 sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user status dionaea  # if deployed
@@ -92,18 +100,20 @@ sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user status dionaea  #
 ```
 
 **Firewall rules loaded:**
+
 ```bash
 sudo nft list ruleset | grep -A2 "lantana_nat"
 # Should show DNAT rules:
 #   port 22 -> sensor:2222 (Cowrie SSH)
 #   port 23 -> sensor:2223 (Cowrie Telnet)
-#   port 445 -> sensor:8445 (Dionaea SMB) -- if deployed
+#   port 445 -> sensor:8445 (Dionaea SMB) — if deployed
 #   etc.
 ls /etc/lantana/honeywall/nftables/sensors/
 # cowrie.nft, dionaea.nft
 ```
 
 **Suricata running:**
+
 ```bash
 sudo systemctl status suricata
 ls /var/lib/lantana/honeywall/suricata/rules/
@@ -111,6 +121,7 @@ ls /var/lib/lantana/honeywall/suricata/rules/
 ```
 
 **Vector running:**
+
 ```bash
 sudo systemctl status vector
 ls /etc/vector/conf.d/
@@ -118,6 +129,7 @@ ls /etc/vector/conf.d/
 ```
 
 **Pipeline installed:**
+
 ```bash
 ls /opt/lantana/pipeline/venv/bin/lantana-*
 # lantana-enrich, lantana-transform, lantana-prune, lantana-notify, lantana-report, lantana-dashboard
@@ -134,6 +146,7 @@ cat /etc/cron.d/lantana-pipeline
 After deployment, real attackers will start hitting exposed ports. Within minutes to hours you should see data.
 
 **Cowrie logs:**
+
 ```bash
 tail -5 /var/log/lantana/sensor/cowrie/cowrie.json
 # Should show JSON lines with eventid, src_ip, dst_ip, timestamp
@@ -141,12 +154,14 @@ tail -5 /var/log/lantana/sensor/cowrie/cowrie.json
 ```
 
 **Dionaea logs (if deployed):**
+
 ```bash
 tail -5 /var/log/lantana/sensor/dionaea/dionaea.json
 # Should show JSON with connection.protocol, connection.type, src_ip, dst_ip
 ```
 
 **Suricata alerts:**
+
 ```bash
 tail -5 /var/log/lantana/honeywall/suricata/eve.json
 # Should show JSON with event_type (alert, flow, stats), src_ip, dest_ip
@@ -154,6 +169,7 @@ tail -5 /var/log/lantana/honeywall/suricata/eve.json
 ```
 
 **Bronze datalake (Vector writes):**
+
 ```bash
 ls /var/lib/lantana/datalake/bronze/
 # dataset=cowrie/, dataset=suricata/, dataset=nftables/
@@ -164,6 +180,7 @@ wc -l /var/lib/lantana/datalake/bronze/dataset=cowrie/date=$(date +%Y-%m-%d)/ser
 ```
 
 If bronze is empty but raw logs exist, check Vector:
+
 ```bash
 sudo journalctl -u vector --since "1 hour ago" | tail -20
 ```
@@ -188,6 +205,7 @@ ls /var/lib/lantana/datalake/silver/dataset=cowrie/date=$(date -d yesterday +%Y-
 ```
 
 **Verify OCSF normalization:**
+
 ```bash
 /opt/lantana/pipeline/venv/bin/python3 -c "
 from datetime import date, timedelta
@@ -202,6 +220,7 @@ print('Columns:', sorted(df.columns))
 ```
 
 **Verify OPSEC redaction:**
+
 ```bash
 /opt/lantana/pipeline/venv/bin/python3 -c "
 from datetime import date, timedelta
@@ -219,6 +238,7 @@ print('OPSEC OK: no infrastructure IPs in silver')
 ```
 
 **Verify enrichment cache:**
+
 ```bash
 ls -la /var/lib/lantana/datalake/.enrichment_cache.db
 # SQLite file should exist and be non-empty
@@ -239,6 +259,7 @@ ls /var/lib/lantana/datalake/gold/
 ```
 
 **Inspect gold tables:**
+
 ```bash
 /opt/lantana/pipeline/venv/bin/python3 -c "
 from datetime import date, timedelta
@@ -251,6 +272,7 @@ for table in ['daily_summary', 'ip_reputation', 'behavioral_progression', 'campa
 ```
 
 **Verify daily_summary has plausible numbers:**
+
 ```bash
 /opt/lantana/pipeline/venv/bin/python3 -c "
 from datetime import date, timedelta
@@ -286,6 +308,7 @@ grep lantana-prune /var/log/syslog | tail -5
 By day 3, the enrichment cache should have meaningful entries from the API providers.
 
 **Check provider results:**
+
 ```bash
 sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "
 SELECT provider, COUNT(*) as entries FROM cache GROUP BY provider;
@@ -295,6 +318,7 @@ SELECT provider, COUNT(*) as entries FROM cache GROUP BY provider;
 ```
 
 **Check enrichment columns in silver:**
+
 ```bash
 /opt/lantana/pipeline/venv/bin/python3 -c "
 from datetime import date, timedelta
@@ -310,6 +334,7 @@ for col in enrichment_cols:
 ```
 
 If enrichment columns are all null, check:
+
 - API keys in `/etc/lantana/collector/secrets.json` (non-empty for each provider)
 - GeoIP MMDB files in `/var/lib/lantana/collector/geoip/`
 - Enrichment runner logs: `grep lantana-enrich /var/log/syslog`
@@ -330,6 +355,7 @@ If `discord_webhook` is configured in `secrets.json`:
 ```
 
 Check your Discord channel for:
+
 - **Embed**: short summary with event count, unique IPs, stage breakdown
 - **Attached .md file**: full daily brief with:
   - Key Metrics table
@@ -343,6 +369,7 @@ Check your Discord channel for:
 ### 7.2 STIX bundles
 
 Generate a bundle manually:
+
 ```bash
 /opt/lantana/pipeline/venv/bin/python3 -c "
 import json
@@ -365,6 +392,7 @@ print(f'Total STIX objects: {len(bundle.objects)}')
 ```
 
 **Verify the bundle contains:**
+
 - `identity` object (your operator)
 - `indicator` objects for high-risk IPs (risk >= 40) with `[ipv4-addr:value = '...']` patterns
 - `indicator` objects for file hashes with `[file:hashes.'SHA-256' = '...']` patterns (if downloads captured)
@@ -378,35 +406,41 @@ print(f'Total STIX objects: {len(bundle.objects)}')
 ### 7.3 Streamlit dashboard
 
 Launch the dashboard:
+
 ```bash
 /opt/lantana/pipeline/venv/bin/lantana-dashboard
 # Or from local dev:
 cd pipeline && uv run python ../scripts/run-dashboard-local.py
 ```
 
-Open http://localhost:8501 and verify each page:
+Open <http://localhost:8501> and verify each page:
 
 **Overview page:**
+
 - Metric cards (events, IPs, auth, commands, findings)
 - Event type distribution
 - Top-N tables (IPs, usernames, passwords, commands)
 
 **IP Reputation page:**
+
 - Risk score distribution
 - Filterable IP table with enrichment details
 - Risk slider filter
 
 **Behavioral Progression page:**
+
 - Escalation funnel (scan -> credential -> authenticated -> interactive)
 - Stage scatter plot (stage vs time, colored by automated/manual)
 - Automated vs manual breakdown
 - **Multi-day progression section**: slow-burn IPs count, velocity distribution, slow-burn details table
 
 **Credentials page:**
+
 - Campaign cluster table (shared username:password pairs, IP count)
 - Top username/password pairs
 
 **STIX Export page:**
+
 - Bundle preview
 - Generate button
 - JSON download

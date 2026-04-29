@@ -1,6 +1,6 @@
 # Lantana: Rules of Engagement
 
-Lantana is designed to operate safely in hostile environments and assumes that sensor hosts -- especially high-interaction ones -- will eventually be compromised. To ensure ethical, legal, and operational safety, the platform enforces strict rules of engagement at both architectural and operational levels.
+Lantana is designed to operate safely in hostile environments and assumes that sensor hosts — especially high-interaction ones — will eventually be compromised. To ensure ethical, legal, and operational safety, the platform enforces strict rules of engagement at both architectural and operational levels.
 
 ---
 
