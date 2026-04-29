@@ -61,5 +61,5 @@ class PhishStatsProvider:
         )
 
     def rate_limit(self) -> tuple[int, int]:
-        """Return (10, 60) -- 10 requests per minute."""
+        """Return (10, 60) — 10 requests per minute."""
         return (10, 60)

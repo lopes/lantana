@@ -1,8 +1,8 @@
-"""Credentials page -- credential intelligence and campaign clusters."""
+"""Credentials page — credential intelligence and campaign clusters."""
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 -- runtime parameter type
+from datetime import date  # noqa: TC003 — runtime parameter type
 
 import polars as pl
 import streamlit as st
@@ -12,7 +12,7 @@ from lantana.common.datalake import read_gold_table
 
 def render(selected_date: date) -> None:
     """Render the credentials page for the selected date."""
-    st.header(f"Credentials -- {selected_date.isoformat()}")
+    st.header(f"Credentials — {selected_date.isoformat()}")
 
     summary = read_gold_table("daily_summary", selected_date)
     clusters = read_gold_table("campaign_clusters", selected_date)
@@ -26,10 +26,12 @@ def render(selected_date: date) -> None:
             st.subheader("Top Usernames")
             usernames = row.get("top_usernames", [])
             if usernames:
-                user_df = pl.DataFrame({
-                    "Username": usernames,
-                    "Rank": list(range(1, len(usernames) + 1)),
-                })
+                user_df = pl.DataFrame(
+                    {
+                        "Username": usernames,
+                        "Rank": list(range(1, len(usernames) + 1)),
+                    }
+                )
                 st.dataframe(user_df.to_pandas(), hide_index=True)
             else:
                 st.caption("No username data.")
@@ -38,10 +40,12 @@ def render(selected_date: date) -> None:
             st.subheader("Top Passwords")
             passwords = row.get("top_passwords", [])
             if passwords:
-                pass_df = pl.DataFrame({
-                    "Password": passwords,
-                    "Rank": list(range(1, len(passwords) + 1)),
-                })
+                pass_df = pl.DataFrame(
+                    {
+                        "Password": passwords,
+                        "Rank": list(range(1, len(passwords) + 1)),
+                    }
+                )
                 st.dataframe(pass_df.to_pandas(), hide_index=True)
             else:
                 st.caption("No password data.")
@@ -50,7 +54,7 @@ def render(selected_date: date) -> None:
 
     # Campaign clusters
     st.subheader("Campaign Clusters")
-    st.caption("IPs sharing the same credential pair -- likely botnets or coordinated attacks.")
+    st.caption("IPs sharing the same credential pair — likely botnets or coordinated attacks.")
 
     if clusters.is_empty():
         st.info("No campaign clusters detected for this date.")
@@ -73,9 +77,7 @@ def render(selected_date: date) -> None:
     display_df = clusters.select(available_cols)
     if "ips" in display_df.columns:
         display_df = display_df.with_columns(
-            pl.col("ips")
-            .list.join(", ")
-            .alias("ips"),
+            pl.col("ips").list.join(", ").alias("ips"),
         )
 
     st.dataframe(

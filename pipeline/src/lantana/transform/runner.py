@@ -1,4 +1,4 @@
-"""Gold aggregation runner -- reads silver, computes metrics, writes gold.
+"""Gold aggregation runner — reads silver, computes metrics, writes gold.
 
 Daily workflow:
 1. Read all silver Parquet for the target date (cross-dataset)
@@ -10,7 +10,7 @@ Daily workflow:
 from __future__ import annotations
 
 from datetime import date, timedelta
-from pathlib import Path  # noqa: TC003 -- used in function defaults
+from pathlib import Path  # noqa: TC003 — used in function defaults
 from typing import TYPE_CHECKING
 
 import structlog
@@ -83,7 +83,10 @@ def run_transform(
         multiday = compute_behavioral_progression_multiday(lookback_frames)
         if not multiday.is_empty():
             write_gold_table(
-                multiday, "behavioral_progression_multiday", target_date, gold_root=gold_root,
+                multiday,
+                "behavioral_progression_multiday",
+                target_date,
+                gold_root=gold_root,
             )
             logger.info("gold_written", table="behavioral_progression_multiday", rows=len(multiday))
 

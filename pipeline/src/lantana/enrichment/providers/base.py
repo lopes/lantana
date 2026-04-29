@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime  # noqa: TC003 - required at runtime by Pydantic
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
@@ -15,6 +15,16 @@ class EnrichmentResult(BaseModel):
     ip: str
     data: dict[str, str | int | float | bool | None]
     queried_at: datetime
+
+
+class EnrichmentError(BaseModel):
+    """Aggregated error summary from an enrichment provider."""
+
+    provider: str
+    error_type: str
+    error_message: str
+    count: int = 1
+    timestamp: datetime
 
 
 @runtime_checkable

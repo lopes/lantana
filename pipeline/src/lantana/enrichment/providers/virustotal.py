@@ -85,5 +85,5 @@ class VirusTotalProvider:
         )
 
     def rate_limit(self) -> tuple[int, int]:
-        """Return (4, 60) -- 4 requests per minute."""
+        """Return (4, 60) — 4 requests per minute."""
         return (4, 60)

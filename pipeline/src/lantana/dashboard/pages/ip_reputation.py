@@ -1,8 +1,8 @@
-"""IP Reputation page -- risk scores and enrichment details."""
+"""IP Reputation page — risk scores and enrichment details."""
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 -- runtime parameter type
+from datetime import date  # noqa: TC003 — runtime parameter type
 
 import polars as pl
 import streamlit as st
@@ -21,7 +21,7 @@ def _risk_label(score: float) -> str:
 
 def render(selected_date: date) -> None:
     """Render the IP reputation page for the selected date."""
-    st.header(f"IP Reputation -- {selected_date.isoformat()}")
+    st.header(f"IP Reputation — {selected_date.isoformat()}")
 
     df = read_gold_table("ip_reputation", selected_date)
     if df.is_empty():

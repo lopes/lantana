@@ -7,7 +7,7 @@ to these models. OCSF v1.3.0 class UIDs and category UIDs are used.
 
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003 -- Pydantic needs runtime access
+from datetime import datetime  # noqa: TC003 — Pydantic needs runtime access
 
 from pydantic import BaseModel
 

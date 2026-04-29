@@ -1,8 +1,8 @@
-"""Tests for OCSF Pydantic models -- schema contract validation."""
+"""Tests for OCSF Pydantic models — schema contract validation."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from lantana.models.ocsf import (
     CLASS_AUTHENTICATION,
@@ -22,7 +22,7 @@ from lantana.models.ocsf import (
 
 
 def _ts() -> datetime:
-    return datetime(2026, 4, 25, 10, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
 
 
 def test_base_event_defaults() -> None:

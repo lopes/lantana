@@ -63,5 +63,5 @@ class AbuseIPDBProvider:
         )
 
     def rate_limit(self) -> tuple[int, int]:
-        """Return (1000, 86400) -- 1000 requests per day."""
+        """Return (1000, 86400) — 1000 requests per day."""
         return (1000, 86400)

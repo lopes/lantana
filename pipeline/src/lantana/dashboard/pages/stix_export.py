@@ -1,8 +1,8 @@
-"""STIX Export page -- generate and download STIX 2.1 bundles."""
+"""STIX Export page — generate and download STIX 2.1 bundles."""
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 -- runtime parameter type
+from datetime import date  # noqa: TC003 — runtime parameter type
 
 import streamlit as st
 
@@ -11,7 +11,7 @@ from lantana.common.datalake import read_gold_table
 
 def render(selected_date: date) -> None:
     """Render the STIX export page for the selected date."""
-    st.header(f"STIX Export -- {selected_date.isoformat()}")
+    st.header(f"STIX Export — {selected_date.isoformat()}")
 
     summary = read_gold_table("daily_summary", selected_date)
     reputation = read_gold_table("ip_reputation", selected_date)
@@ -46,8 +46,11 @@ def render(selected_date: date) -> None:
 
             reporting = load_reporting()
             bundle = generate_bundle(
-                selected_date, reporting,
-                reputation, progression, clusters,
+                selected_date,
+                reporting,
+                reputation,
+                progression,
+                clusters,
             )
             json_str = bundle.serialize(pretty=True)
 

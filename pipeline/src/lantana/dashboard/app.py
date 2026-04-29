@@ -1,4 +1,4 @@
-"""Streamlit dashboard entry point -- Lantana Intelligence Console."""
+"""Streamlit dashboard entry point — Lantana Intelligence Console."""
 
 from __future__ import annotations
 
@@ -19,9 +19,7 @@ def _setup_sidebar() -> date:
     yesterday = date.today() - timedelta(days=1)
 
     if available_dates:
-        default_idx = (
-            available_dates.index(yesterday) if yesterday in available_dates else 0
-        )
+        default_idx = available_dates.index(yesterday) if yesterday in available_dates else 0
         selected = st.sidebar.selectbox(
             "Date",
             options=available_dates,
@@ -46,13 +44,17 @@ def main() -> None:
     selected_date = _setup_sidebar()
 
     d = selected_date
-    pages = st.navigation([
-        st.Page(lambda: overview.render(d), title="Overview", url_path="overview"),
-        st.Page(lambda: ip_reputation.render(d), title="IP Reputation", url_path="ip-reputation"),
-        st.Page(lambda: progression.render(d), title="Progression", url_path="progression"),
-        st.Page(lambda: credentials.render(d), title="Credentials", url_path="credentials"),
-        st.Page(lambda: stix_export.render(d), title="STIX Export", url_path="stix-export"),
-    ])
+    pages = st.navigation(
+        [
+            st.Page(lambda: overview.render(d), title="Overview", url_path="overview"),
+            st.Page(
+                lambda: ip_reputation.render(d), title="IP Reputation", url_path="ip-reputation"
+            ),
+            st.Page(lambda: progression.render(d), title="Progression", url_path="progression"),
+            st.Page(lambda: credentials.render(d), title="Credentials", url_path="credentials"),
+            st.Page(lambda: stix_export.render(d), title="STIX Export", url_path="stix-export"),
+        ]
+    )
     pages.run()
 
 

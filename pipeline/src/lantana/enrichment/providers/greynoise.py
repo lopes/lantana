@@ -57,5 +57,5 @@ class GreyNoiseProvider:
         )
 
     def rate_limit(self) -> tuple[int, int]:
-        """Return (50, 86400) -- 50 requests per day."""
+        """Return (50, 86400) — 50 requests per day."""
         return (50, 86400)

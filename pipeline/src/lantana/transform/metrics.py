@@ -8,7 +8,7 @@ DataFrame (not LazyFrame) and returns a new DataFrame.
 from __future__ import annotations
 
 import hashlib
-from datetime import date  # noqa: TC003 -- used in function signature
+from datetime import date  # noqa: TC003 — used in function signature
 
 import polars as pl
 
@@ -81,15 +81,17 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
     )
 
     # Top-N lists as list columns
-    lists = pl.DataFrame({
-        "top_usernames": [_top_n(silver, "user_name")],
-        "top_passwords": [_top_n(silver, "unmapped_password")],
-        "top_commands": [_top_n(silver, "actor_process_cmd_line")],
-        "top_source_countries": [_top_n(silver, "geo.country_code")],
-        "top_source_ips": [_top_n(silver, "src_endpoint_ip")],
-        "top_download_urls": [_top_n(silver, "file_url")],
-        "top_download_hashes": [_top_n(silver, "file_hash_sha256")],
-    })
+    lists = pl.DataFrame(
+        {
+            "top_usernames": [_top_n(silver, "user_name")],
+            "top_passwords": [_top_n(silver, "unmapped_password")],
+            "top_commands": [_top_n(silver, "actor_process_cmd_line")],
+            "top_source_countries": [_top_n(silver, "geo.country_code")],
+            "top_source_ips": [_top_n(silver, "src_endpoint_ip")],
+            "top_download_urls": [_top_n(silver, "file_url")],
+            "top_download_hashes": [_top_n(silver, "file_hash_sha256")],
+        }
+    )
 
     return pl.concat([scalars, lists], how="horizontal")
 
@@ -151,10 +153,10 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
     """Compute attacker behavioral progression metrics.
 
     Stages:
-    1. SCAN -- only network events
-    2. CREDENTIAL -- login attempts present
-    3. AUTHENTICATED -- at least one successful login
-    4. INTERACTIVE -- commands executed
+    1. SCAN — only network events
+    2. CREDENTIAL — login attempts present
+    3. AUTHENTICATED — at least one successful login
+    4. INTERACTIVE — commands executed
 
     Automated heuristic: auth_attempts > 10 AND unique_passwords > 5
     within 120s window, OR greynoise_noise == true.
@@ -176,18 +178,12 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
         pl.col("session").drop_nulls().n_unique().alias("unique_sessions"),
         pl.col("unmapped_password").drop_nulls().n_unique().alias("unique_passwords"),
         # Timing: first event of each type
-        pl.col("time")
-        .filter(cls == CLASS_AUTHENTICATION)
-        .min()
-        .alias("first_auth_time"),
+        pl.col("time").filter(cls == CLASS_AUTHENTICATION).min().alias("first_auth_time"),
         pl.col("time")
         .filter((cls == CLASS_AUTHENTICATION) & (sts == STATUS_SUCCESS))
         .min()
         .alias("first_success_time"),
-        pl.col("time")
-        .filter(cls == CLASS_PROCESS_ACTIVITY)
-        .min()
-        .alias("first_command_time"),
+        pl.col("time").filter(cls == CLASS_PROCESS_ACTIVITY).min().alias("first_command_time"),
         # Automated detection inputs
         pl.col("greynoise_noise").first().alias("greynoise_noise"),
     )
@@ -206,26 +202,19 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
 
     # Stage label
     result = result.with_columns(
-        pl.col("max_stage")
-        .replace_strict(STAGE_LABELS, default="unknown")
-        .alias("stage_label"),
+        pl.col("max_stage").replace_strict(STAGE_LABELS, default="unknown").alias("stage_label"),
     )
 
     # Escalation timing (seconds)
     result = result.with_columns(
         # seconds from first_seen to first auth attempt
         pl.when(pl.col("first_auth_time").is_not_null())
-        .then(
-            (pl.col("first_auth_time") - pl.col("first_seen"))
-            .dt.total_seconds()
-            .cast(pl.Int64)
-        )
+        .then((pl.col("first_auth_time") - pl.col("first_seen")).dt.total_seconds().cast(pl.Int64))
         .otherwise(pl.lit(None))
         .alias("seconds_to_auth"),
         # seconds from first auth to first success
         pl.when(
-            pl.col("first_success_time").is_not_null()
-            & pl.col("first_auth_time").is_not_null()
+            pl.col("first_success_time").is_not_null() & pl.col("first_auth_time").is_not_null()
         )
         .then(
             (pl.col("first_success_time") - pl.col("first_auth_time"))
@@ -236,8 +225,7 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
         .alias("seconds_to_success"),
         # seconds from first success to first command
         pl.when(
-            pl.col("first_command_time").is_not_null()
-            & pl.col("first_success_time").is_not_null()
+            pl.col("first_command_time").is_not_null() & pl.col("first_success_time").is_not_null()
         )
         .then(
             (pl.col("first_command_time") - pl.col("first_success_time"))
@@ -249,9 +237,7 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
     )
 
     # Automated heuristic
-    time_window = (
-        (pl.col("last_seen") - pl.col("first_seen")).dt.total_seconds()
-    )
+    time_window = (pl.col("last_seen") - pl.col("first_seen")).dt.total_seconds()
     result = result.with_columns(
         (
             (
@@ -265,8 +251,11 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
 
     # Drop intermediate timing columns
     result = result.drop(
-        "first_auth_time", "first_success_time", "first_command_time",
-        "unique_passwords", "greynoise_noise",
+        "first_auth_time",
+        "first_success_time",
+        "first_command_time",
+        "unique_passwords",
+        "greynoise_noise",
     )
 
     return result.sort("max_stage", descending=True)
@@ -351,9 +340,7 @@ def compute_behavioral_progression_multiday(
 
     # Stage label
     result = result.with_columns(
-        pl.col("max_stage")
-        .replace_strict(STAGE_LABELS, default="unknown")
-        .alias("stage_label"),
+        pl.col("max_stage").replace_strict(STAGE_LABELS, default="unknown").alias("stage_label"),
     )
 
     # Max stage first date (when the highest stage was first reached)
@@ -436,10 +423,12 @@ def compute_campaign_clusters(silver: pl.DataFrame) -> pl.DataFrame:
     )
 
     # Rename for clarity
-    clusters = clusters.rename({
-        "user_name": "shared_username",
-        "unmapped_password": "shared_password",
-    })
+    clusters = clusters.rename(
+        {
+            "user_name": "shared_username",
+            "unmapped_password": "shared_password",
+        }
+    )
 
     return clusters.select(
         "cluster_id",

@@ -1,8 +1,8 @@
-"""Overview page -- daily summary metrics and charts."""
+"""Overview page — daily summary metrics and charts."""
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 -- runtime parameter type
+from datetime import date  # noqa: TC003 — runtime parameter type
 
 import polars as pl
 import streamlit as st
@@ -12,7 +12,7 @@ from lantana.common.datalake import read_gold_table
 
 def render(selected_date: date) -> None:
     """Render the overview page for the selected date."""
-    st.header(f"Overview -- {selected_date.isoformat()}")
+    st.header(f"Overview — {selected_date.isoformat()}")
 
     df = read_gold_table("daily_summary", selected_date)
     if df.is_empty():
@@ -35,23 +35,27 @@ def render(selected_date: date) -> None:
     auth_col, net_col = st.columns(2)
     with auth_col:
         st.subheader("Authentication")
-        auth_data = pl.DataFrame({
-            "Status": ["Success", "Failure"],
-            "Count": [row["auth_successes"], row["auth_failures"]],
-        })
+        auth_data = pl.DataFrame(
+            {
+                "Status": ["Success", "Failure"],
+                "Count": [row["auth_successes"], row["auth_failures"]],
+            }
+        )
         st.bar_chart(auth_data, x="Status", y="Count")
 
     with net_col:
         st.subheader("Events by Type")
-        type_data = pl.DataFrame({
-            "Type": ["Auth", "Commands", "Findings", "Network"],
-            "Count": [
-                row["auth_attempts"],
-                row["commands_executed"],
-                row["findings_detected"],
-                row["network_events"],
-            ],
-        })
+        type_data = pl.DataFrame(
+            {
+                "Type": ["Auth", "Commands", "Findings", "Network"],
+                "Count": [
+                    row["auth_attempts"],
+                    row["commands_executed"],
+                    row["findings_detected"],
+                    row["network_events"],
+                ],
+            }
+        )
         st.bar_chart(type_data, x="Type", y="Count")
 
     st.divider()

@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime
 import polars as pl
 import stix2
 
-from lantana.common.config import ReportingConfig  # noqa: TC001 -- runtime parameter type
+from lantana.common.config import ReportingConfig  # noqa: TC001 — runtime parameter type
 
 # IPs with risk_score >= this threshold become STIX Indicators
 RISK_THRESHOLD: float = 40.0
@@ -88,9 +88,7 @@ def _make_indicators(
         if row.get("geo_country"):
             description_parts.append(f"Country: {row['geo_country']}")
         if row["auth_attempts"] > 0:
-            description_parts.append(
-                f"Auth: {row.get('auth_successes', 0)}/{row['auth_attempts']}"
-            )
+            description_parts.append(f"Auth: {row.get('auth_successes', 0)}/{row['auth_attempts']}")
         if row["commands_executed"] > 0:
             description_parts.append(f"Commands: {row['commands_executed']}")
 
@@ -102,22 +100,27 @@ def _make_indicators(
                 first_date = ip_md.row(0, named=True).get("first_seen_date")
                 if isinstance(first_date, date):
                     valid_from = datetime(
-                        first_date.year, first_date.month, first_date.day, tzinfo=UTC,
+                        first_date.year,
+                        first_date.month,
+                        first_date.day,
+                        tzinfo=UTC,
                     )
         if valid_from is None or not isinstance(valid_from, datetime):
             valid_from = datetime.now(tz=UTC)
 
-        indicators.append(stix2.Indicator(
-            name=ip,
-            description=". ".join(description_parts),
-            pattern=f"[ipv4-addr:value = '{ip}']",
-            pattern_type="stix",
-            valid_from=valid_from,
-            labels=labels,
-            created_by_ref=identity.id,
-            object_marking_refs=[tlp.id],
-            confidence=min(int(row["risk_score"]), 100),
-        ))
+        indicators.append(
+            stix2.Indicator(
+                name=ip,
+                description=". ".join(description_parts),
+                pattern=f"[ipv4-addr:value = '{ip}']",
+                pattern_type="stix",
+                valid_from=valid_from,
+                labels=labels,
+                created_by_ref=identity.id,
+                object_marking_refs=[tlp.id],
+                confidence=min(int(row["risk_score"]), 100),
+            )
+        )
 
     return indicators
 
@@ -137,17 +140,19 @@ def _make_campaigns(
         if first_seen is None or not isinstance(first_seen, datetime):
             first_seen = datetime.now(tz=UTC)
 
-        campaigns.append(stix2.Campaign(
-            name=f"{row['shared_username']}:{row['shared_password']}",
-            description=(
-                f"Credential stuffing campaign: {row['ip_count']} IPs "
-                f"sharing credentials {row['shared_username']}:{row['shared_password']}. "
-                f"Total events: {row['total_events']}."
-            ),
-            first_seen=first_seen,
-            created_by_ref=identity.id,
-            object_marking_refs=[tlp.id],
-        ))
+        campaigns.append(
+            stix2.Campaign(
+                name=f"{row['shared_username']}:{row['shared_password']}",
+                description=(
+                    f"Credential stuffing campaign: {row['ip_count']} IPs "
+                    f"sharing credentials {row['shared_username']}:{row['shared_password']}. "
+                    f"Total events: {row['total_events']}."
+                ),
+                first_seen=first_seen,
+                created_by_ref=identity.id,
+                object_marking_refs=[tlp.id],
+            )
+        )
 
     return campaigns
 
@@ -172,12 +177,14 @@ def _make_relationships(
             continue
         for ip in ips:
             if ip in ip_to_indicator:
-                relationships.append(stix2.Relationship(
-                    relationship_type="indicates",
-                    source_ref=ip_to_indicator[ip],
-                    target_ref=campaign.id,
-                    created_by_ref=identity.id,
-                ))
+                relationships.append(
+                    stix2.Relationship(
+                        relationship_type="indicates",
+                        source_ref=ip_to_indicator[ip],
+                        target_ref=campaign.id,
+                        created_by_ref=identity.id,
+                    )
+                )
 
     return relationships
 
@@ -241,7 +248,11 @@ def generate_bundle(
     objects: list[object] = [identity]
 
     indicators = _make_indicators(
-        reputation, progression, identity, tlp, multiday_progression,
+        reputation,
+        progression,
+        identity,
+        tlp,
+        multiday_progression,
     )
     objects.extend(indicators)
 
@@ -261,7 +272,7 @@ def generate_bundle(
     if len(objects) > 1:  # more than just the identity
         object_refs = [o.id for o in objects]  # type: ignore[attr-defined]
         report = stix2.Report(
-            name=f"Lantana Daily Intel -- {gold_date.isoformat()}",
+            name=f"Lantana Daily Intel — {gold_date.isoformat()}",
             description=(
                 f"Daily threat intelligence from {reporting.operation.name} "
                 f"for {gold_date.isoformat()}"

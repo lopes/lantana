@@ -1,4 +1,4 @@
-"""OCSF normalization -- transform bronze DataFrames to OCSF-columned DataFrames.
+"""OCSF normalization — transform bronze DataFrames to OCSF-columned DataFrames.
 
 Pure DataFrame transforms with no IO. Each function maps a dataset's
 bronze columns to OCSF equivalents, adds OCSF metadata columns, and
@@ -46,22 +46,25 @@ from lantana.models.ocsf import (
 
 COWRIE_FIELD_MAP: dict[str, tuple[str, str, str]] = {
     # --- Renamed (1:1 column rename) ---
-    "timestamp":  ("time", "rename", "Event timestamp"),
-    "src_ip":     ("src_endpoint_ip", "rename", "Attacker source IP"),
-    "dst_ip":     ("dst_endpoint_ip", "rename", "Honeypot destination IP"),
-    "src_port":   ("src_endpoint_port", "rename", "Attacker source port"),
-    "dst_port":   ("dst_endpoint_port", "rename", "Honeypot destination port"),
+    "timestamp": ("time", "rename", "Event timestamp"),
+    "src_ip": ("src_endpoint_ip", "rename", "Attacker source IP"),
+    "dst_ip": ("dst_endpoint_ip", "rename", "Honeypot destination IP"),
+    "src_port": ("src_endpoint_port", "rename", "Attacker source port"),
+    "dst_port": ("dst_endpoint_port", "rename", "Honeypot destination port"),
     # --- Conditional (depends on eventid) ---
-    "eventid":    ("class_uid", "map", "Dispatches to OCSF class; consumed"),
-    "username":   ("user_name", "conditional", "Login events only; null for others"),
-    "password":   ("unmapped_password", "conditional", "Login only; credential intel"),
-    "input":      ("actor_process_cmd_line", "conditional", "Command events only; null for others"),
-    "protocol":   ("auth_protocol / connection_info_protocol_name", "conditional",
-                   "Login: auth_protocol. Others: connection_info_protocol_name"),
+    "eventid": ("class_uid", "map", "Dispatches to OCSF class; consumed"),
+    "username": ("user_name", "conditional", "Login events only; null for others"),
+    "password": ("unmapped_password", "conditional", "Login only; credential intel"),
+    "input": ("actor_process_cmd_line", "conditional", "Command events only; null for others"),
+    "protocol": (
+        "auth_protocol / connection_info_protocol_name",
+        "conditional",
+        "Login: auth_protocol. Others: connection_info_protocol_name",
+    ),
     # --- Preserved (no OCSF equivalent) ---
-    "session":    ("session", "preserve", "Session ID for behavioral progression"),
-    "message":    ("message", "preserve", "Human-readable event description"),
-    "sensor":     ("sensor", "preserve", "Source sensor hostname"),
+    "session": ("session", "preserve", "Session ID for behavioral progression"),
+    "message": ("message", "preserve", "Human-readable event description"),
+    "sensor": ("sensor", "preserve", "Source sensor hostname"),
     # --- Generated OCSF metadata ---
     #   class_uid, category_uid, severity_id, activity_id, type_uid,
     #   status_id, metadata_version, metadata_product_name, is_cleartext
@@ -69,39 +72,42 @@ COWRIE_FIELD_MAP: dict[str, tuple[str, str, str]] = {
 
 SURICATA_FIELD_MAP: dict[str, tuple[str, str, str]] = {
     # --- Renamed ---
-    "timestamp":          ("time", "rename", "Event timestamp"),
-    "src_ip":             ("src_endpoint_ip", "rename", "Attacker source IP"),
-    "dest_ip":            ("dst_endpoint_ip", "rename", "Suricata uses dest_ip"),
-    "src_port":           ("src_endpoint_port", "rename", "Source port"),
-    "dest_port":          ("dst_endpoint_port", "rename", "Destination port"),
+    "timestamp": ("time", "rename", "Event timestamp"),
+    "src_ip": ("src_endpoint_ip", "rename", "Attacker source IP"),
+    "dest_ip": ("dst_endpoint_ip", "rename", "Suricata uses dest_ip"),
+    "src_port": ("src_endpoint_port", "rename", "Source port"),
+    "dest_port": ("dst_endpoint_port", "rename", "Destination port"),
     # --- Mapped ---
-    "event_type":         ("class_uid", "map", "Dispatches to OCSF class; consumed"),
-    "alert_signature":    ("finding_title + message", "map", "Alert: finding_title"),
+    "event_type": ("class_uid", "map", "Dispatches to OCSF class; consumed"),
+    "alert_signature": ("finding_title + message", "map", "Alert: finding_title"),
     "alert_signature_id": ("finding_uid", "conditional", "Alert events only; cast to string"),
-    "alert_severity":     ("severity_id", "map", "Suricata 1=high->4, 2=med->3, 3=low->2"),
+    "alert_severity": ("severity_id", "map", "Suricata 1=high->4, 2=med->3, 3=low->2"),
     # --- Preserved ---
-    "proto":              ("connection_info_protocol_name", "rename", "L4 protocol name"),
-    "alert_category":     ("finding_category", "conditional", "Alert classification"),
-    "alert_action":       ("finding_action", "conditional", "Allowed/blocked; disposition context"),
-    "flow_id":            ("flow_id", "preserve", "Flow tracking ID for session correlation"),
+    "proto": ("connection_info_protocol_name", "rename", "L4 protocol name"),
+    "alert_category": ("finding_category", "conditional", "Alert classification"),
+    "alert_action": ("finding_action", "conditional", "Allowed/blocked; disposition context"),
+    "flow_id": ("flow_id", "preserve", "Flow tracking ID for session correlation"),
 }
 
 NFTABLES_FIELD_MAP: dict[str, tuple[str, str, str]] = {
     # --- Renamed ---
-    "timestamp":      ("time", "rename", "Event timestamp"),
-    "src_ip":         ("src_endpoint_ip", "rename", "Source IP"),
-    "dst_ip":         ("dst_endpoint_ip", "rename", "Destination IP"),
-    "src_port":       ("src_endpoint_port", "rename", "Source port"),
-    "dst_port":       ("dst_endpoint_port", "rename", "Destination port"),
+    "timestamp": ("time", "rename", "Event timestamp"),
+    "src_ip": ("src_endpoint_ip", "rename", "Source IP"),
+    "dst_ip": ("dst_endpoint_ip", "rename", "Destination IP"),
+    "src_port": ("src_endpoint_port", "rename", "Source port"),
+    "dst_port": ("dst_endpoint_port", "rename", "Destination port"),
     # --- Mapped ---
-    "action":         ("activity_id + message", "map", "accept->1(Open), drop/reject->5(Refuse)"),
-    "chain":          ("message", "map", "Combined with action into message; consumed"),
-    "protocol":       ("connection_info_protocol_num + connection_info_protocol_name", "map",
-                       "Name preserved, also mapped to IANA number"),
+    "action": ("activity_id + message", "map", "accept->1(Open), drop/reject->5(Refuse)"),
+    "chain": ("message", "map", "Combined with action into message; consumed"),
+    "protocol": (
+        "connection_info_protocol_num + connection_info_protocol_name",
+        "map",
+        "Name preserved, also mapped to IANA number",
+    ),
     # --- Preserved ---
-    "interface_in":   ("interface_in", "preserve", "Ingress interface"),
-    "interface_out":  ("interface_out", "preserve", "Egress interface"),
-    "length":         ("traffic_bytes_in", "rename", "Packet length -> traffic bytes"),
+    "interface_in": ("interface_in", "preserve", "Ingress interface"),
+    "interface_out": ("interface_out", "preserve", "Egress interface"),
+    "length": ("traffic_bytes_in", "rename", "Packet length -> traffic bytes"),
 }
 
 # Common fields added by Vector (preserved as-is through normalization):
@@ -203,10 +209,7 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         .cast(pl.Utf8)
         .alias("connection_info_protocol_name"),
         # is_cleartext (honeypots always see plaintext credentials)
-        pl.when(is_login)
-        .then(pl.lit(True))
-        .otherwise(pl.lit(None))
-        .alias("is_cleartext"),
+        pl.when(is_login).then(pl.lit(True)).otherwise(pl.lit(None)).alias("is_cleartext"),
         # Process-specific: actor_process_cmd_line
         pl.when(is_command)
         .then(pl.col("input"))
@@ -253,8 +256,14 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
     drop_cols = [
         c
         for c in (
-            "eventid", "username", "password", "input", "protocol",
-            "shasum", "url", "outfile",
+            "eventid",
+            "username",
+            "password",
+            "input",
+            "protocol",
+            "shasum",
+            "url",
+            "outfile",
         )
         if c in result.columns
     ]
@@ -304,10 +313,7 @@ def normalize_suricata(df: pl.DataFrame) -> pl.DataFrame:
         .otherwise(pl.lit(SEVERITY_INFORMATIONAL))
         .alias("severity_id"),
         # activity_id: 1=Create for findings, 6=Traffic for network
-        pl.when(is_alert)
-        .then(pl.lit(1))
-        .otherwise(pl.lit(6))
-        .alias("activity_id"),
+        pl.when(is_alert).then(pl.lit(1)).otherwise(pl.lit(6)).alias("activity_id"),
         # status_id
         pl.lit(STATUS_UNKNOWN).alias("status_id"),
         # Metadata
@@ -401,11 +407,11 @@ def normalize_nftables(df: pl.DataFrame) -> pl.DataFrame:
     # Map action to activity_id
     action_expr = (
         pl.when(pl.col("action") == "accept")
-        .then(pl.lit(1))   # Open
+        .then(pl.lit(1))  # Open
         .when(pl.col("action") == "drop")
-        .then(pl.lit(5))   # Refuse
+        .then(pl.lit(5))  # Refuse
         .when(pl.col("action") == "reject")
-        .then(pl.lit(5))   # Refuse
+        .then(pl.lit(5))  # Refuse
         .otherwise(pl.lit(0))
     )
 
@@ -465,9 +471,7 @@ def normalize_nftables(df: pl.DataFrame) -> pl.DataFrame:
     result = result.rename(rename_map)
 
     # Drop raw columns consumed into OCSF fields
-    drop_cols = [
-        c for c in ("action", "chain", "protocol", "length") if c in result.columns
-    ]
+    drop_cols = [c for c in ("action", "chain", "protocol", "length") if c in result.columns]
     if drop_cols:
         result = result.drop(drop_cols)
 
@@ -476,20 +480,20 @@ def normalize_nftables(df: pl.DataFrame) -> pl.DataFrame:
 
 DIONAEA_FIELD_MAP: dict[str, tuple[str, str, str]] = {
     # --- Renamed ---
-    "timestamp":             ("time", "rename", "Event timestamp"),
-    "src_ip":                ("src_endpoint_ip", "rename", "Attacker source IP"),
-    "dst_ip":                ("dst_endpoint_ip", "rename", "Honeypot destination IP"),
-    "src_port":              ("src_endpoint_port", "rename", "Attacker source port"),
-    "dst_port":              ("dst_endpoint_port", "rename", "Honeypot destination port"),
+    "timestamp": ("time", "rename", "Event timestamp"),
+    "src_ip": ("src_endpoint_ip", "rename", "Attacker source IP"),
+    "dst_ip": ("dst_endpoint_ip", "rename", "Honeypot destination IP"),
+    "src_port": ("src_endpoint_port", "rename", "Attacker source port"),
+    "dst_port": ("dst_endpoint_port", "rename", "Honeypot destination port"),
     # --- Mapped ---
-    "connection_protocol":   ("connection_info_protocol_name", "rename", "Service protocol name"),
+    "connection_protocol": ("connection_info_protocol_name", "rename", "Service protocol name"),
     # --- Conditional ---
-    "credential_username":   ("user_name", "conditional", "Login events; null otherwise"),
-    "credential_password":   ("unmapped_password", "conditional", "Login events; credential intel"),
-    "ftp_command":           ("actor_process_cmd_line", "conditional", "FTP command events only"),
+    "credential_username": ("user_name", "conditional", "Login events; null otherwise"),
+    "credential_password": ("unmapped_password", "conditional", "Login events; credential intel"),
+    "ftp_command": ("actor_process_cmd_line", "conditional", "FTP command events only"),
     # --- Preserved ---
-    "connection_transport":  ("connection_transport", "preserve", "TCP/UDP/TLS transport"),
-    "src_hostname":          ("src_hostname", "preserve", "Reverse DNS hostname"),
+    "connection_transport": ("connection_transport", "preserve", "TCP/UDP/TLS transport"),
+    "src_hostname": ("src_hostname", "preserve", "Reverse DNS hostname"),
 }
 
 
@@ -508,14 +512,16 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         return df
 
     has_credential = (
-        pl.col("credential_username").is_not_null()
-        & (pl.col("credential_username") != "")
-    ) if "credential_username" in df.columns else pl.lit(False)
+        (pl.col("credential_username").is_not_null() & (pl.col("credential_username") != ""))
+        if "credential_username" in df.columns
+        else pl.lit(False)
+    )
 
     has_ftp_command = (
-        pl.col("ftp_command").is_not_null()
-        & (pl.col("ftp_command") != "")
-    ) if "ftp_command" in df.columns else pl.lit(False)
+        (pl.col("ftp_command").is_not_null() & (pl.col("ftp_command") != ""))
+        if "ftp_command" in df.columns
+        else pl.lit(False)
+    )
 
     # OCSF metadata columns + conditional field mappings
     result = df.with_columns(
@@ -561,25 +567,16 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         # Auth-specific: unmapped_password (from credential_password)
         pl.when(has_credential)
         .then(
-            pl.col("credential_password")
-            if "credential_password" in df.columns
-            else pl.lit(None)
+            pl.col("credential_password") if "credential_password" in df.columns else pl.lit(None)
         )
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("unmapped_password"),
         # is_cleartext (honeypots always see plaintext credentials)
-        pl.when(has_credential)
-        .then(pl.lit(True))
-        .otherwise(pl.lit(None))
-        .alias("is_cleartext"),
+        pl.when(has_credential).then(pl.lit(True)).otherwise(pl.lit(None)).alias("is_cleartext"),
         # Process-specific: actor_process_cmd_line (from ftp_command)
         pl.when(has_ftp_command)
-        .then(
-            pl.col("ftp_command")
-            if "ftp_command" in df.columns
-            else pl.lit(None)
-        )
+        .then(pl.col("ftp_command") if "ftp_command" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("actor_process_cmd_line"),

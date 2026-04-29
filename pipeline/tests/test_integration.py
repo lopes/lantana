@@ -76,11 +76,7 @@ def _discover_datasets() -> list[str]:
 
 def _add_enrichment_stubs(df: pl.DataFrame) -> pl.DataFrame:
     """Add null enrichment columns that gold metrics expect."""
-    cols = [
-        expr.alias(name)
-        for name, expr in _ENRICHMENT_STUBS.items()
-        if name not in df.columns
-    ]
+    cols = [expr.alias(name) for name, expr in _ENRICHMENT_STUBS.items() if name not in df.columns]
     if cols:
         df = df.with_columns(cols)
     return df
@@ -211,9 +207,7 @@ class TestIntegration:
         class_uids = set(result.get_column("class_uid").unique().to_list())
         assert len(class_uids) >= 2, f"Expected 2+ OCSF classes, got {class_uids}"
 
-    def test_normalize_all_datasets(
-        self, live_datasets: list[str], live_target_date: date
-    ) -> None:
+    def test_normalize_all_datasets(self, live_datasets: list[str], live_target_date: date) -> None:
         """normalize_dataset() succeeds for every available dataset."""
         for dataset in live_datasets:
             df = read_bronze_ndjson(live_target_date, dataset=dataset, bronze_root=BRONZE_ROOT)
@@ -249,7 +243,7 @@ class TestIntegration:
         assert not progression.is_empty()
         assert "stage_label" in progression.columns
 
-        # May be empty if no shared credentials -- just assert no crash
+        # May be empty if no shared credentials — just assert no crash
         compute_campaign_clusters(live_silver)
 
     def test_report_from_real_data(self, live_silver: pl.DataFrame) -> None:
@@ -261,7 +255,11 @@ class TestIntegration:
 
         target_date = date.today()
         brief = generate_daily_brief(
-            target_date, summary, reputation, progression, clusters,
+            target_date,
+            summary,
+            reputation,
+            progression,
+            clusters,
             operation_name="VPS Integration Test",
         )
         assert "# Daily Brief" in brief

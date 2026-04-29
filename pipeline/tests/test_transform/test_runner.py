@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from pathlib import Path  # noqa: TC003 -- used in function signatures
+from pathlib import Path  # noqa: TC003 — used in function signatures
 
 import polars as pl
 
@@ -112,7 +112,7 @@ def test_run_transform_empty_silver(tmp_datalake: Path) -> None:
     silver_root = tmp_datalake / "silver"
     gold_root = tmp_datalake / "gold"
 
-    # No silver written -- should not crash
+    # No silver written — should not crash
     run_transform(date(2026, 4, 25), silver_root=silver_root, gold_root=gold_root)
 
     # Gold directory should be empty

@@ -1,4 +1,4 @@
-"""Tests for OCSF normalization -- bronze DataFrame to OCSF columns."""
+"""Tests for OCSF normalization — bronze DataFrame to OCSF columns."""
 
 from __future__ import annotations
 
@@ -41,15 +41,13 @@ def _ndjson_to_df(ndjson: str) -> pl.DataFrame:
 
 
 class TestNormalizeCowrie:
-    def test_login_success_maps_to_authentication(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_login_success_maps_to_authentication(self, sample_bronze_cowrie_ndjson: str) -> None:
         """cowrie.login.success -> class_uid=3002, status_id=1."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         result = normalize_cowrie(df)
-        login_success = result.filter(
-            pl.col("message") == "login attempt"
-        ).filter(pl.col("status_id") == 1)
+        login_success = result.filter(pl.col("message") == "login attempt").filter(
+            pl.col("status_id") == 1
+        )
         assert login_success.height == 1
         row = login_success.row(0, named=True)
         assert row["class_uid"] == CLASS_AUTHENTICATION
@@ -70,9 +68,7 @@ class TestNormalizeCowrie:
         assert row["class_uid"] == CLASS_AUTHENTICATION
         assert row["user_name"] == "admin"
 
-    def test_command_input_maps_to_process_activity(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_command_input_maps_to_process_activity(self, sample_bronze_cowrie_ndjson: str) -> None:
         """cowrie.command.input -> class_uid=1007, cmd_line from input."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         result = normalize_cowrie(df)
@@ -108,9 +104,7 @@ class TestNormalizeCowrie:
         result = normalize_cowrie(df)
         assert "session" in result.columns
 
-    def test_password_preserved_for_login_events(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_password_preserved_for_login_events(self, sample_bronze_cowrie_ndjson: str) -> None:
         """Password mapped to unmapped_password for credential intel."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         result = normalize_cowrie(df)
@@ -123,9 +117,7 @@ class TestNormalizeCowrie:
         assert "admin" in passwords
         assert "password123" in passwords
 
-    def test_protocol_preserved_for_non_login(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_protocol_preserved_for_non_login(self, sample_bronze_cowrie_ndjson: str) -> None:
         """Protocol mapped to connection_info_protocol_name for non-login events."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         result = normalize_cowrie(df)
@@ -136,9 +128,7 @@ class TestNormalizeCowrie:
         cmd_rows = result.filter(pl.col("class_uid") == CLASS_PROCESS_ACTIVITY)
         assert cmd_rows.get_column("connection_info_protocol_name").to_list() == ["ssh"]
 
-    def test_file_download_maps_to_file_activity(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_file_download_maps_to_file_activity(self, sample_bronze_cowrie_ndjson: str) -> None:
         """cowrie.session.file_download -> class_uid=1001, severity=HIGH."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         result = normalize_cowrie(df)
@@ -148,9 +138,7 @@ class TestNormalizeCowrie:
         assert row["category_uid"] == 1  # CATEGORY_SYSTEM
         assert row["severity_id"] == 4  # HIGH
 
-    def test_download_hash_preserved(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_download_hash_preserved(self, sample_bronze_cowrie_ndjson: str) -> None:
         """SHA256 hash mapped to file_hash_sha256; raw shasum column dropped."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         result = normalize_cowrie(df)
@@ -160,9 +148,7 @@ class TestNormalizeCowrie:
         sha = downloads.get_column("file_hash_sha256").to_list()[0]
         assert sha.startswith("e3b0c44298fc1c")
 
-    def test_download_url_preserved(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_download_url_preserved(self, sample_bronze_cowrie_ndjson: str) -> None:
         """Download URL mapped to file_url; raw url/outfile columns dropped."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         result = normalize_cowrie(df)
@@ -181,9 +167,7 @@ class TestNormalizeCowrie:
 
 
 class TestNormalizeSuricata:
-    def test_alert_maps_to_detection_finding(
-        self, sample_bronze_suricata_ndjson: str
-    ) -> None:
+    def test_alert_maps_to_detection_finding(self, sample_bronze_suricata_ndjson: str) -> None:
         """Suricata alerts -> class_uid=2004."""
         df = _ndjson_to_df(sample_bronze_suricata_ndjson)
         result = normalize_suricata(df)
@@ -194,9 +178,7 @@ class TestNormalizeSuricata:
         assert row["finding_uid"] == "2001219"
         assert row["analytic_name"] == "Suricata"
 
-    def test_non_alert_maps_to_network_activity(
-        self, sample_bronze_suricata_ndjson: str
-    ) -> None:
+    def test_non_alert_maps_to_network_activity(self, sample_bronze_suricata_ndjson: str) -> None:
         """Suricata flow events -> class_uid=4001."""
         df = _ndjson_to_df(sample_bronze_suricata_ndjson)
         result = normalize_suricata(df)
@@ -222,9 +204,7 @@ class TestNormalizeSuricata:
         assert 4 in severities
         assert 3 in severities
 
-    def test_proto_preserved_as_protocol_name(
-        self, sample_bronze_suricata_ndjson: str
-    ) -> None:
+    def test_proto_preserved_as_protocol_name(self, sample_bronze_suricata_ndjson: str) -> None:
         """Suricata proto renamed to connection_info_protocol_name."""
         df = _ndjson_to_df(sample_bronze_suricata_ndjson)
         result = normalize_suricata(df)
@@ -233,9 +213,7 @@ class TestNormalizeSuricata:
         protocols = result.get_column("connection_info_protocol_name").to_list()
         assert all(p == "TCP" for p in protocols)
 
-    def test_alert_category_and_action_preserved(
-        self, sample_bronze_suricata_ndjson: str
-    ) -> None:
+    def test_alert_category_and_action_preserved(self, sample_bronze_suricata_ndjson: str) -> None:
         """Alert category and action preserved as finding_category/finding_action."""
         df = _ndjson_to_df(sample_bronze_suricata_ndjson)
         result = normalize_suricata(df)
@@ -255,9 +233,7 @@ class TestNormalizeSuricata:
 
 
 class TestNormalizeNftables:
-    def test_all_rows_are_network_activity(
-        self, sample_bronze_nftables_ndjson: str
-    ) -> None:
+    def test_all_rows_are_network_activity(self, sample_bronze_nftables_ndjson: str) -> None:
         """All nftables events -> class_uid=4001."""
         df = _ndjson_to_df(sample_bronze_nftables_ndjson)
         result = normalize_nftables(df)
@@ -274,9 +250,7 @@ class TestNormalizeNftables:
         assert "src_ip" not in result.columns
         assert "dst_ip" not in result.columns
 
-    def test_action_maps_to_activity_id(
-        self, sample_bronze_nftables_ndjson: str
-    ) -> None:
+    def test_action_maps_to_activity_id(self, sample_bronze_nftables_ndjson: str) -> None:
         """Nftables action maps to OCSF activity_id."""
         df = _ndjson_to_df(sample_bronze_nftables_ndjson)
         result = normalize_nftables(df)
@@ -286,9 +260,7 @@ class TestNormalizeNftables:
         accept_row = result.filter(pl.col("activity_id") == 1)
         assert accept_row.height == 1
 
-    def test_protocol_mapped_to_name_and_number(
-        self, sample_bronze_nftables_ndjson: str
-    ) -> None:
+    def test_protocol_mapped_to_name_and_number(self, sample_bronze_nftables_ndjson: str) -> None:
         """Protocol preserved as name and mapped to IANA number."""
         df = _ndjson_to_df(sample_bronze_nftables_ndjson)
         result = normalize_nftables(df)
@@ -298,9 +270,7 @@ class TestNormalizeNftables:
         assert all(n == "tcp" for n in result.get_column("connection_info_protocol_name").to_list())
         assert all(n == 6 for n in result.get_column("connection_info_protocol_num").to_list())
 
-    def test_length_mapped_to_traffic_bytes(
-        self, sample_bronze_nftables_ndjson: str
-    ) -> None:
+    def test_length_mapped_to_traffic_bytes(self, sample_bronze_nftables_ndjson: str) -> None:
         """Packet length mapped to traffic_bytes_in."""
         df = _ndjson_to_df(sample_bronze_nftables_ndjson)
         result = normalize_nftables(df)
@@ -322,9 +292,7 @@ class TestNormalizeNftables:
 
 
 class TestNormalizeDionaea:
-    def test_connection_maps_to_network_activity(
-        self, sample_bronze_dionaea_ndjson: str
-    ) -> None:
+    def test_connection_maps_to_network_activity(self, sample_bronze_dionaea_ndjson: str) -> None:
         """Plain connection (no credentials/commands) -> class_uid=4001."""
         df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
         result = normalize_dionaea(df)
@@ -334,9 +302,7 @@ class TestNormalizeDionaea:
         assert row["class_uid"] == CLASS_NETWORK_ACTIVITY
         assert row["category_uid"] == 4
 
-    def test_credential_maps_to_authentication(
-        self, sample_bronze_dionaea_ndjson: str
-    ) -> None:
+    def test_credential_maps_to_authentication(self, sample_bronze_dionaea_ndjson: str) -> None:
         """Event with credential_username -> class_uid=3002."""
         df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
         result = normalize_dionaea(df)
@@ -347,9 +313,7 @@ class TestNormalizeDionaea:
         assert row["unmapped_password"] == "admin"
         assert row["category_uid"] == 3
 
-    def test_ftp_command_maps_to_process_activity(
-        self, sample_bronze_dionaea_ndjson: str
-    ) -> None:
+    def test_ftp_command_maps_to_process_activity(self, sample_bronze_dionaea_ndjson: str) -> None:
         """Event with ftp_command -> class_uid=1007."""
         df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
         result = normalize_dionaea(df)
@@ -467,9 +431,7 @@ class TestEdgeCases:
         result = normalize_cowrie(df)
         assert result.is_empty()
 
-    def test_enrichment_columns_preserved(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_enrichment_columns_preserved(self, sample_bronze_cowrie_ndjson: str) -> None:
         """API enrichment columns are preserved through normalization."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         df = df.with_columns(
@@ -480,9 +442,7 @@ class TestEdgeCases:
         assert "abuseipdb_confidence_score" in result.columns
         assert "geo.country_code" in result.columns
 
-    def test_partition_columns_preserved(
-        self, sample_bronze_cowrie_ndjson: str
-    ) -> None:
+    def test_partition_columns_preserved(self, sample_bronze_cowrie_ndjson: str) -> None:
         """Partition columns (dataset, server, operation) are preserved."""
         df = _ndjson_to_df(sample_bronze_cowrie_ndjson)
         df = df.with_columns(

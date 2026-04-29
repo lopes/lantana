@@ -10,8 +10,8 @@ logger = structlog.get_logger()
 
 # Discord embed colors by severity level
 EMBED_COLORS: dict[str, int] = {
-    "info": 0x2ECC71,      # Green
-    "warning": 0xF39C12,   # Orange
+    "info": 0x2ECC71,  # Green
+    "warning": 0xF39C12,  # Orange
     "critical": 0xE74C3C,  # Red
 }
 
@@ -90,7 +90,11 @@ def generate_and_send() -> None:
 
     # Generate report
     brief = generate_daily_brief(
-        yesterday, summary, reputation, progression, clusters,
+        yesterday,
+        summary,
+        reputation,
+        progression,
+        clusters,
         reporting.operation.name,
     )
     embed_text = generate_embed_summary(yesterday, summary, progression)
@@ -106,12 +110,14 @@ def generate_and_send() -> None:
         report_path = Path(f.name)
 
     try:
-        asyncio.run(send_notification(
-            webhook_url=secrets.discord_webhook,
-            level="info",
-            title=f"Lantana Daily Brief -- {yesterday.isoformat()}",
-            message=embed_text,
-            attachment_path=str(report_path),
-        ))
+        asyncio.run(
+            send_notification(
+                webhook_url=secrets.discord_webhook,
+                level="info",
+                title=f"Lantana Daily Brief — {yesterday.isoformat()}",
+                message=embed_text,
+                attachment_path=str(report_path),
+            )
+        )
     finally:
         report_path.unlink(missing_ok=True)

@@ -63,5 +63,5 @@ class ShodanProvider:
         )
 
     def rate_limit(self) -> tuple[int, int]:
-        """Return (100, 2592000) -- 100 requests per month."""
+        """Return (100, 2592000) — 100 requests per month."""
         return (100, 2592000)

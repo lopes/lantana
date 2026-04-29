@@ -1,8 +1,8 @@
-"""Behavioral Progression page -- escalation analysis."""
+"""Behavioral Progression page — escalation analysis."""
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 -- runtime parameter type
+from datetime import date  # noqa: TC003 — runtime parameter type
 
 import polars as pl
 import streamlit as st
@@ -12,7 +12,7 @@ from lantana.common.datalake import read_gold_table
 
 def render(selected_date: date) -> None:
     """Render the behavioral progression page for the selected date."""
-    st.header(f"Behavioral Progression -- {selected_date.isoformat()}")
+    st.header(f"Behavioral Progression — {selected_date.isoformat()}")
 
     df = read_gold_table("behavioral_progression", selected_date)
     if df.is_empty():
@@ -22,12 +22,14 @@ def render(selected_date: date) -> None:
     # Stage funnel metrics
     st.subheader("Escalation Funnel")
     cols = st.columns(4)
-    for i, (stage, label) in enumerate([
-        (1, "Scan"),
-        (2, "Credential"),
-        (3, "Authenticated"),
-        (4, "Interactive"),
-    ]):
+    for i, (stage, label) in enumerate(
+        [
+            (1, "Scan"),
+            (2, "Credential"),
+            (3, "Authenticated"),
+            (4, "Interactive"),
+        ]
+    ):
         count = df.filter(pl.col("max_stage") >= stage).height
         cols[i].metric(label, count)
 
@@ -106,12 +108,8 @@ def render(selected_date: date) -> None:
     # Velocity distribution
     if "progression_velocity_days" in multiday.columns:
         st.subheader("Progression Velocity (days to max stage)")
-        velocity_df = (
-            multiday
-            .filter(pl.col("progression_velocity_days") > 0)
-            .select(
-                pl.col("progression_velocity_days").alias("Days"),
-            )
+        velocity_df = multiday.filter(pl.col("progression_velocity_days") > 0).select(
+            pl.col("progression_velocity_days").alias("Days"),
         )
         if not velocity_df.is_empty():
             st.bar_chart(
