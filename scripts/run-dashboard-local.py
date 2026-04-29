@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Build gold tables from live VPS data and launch the Streamlit dashboard.
 
-Usage: cd pipeline && uv run python ../scripts/run-dashboard-local.py
+Arguments:
+    --live-root  Path to fetched VPS data (default: pipeline/tests/fixtures/live)
+
+Example:
+    cd pipeline && uv run python ../scripts/run-dashboard-local.py
+    cd pipeline && uv run python ../scripts/run-dashboard-local.py --live-root /tmp/vps-data
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -28,13 +34,10 @@ from lantana.transform.metrics import (  # noqa: E402
     compute_behavioral_progression_multiday,
     compute_campaign_clusters,
     compute_daily_summary,
+    compute_detection_findings,
+    compute_geographic_summary,
     compute_ip_reputation,
 )
-
-LIVE_ROOT = Path("tests/fixtures/live")
-BRONZE_ROOT = LIVE_ROOT / "datalake" / "bronze"
-SILVER_ROOT = LIVE_ROOT / "datalake" / "silver"
-GOLD_ROOT = LIVE_ROOT / "datalake" / "gold"
 
 REDACT_CONFIG = RedactionConfig(
     infrastructure_ips=["10.50.99.1", "10.50.99.10", "10.50.99.100"],
@@ -127,6 +130,8 @@ def build_gold(target_date: date) -> None:
         ("ip_reputation", compute_ip_reputation),
         ("behavioral_progression", compute_behavioral_progression),
         ("campaign_clusters", compute_campaign_clusters),
+        ("geographic_summary", compute_geographic_summary),
+        ("detection_findings", compute_detection_findings),
     ]:
         result = fn(silver)
         if not result.is_empty():
@@ -140,9 +145,27 @@ def build_gold(target_date: date) -> None:
 
 
 def main() -> None:
+    global LIVE_ROOT, BRONZE_ROOT, SILVER_ROOT, GOLD_ROOT  # noqa: PLW0603
+
+    parser = argparse.ArgumentParser(
+        description="Build gold tables from live VPS data and launch Streamlit dashboard",
+    )
+    parser.add_argument(
+        "--live-root",
+        type=Path,
+        default=Path("tests/fixtures/live"),
+        help="Path to fetched VPS data (default: tests/fixtures/live)",
+    )
+    args = parser.parse_args()
+
+    LIVE_ROOT = args.live_root
+    BRONZE_ROOT = LIVE_ROOT / "datalake" / "bronze"
+    SILVER_ROOT = LIVE_ROOT / "datalake" / "silver"
+    GOLD_ROOT = LIVE_ROOT / "datalake" / "gold"
+
     if not BRONZE_ROOT.exists():
-        print("No bronze data. Run from project root:")
-        print("  scripts/fetch-vps-data.sh")
+        print(f"No bronze data at {BRONZE_ROOT}. Run from project root:")
+        print("  scripts/fetch-vps-data.sh <host> <key> <port>")
         print("  cd pipeline && uv run python ../scripts/inject-vps-data.py")
         sys.exit(1)
 
