@@ -100,6 +100,7 @@ id_ed25519*
 *.log
 tmp/
 temp/
+backups/
 
 # ------------------------------------------------------------
 # LIVE TEST DATA (fetched from VPS, never committed)

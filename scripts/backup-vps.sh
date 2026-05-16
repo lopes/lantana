@@ -3,20 +3,22 @@
 # Downloads /etc/lantana, /var/log/lantana, /var/lib/lantana via tar-over-SSH.
 #
 # Arguments:
-#   $1  HOST  Remote host IP or hostname (required)
-#   $2  KEY   Path to SSH private key (required)
-#   $3  PORT  SSH port on the remote host (required)
-#   $4  DEST  Local destination directory (required)
+#   $1  HOST     Remote host IP or hostname (required)
+#   $2  SSH_USER SSH user on the remote host (required)
+#   $3  KEY      Path to SSH private key (required)
+#   $4  PORT     SSH port on the remote host (required)
+#   $5  DEST     Local destination directory (required)
 #
 # Example:
-#   scripts/backup-vps.sh 203.0.113.10 ~/.ssh/id_ed25519 60090 ./backups/pre-wipe
+#   scripts/backup-vps.sh 203.0.113.10 lantana ~/.ssh/id_ed25519 60090 ./backups/pre-wipe
 
 set -eu
 
-HOST="${1:?Usage: $0 <host> <key> <port> <dest>}"
-KEY="${2:?Usage: $0 <host> <key> <port> <dest>}"
-PORT="${3:?Usage: $0 <host> <key> <port> <dest>}"
-DEST="${4:?Usage: $0 <host> <key> <port> <dest>}"
+HOST="${1:?Usage: $0 <host> <ssh_user> <key> <port> <dest>}"
+SSH_USER="${2:?Usage: $0 <host> <ssh_user> <key> <port> <dest>}"
+KEY="${3:?Usage: $0 <host> <ssh_user> <key> <port> <dest>}"
+PORT="${4:?Usage: $0 <host> <ssh_user> <key> <port> <dest>}"
+DEST="${5:?Usage: $0 <host> <ssh_user> <key> <port> <dest>}"
 
 if [ ! -f "$KEY" ]; then
   echo "Error: private key not found: $KEY" >&2
@@ -26,14 +28,14 @@ fi
 mkdir -p "$DEST"
 
 echo "=== Lantana VPS Backup ==="
-echo "Host:  $HOST:$PORT"
+echo "Host:  $SSH_USER@$HOST:$PORT"
 echo "Key:   $KEY"
 echo "Dest:  $DEST"
 echo ""
 echo "Streaming tar over SSH (sudo on remote) ..."
 echo ""
 
-ssh -p "$PORT" -i "$KEY" "lantana@$HOST" \
+ssh -p "$PORT" -i "$KEY" "${SSH_USER}@${HOST}" \
   "sudo tar cf - /etc/lantana /var/log/lantana /var/lib/lantana 2>/dev/null" \
   | tar xvf - -C "$DEST" --strip-components=1
 

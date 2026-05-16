@@ -6,11 +6,10 @@
 /var/log/lantana/sensor/*/*.json
 {
     # No 'daily': forced with cron for more determinism
-    rotate 14
+    rotate 7
     missingok
     notifempty
     compress
     delaycompress
-    create 0644 root root
     copytruncate
 }

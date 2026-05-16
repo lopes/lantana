@@ -4,7 +4,7 @@
 /var/log/lantana/honeywall/nftables/firewall.log
 {
     # No 'daily': forced with cron for more determinism
-    rotate 90
+    rotate 7
     missingok
     notifempty
     compress

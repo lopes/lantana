@@ -77,6 +77,8 @@ Each honeypot role self-registers by dropping files into three locations:
 
 Datadog Vector runs across all zones. Logs centralize in `/var/log/lantana/{honeywall,sensor,collector}`. Log rotation is managed via `/etc/cron.d/lantana-logs` triggering configs in `/etc/lantana/logrotate.d/`.
 
+Raw logs in `/var/log/lantana/` are a transient forwarding buffer for Vector, not a system of record. Bronze NDJSON on the collector is the durable copy: raw retention is short (days), lake retention is long (180d). Disk-safety circuit breakers belong at the lake layer (`prune.py`), not in logrotate — size-triggered truncation can drop bytes Vector hasn't yet shipped.
+
 ## Project Structure
 
 ```
