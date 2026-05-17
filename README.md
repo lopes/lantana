@@ -1,5 +1,9 @@
 # Lantana
 
+<p align="center">
+  <img src="assets/lantana-logo.svg" alt="Lantana" width="160">
+</p>
+
 Lantana is a honeypot-as-code platform that deploys and operates IPv4/IPv6 dual-stack honeypots aligned with [MITRE Engage](https://engage.mitre.org/) principles. It treats honeypots as operational infrastructure — continuously rotated, reshaped, and adapted to evolving narratives and intelligence goals.
 
 The platform covers the full lifecycle: from controlled exposure to structured data ingestion, enrichment, analysis, and intelligence output (STIX bundles, Discord reports, Streamlit dashboard). It emphasizes disposability, policy-driven deployment, and strict blast-radius containment.
