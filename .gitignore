@@ -108,6 +108,13 @@ backups/
 pipeline/tests/fixtures/live/
 
 # ------------------------------------------------------------
+# CLAUDE CODE
+# ------------------------------------------------------------
+# Project-local Claude permissions (operator-specific). Skills under
+# .claude/skills/ are tracked deliberately and not affected.
+.claude/settings.local.json
+
+# ------------------------------------------------------------
 # MISC
 # ------------------------------------------------------------
 site/
