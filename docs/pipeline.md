@@ -76,17 +76,53 @@ For each dataset (cowrie, suricata, nftables, dionaea):
 2. **Extract unique source IPs** from attacker events
 3. **Query enrichment providers** sequentially (respecting rate limits):
    - AbuseIPDB (abuse confidence, report count, ISP)
-   - GreyNoise (classification, noise/riot status)
+   - GreyNoise (classification, noise/riot status, last seen, label) — see [Provider auth modes](#provider-auth-modes)
    - Shodan (open ports, services, vulns)
    - VirusTotal (file hash reputation, for cowrie/dionaea downloads)
-   - PhishStats (phishing URL count per IP)
+   - PhishStats (phishing URL count per IP) — public, no auth
 4. **Cache results** in SQLite (7-day TTL) to avoid re-querying known IPs
 5. **Record errors** — classify failures by type (rate limit, timeout, auth, HTTP error) and write an NDJSON summary to `enrichment_errors.json` at the end of each run
-6. **Merge enrichment** columns back into the event DataFrame by source IP
-6. **OCSF normalize** — rename columns and add OCSF metadata (see Section 4)
-7. **Redact infrastructure IPs** (OPSEC Layer 2) — replace destination IPs with pseudonyms
-8. **Validate no leaks** — assert zero infrastructure IPs in any string column
-9. **Write silver** Parquet partitioned by dataset/date/server
+6. **Merge enrichment** columns back into the event DataFrame by source IP (see [§3.1.1](#311-how-enrichment-merges-into-events))
+7. **OCSF normalize** — rename columns and add OCSF metadata (see Section 4)
+8. **Redact infrastructure IPs** (OPSEC Layer 2) — replace destination IPs with pseudonyms
+9. **Validate no leaks** — assert zero infrastructure IPs in any string column
+10. **Write silver** Parquet partitioned by dataset/date/server
+
+#### 3.1.1 How enrichment merges into events
+
+Enrichment is **additive and lossy-tolerant**. A failed provider leaves its columns null on the affected row; a 404 "IP not in dataset" leaves zero/empty values per the provider's "no info" convention. One provider's failure never blocks the others. Concretely:
+
+```text
+bronze event (one row per attacker action):
+    { src_ip, timestamp, eventid, ..., geo.country_code, geo.asn, ... }
+                                       └─ already populated by Vector at ingest
+
+extracted unique IPs:
+    ["1.2.3.4", "5.6.7.8", ...]
+
+per provider, per IP:
+    EnrichmentResult(provider="abuseipdb", ip="1.2.3.4", data={
+        "abuseipdb_confidence_score": 87,
+        "abuseipdb_total_reports":   42,
+        ...
+    })
+
+merged enrichment DataFrame (one row per IP, all providers' fields):
+    src_ip      | abuseipdb_* | shodan_* | vt_* | greynoise_* | phishstats_*
+    1.2.3.4     | filled      | filled   | 404→0 | 404→unknown | filled
+    5.6.7.8     | error→null  | filled   | filled | filled      | filled
+
+left-joined back onto bronze by src_ip → silver Parquet row:
+    { src_ip, timestamp, eventid, ..., geo.*, abuseipdb_*, shodan_*, vt_*, greynoise_*, phishstats_* }
+```
+
+The runner code lives in [`enrichment/runner.py`](../pipeline/src/lantana/enrichment/runner.py):
+
+- `_enrich_ips_with_provider` iterates IPs per provider with try/except around `provider.enrich_ip(ip)`. Exceptions don't propagate — they're recorded into the error file and the IP just doesn't appear in that provider's result list.
+- `_merge_enrichments` builds a `_enrich_ip → {merged fields}` dict from every provider's results, materialises it as a Polars DataFrame, and `df.join(enrich_df, left_on="src_ip", right_on="_enrich_ip", how="left")`. The left-outer-join is the key — bronze rows without any provider hits still come through to silver, just with null enrichment columns.
+- The provider classes themselves catch the routine "no info" cases (GreyNoise 404, Shodan 404, VirusTotal 404 for IPs and hashes) and return normalized records with zero/empty fields rather than raising. This keeps the runner's error path reserved for actual failures (auth, rate limit, server error, transport timeout).
+
+Retry semantics: tenacity wraps `provider.enrich_ip` with 3 attempts on 429 / 5xx / transport errors only. 4xx other than 429 fails fast — retrying on a bad API key or a malformed request wastes the rate-limit budget without changing the outcome.
 
 ### 3.2 Silver to Gold (daily aggregation)
 
@@ -201,6 +237,72 @@ The pipeline is deployed by Ansible as part of the `profile_collector` role:
 | 02:00 | `lantana-transform` | Silver -> Gold (yesterday) |
 
 All cron jobs run as the `nectar` user (UID 2002), which owns the datalake directories. The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`.
+
+---
+
+## 7.1 Third-Party Integrations
+
+Enrichment providers, their endpoints, free-tier limits, extracted fields, and live-probe workflows live in [`integrations.md`](integrations.md). Quick reference:
+
+| Stage | Provider | Auth | Free-tier limit |
+|---|---|---|---|
+| Wire-speed (Vector, local MMDB) | MaxMind GeoLite2 | License key required for download | Free with signup; weekly updates |
+| Daily batch (Python pipeline)   | AbuseIPDB        | `Key:` header, required               | 1000 checks/day |
+| Daily batch                     | Shodan           | `key=` query param, required          | ~100 queries/month (Membership) |
+| Daily batch                     | VirusTotal       | `x-apikey:` header, required          | 4 req/min, 500/day |
+| Daily batch                     | GreyNoise        | `key:` header, **optional**           | 50 searches per 7 days (unauthenticated) |
+| Daily batch                     | PhishStats       | none                                  | 20 req/min |
+
+See [`integrations.md`](integrations.md) for endpoint URLs, per-provider field extraction, the probe scripts (`probe-enrichment.py` for HTTP providers, `probe-mmdb.py` for MaxMind), and historical incidents.
+
+## 7.2 Provider Auth Modes
+
+Not every enrichment provider requires an API key. The vault file controls per-provider enablement and authentication:
+
+| Provider | Endpoint requires auth? | Behaviour when vault var is **missing** | Behaviour when vault var is **`""`** (empty) | Behaviour when vault var is **set** |
+|---|---|---|---|---|
+| AbuseIPDB | Yes | Provider runs with empty key → 401 (treat as misconfiguration) | Same as missing | Authenticated |
+| Shodan | Yes | Same as above | Same as above | Authenticated |
+| VirusTotal | Yes | Same as above | Same as above | Authenticated |
+| **GreyNoise** | **No (community)** | **Provider skipped** | **Anonymous community queries** | **Community queries with `key` header (higher rate limit)** |
+| **PhishStats** | **No** | **Provider skipped** | **Queries with no auth** | **Queries with no auth (key value silently ignored)** |
+
+In short: GreyNoise and PhishStats can run on the free public endpoints with zero credentials, and the vault still controls whether each one runs at all.
+
+### GreyNoise
+
+Uses the [GreyNoise Community API](https://docs.greynoise.io/docs/using-the-greynoise-community-api) at `https://api.greynoise.io/v3/community/{ip}`. Response surfaces `noise`, `riot`, `classification`, `name`, `last_seen`, and `link` — captured in silver as `greynoise_noise`, `greynoise_riot`, `greynoise_classification`, `greynoise_name`, `greynoise_last_seen`, `greynoise_link`.
+
+- Free / unauthenticated quota: **50 searches per 7 days**, shared with the GreyNoise Visualizer.
+- HTTP 404 responses are treated as "no info" (the IP is not in the dataset) — silver receives a row with `greynoise_classification = "unknown"` rather than an enrichment error.
+- Setting `vault_apikey_greynoise: ""` opts in to anonymous community queries. Setting it to a real key raises the rate limit and adds the `key` header; the response shape is identical.
+
+### PhishStats
+
+Uses the [PhishStats public API](https://phishstats.info/api-docs) at `https://phishstats.info:2096/api/phishing`. No authentication, no key header. Rate limit: 20 requests per minute.
+
+- Setting `vault_apikey_phishstats: ""` enables the provider on the public endpoint. Setting it to a value works too, but the value is dropped before the request is built — PhishStats has no auth header to attach it to.
+
+### How to disable either provider
+
+Omit the vault variable entirely. The Ansible template at [`profile_collector/templates/secrets.json.j2`](../config/ansible/roles/profile_collector/templates/secrets.json.j2) emits JSON `null` when the variable is undefined, and the runner skips any provider whose secret is `null`. A log line `provider_disabled provider=<name> reason=not_configured` is emitted so the operator can confirm the skip.
+
+### Vault ↔ `secrets.json` nomenclature
+
+`secrets.json` on the collector mirrors `vault.yml` verbatim — every key in the rendered file uses the same `vault_apikey_<service>` / `vault_webhook_<service>` pattern as the source vault, so the operator's mental model is "decrypted view of the vault" rather than "different schema":
+
+```json
+{
+  "vault_apikey_virustotal":  "...",
+  "vault_apikey_shodan":      "...",
+  "vault_apikey_abuseipdb":   "...",
+  "vault_apikey_greynoise":   "",
+  "vault_apikey_phishstats":  "",
+  "vault_webhook_discord":    "https://..."
+}
+```
+
+Python code keeps short attribute names (`secrets.virustotal`, `secrets.discord_webhook`, ...) via Pydantic `Field(alias=...)` on [`SecretsConfig`](../pipeline/src/lantana/common/config.py). Consumers don't need to know about the on-disk shape.
 
 ---
 

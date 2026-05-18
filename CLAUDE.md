@@ -149,4 +149,17 @@ Lantana produces shareable intelligence (Discord reports, STIX bundles). The pri
 - Partition scheme (Hive-style): `dataset={name}/date={YYYY-MM-DD}/server={hostname}/`
 - Bronze = raw NDJSON (Vector writes). Silver = enriched Parquet (OCSF, redacted). Gold = correlated intelligence (Parquet)
 - Cross-honeypot correlation happens ONLY at the gold layer
-- GeoIP enrichment happens in Vector (MMDB), API enrichment happens in Python (daily batch)
+
+## Third-Party Integrations
+
+Six integrations across two stages, all keyed in the vault (`vault_apikey_<service>` / `vault_webhook_<service>`):
+
+- **Wire-speed (Vector, local MMDB):** MaxMind GeoLite2 (City + ASN). Foundational integration — every event passes through it before reaching bronze. Ansible downloads the MMDBs at deploy time and refreshes monthly via cron. License key required for download; lookup is offline.
+- **Daily batch (Python pipeline, HTTP APIs):** AbuseIPDB, Shodan, VirusTotal (required keys); GreyNoise, PhishStats (free public endpoints, optional keys).
+
+Validation tooling:
+
+- `scripts/probe-mmdb.py` — full-stack MaxMind validation. Reads `vault_apikey_maxmind` from `--secrets <secrets.json>`, downloads the City + ASN tarballs if not already on disk, queries them, and prints raw + Vector-VRL-normalized output. Auto-falls back to `/tmp/lantana/mmdb` when the collector path isn't present.
+- `scripts/probe-enrichment.py` — hits each HTTP provider's live API; prints raw upstream response + normalized `EnrichmentResult.data`.
+
+See [docs/integrations.md](docs/integrations.md) for endpoints, free-tier limits, field-extraction tables, enablement rules, and the history of upstream incidents (e.g. PhishStats's 2026-05 host migration).

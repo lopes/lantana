@@ -184,3 +184,71 @@ Use the command below to test SSH connections to decoys. It explicitly disables 
 ```sh
 ssh -o PubkeyAuthentication=no -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -v -6 root@fd99:10:50:99::100 -p 60090
 ```
+
+---
+
+## Third-Party Integrations
+
+Lantana's enrichment depends on five HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise, PhishStats) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog, see [`integrations.md`](integrations.md).
+
+### Probe scripts
+
+Two diagnostic scripts mirror the two enrichment paths. Both run from `pipeline/` via `uv run`:
+
+| Script | What it exercises | Default flags |
+|---|---|---|
+| [`scripts/probe-enrichment.py`](../scripts/probe-enrichment.py) | Live HTTP API call per provider, prints raw upstream response + normalized `EnrichmentResult.data` | `--ip <addr>` repeatable; `--hash <sha256>` for VT only; `--provider <name|all>`; `--secrets <path>`; `--no-raw`; `--insecure` |
+| [`scripts/probe-mmdb.py`](../scripts/probe-mmdb.py) | Downloads City + ASN MMDBs if missing (using `vault_apikey_maxmind` from `--secrets`), then queries them | `--ip <addr>` repeatable; `--mmdb-dir <path>` (auto-falls back to `/tmp/lantana/mmdb` off-collector); `--secrets <path>`; `--force-download`; `--no-raw`; `--insecure` |
+
+Both scripts auto-translate legacy vault key names (`vault_<service>_api_key`, `vault_maxmind_license_key`) to the current `vault_<type>_<service>` form, so a hand-written secrets file from before 2026-05 still parses — they print a stderr `[note: ...]` when translation kicks in.
+
+### "Provider returned no data" — what's normal vs broken
+
+The enrichment runner treats a few HTTP responses as **not errors** because they're routine for honeypot attacker IPs:
+
+| Response | Provider | Pipeline behaviour |
+|---|---|---|
+| `404` | GreyNoise | IP isn't in the dataset → row gets `greynoise_classification: "unknown"` and false booleans. Common for residential botnets. |
+| `404` | Shodan    | IP was never scanned → row gets empty `shodan_*` fields. Common for the same reason. |
+| `404` | VirusTotal (IP) | Never indexed → row gets zero counts. Less common but possible. |
+| `404` | VirusTotal (hash) | Fresh malware not yet seen by any AV → zero counts. Common for first-day captures. |
+| Empty `[]` | PhishStats | No phishing URLs known for this IP → `phishstats_url_count: 0`. The default state. |
+| `200` with `abuseConfidenceScore: 0` | AbuseIPDB | No abuse reports → row populated with clean fields. The default state. |
+
+So "missing fields" in silver Parquet is the **normal** state for the vast majority of attacker IPs. It only indicates a problem when columns are missing for ALL rows — that suggests provider misconfiguration.
+
+### "Provider returned an error" — diagnosing
+
+The runner records every failure to `/var/lib/lantana/datalake/enrichment_errors.json` (NDJSON, one line per `(provider, error_type)` pair per day). Inspect:
+
+```bash
+sudo -u nectar jq . /var/lib/lantana/datalake/enrichment_errors.json | tail -50
+```
+
+Common `error_type` values and what they mean:
+
+| `error_type` | Cause | Action |
+|---|---|---|
+| `auth`         | 401/403 — bad API key                                  | Re-check `vault_apikey_<service>` and re-run `deploy_single.yml` with the `collector` tag. The runner now fails fast on auth errors (no retries), so the count equals the number of IPs that were attempted. |
+| `rate_limit`   | 429                                                    | Provider quota exhausted. Retry tomorrow (cache covers 7-day TTL). Consider trimming the IP set or upgrading the free tier. |
+| `timeout`      | TCP timeout                                            | Transient. The runner retries 3× with exponential backoff before recording. If sustained, check the collector's egress firewall. |
+| `http_4xx`     | Other 4xx — most commonly bad request / missing param  | Provider API contract changed. Check the upstream docs (linked from `integrations.md`) and the recent provider changelog. |
+| `http_5xx`     | Provider-side outage                                   | Wait it out. The runner retries 3× before giving up. Confirm with the probe script — if `probe-enrichment.py --provider <name>` also fails, it's not us. |
+| `unknown`      | Catch-all                                              | Read the `message` field in the error file — usually a JSON parse error or a transport-level issue. |
+
+The runner is designed so that **one provider failing never blocks the others**: each provider's enrichment is independent, and a `RetryError` after exhausted retries on provider A still leaves providers B–E with full data for the same IP. Per-IP errors don't block other IPs either.
+
+### MaxMind silent failure (`.geo.*` fields empty)
+
+If the dashboard's geographic page is empty or all attackers show "unknown country":
+
+1. **Check the vault has the key.** `ansible-vault view inventories/op_<name>/group_vars/all/vault.yml | grep maxmind`. If `vault_apikey_maxmind` is missing or empty, Ansible silently skipped the MMDB download — that's by design but it's the most common cause.
+2. **Check the MMDBs exist on the collector.** `ls -la /var/lib/lantana/collector/geoip/` should show two ~70 MB and ~10 MB files dated within the last month.
+3. **Verify Vector can read them.** `sudo -u vector cat /var/lib/lantana/collector/geoip/GeoLite2-City.mmdb | head -c 16 | xxd` — first bytes should not be all zeros.
+4. **Run the probe.** `cd pipeline && uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8` should print the City + ASN records and the `.geo.*` block.
+
+If step 4 succeeds but bronze NDJSON still has empty `.geo.*` fields, Vector's enrichment-tables block didn't reload after the MMDB refresh. `sudo systemctl restart vector` and check the next day's bronze.
+
+### Workstation TLS verification failures
+
+Homebrew Python 3.14 on macOS sometimes can't chain-validate TLS certs even with `certifi.where()` configured (symptom: `httpx.ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED]` while `curl` to the same URL works). Both probe scripts ship a `--insecure` flag for this case — it bypasses TLS verification and prints a loud warning. **Never use `--insecure` in production**; the collector on Debian 13 has a working trust store and doesn't need it.

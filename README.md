@@ -71,6 +71,7 @@ lantana/
 |---|---|
 | [Architecture](docs/architecture.md) | Zoned model, deployment modes, network topology, tech stack |
 | [Pipeline](docs/pipeline.md) | Data pipeline: bronze/silver/gold datalake, OCSF normalization, enrichment, reports, STIX |
+| [Integrations](docs/integrations.md) | Third-party threat-intel providers: endpoints, auth, rate limits, field extraction, live-probe workflow |
 | [Rules of Engagement](docs/rules-of-engagement.md) | Ethical and operational boundaries for honeypot use |
 | [Glossary](docs/glossary.md) | Terminology and definitions |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
