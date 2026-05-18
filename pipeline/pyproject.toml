@@ -12,6 +12,7 @@ dependencies = [
     "structlog>=24.0",
     "stix2>=3.0",
     "plotly>=6.0",
+    "maxminddb>=2.6",
 ]
 
 [project.optional-dependencies]
