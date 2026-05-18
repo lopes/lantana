@@ -1,13 +1,17 @@
-"""Shodan enrichment provider."""
+"""Shodan enrichment provider.
+
+API documentation: https://developer.shodan.io/api
+Free-tier (Membership) rate limit: roughly 100 queries per month.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from lantana.enrichment.providers.base import EnrichmentResult
+from lantana.enrichment.providers.base import EnrichmentResult, is_retryable_http_error
 
 
 class ShodanProvider:
@@ -29,7 +33,7 @@ class ShodanProvider:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(httpx.HTTPStatusError),
+        retry=retry_if_exception(is_retryable_http_error),
     )
     async def enrich_ip(self, ip: str) -> EnrichmentResult:
         """Query Shodan for host information on an IP address."""
@@ -37,8 +41,25 @@ class ShodanProvider:
             f"{self._BASE_URL}/{ip}",
             params={"key": self._api_key},
         )
-        response.raise_for_status()
 
+        # 404 = Shodan has never scanned this IP. Common for residential
+        # botnets — treat it as "no info" rather than an error so the
+        # daily run doesn't drop the row's other-provider enrichment.
+        if response.status_code == 404:
+            return EnrichmentResult(
+                provider="shodan",
+                ip=ip,
+                data={
+                    "shodan_ports": "",
+                    "shodan_os": None,
+                    "shodan_vulns": None,
+                    "shodan_org": "",
+                    "shodan_asn": "",
+                },
+                queried_at=datetime.now(tz=UTC),
+            )
+
+        response.raise_for_status()
         data: dict[str, str | int | list[int] | list[str] | None] = response.json()
 
         ports_raw: list[int] = data.get("ports", [])  # type: ignore[assignment]

@@ -12,10 +12,44 @@ from lantana.enrichment.providers.phishstats import PhishStatsProvider
 
 @pytest.fixture()
 def provider() -> PhishStatsProvider:
-    return PhishStatsProvider(api_key="test-key")
+    return PhishStatsProvider()
 
 
 class TestPhishStatsProvider:
+    @pytest.mark.asyncio()
+    async def test_no_auth_header_sent(self, provider: PhishStatsProvider) -> None:
+        """PhishStats has no auth — no key/Authorization header should be sent."""
+        mock_response = httpx.Response(
+            200,
+            json=[],
+            request=httpx.Request("GET", "https://api.phishstats.info/api/phishing"),
+        )
+        mock_get = AsyncMock(return_value=mock_response)
+        with patch.object(provider._client, "get", mock_get):
+            await provider.enrich_ip("198.51.100.2")
+
+        sent_headers = mock_get.call_args.kwargs["headers"]
+        assert "key" not in sent_headers
+        assert "Authorization" not in sent_headers
+
+    @pytest.mark.asyncio()
+    async def test_supplied_api_key_is_ignored(self) -> None:
+        """A non-empty api_key is accepted for symmetry but must not affect the request."""
+        keyed = PhishStatsProvider(api_key="should-be-ignored")
+        mock_response = httpx.Response(
+            200,
+            json=[],
+            request=httpx.Request("GET", "https://api.phishstats.info/api/phishing"),
+        )
+        mock_get = AsyncMock(return_value=mock_response)
+        with patch.object(keyed._client, "get", mock_get):
+            await keyed.enrich_ip("198.51.100.3")
+
+        sent_headers = mock_get.call_args.kwargs["headers"]
+        assert "key" not in sent_headers
+        assert "Authorization" not in sent_headers
+
+
     @pytest.mark.asyncio()
     async def test_enrich_ip_returns_result(self, provider: PhishStatsProvider) -> None:
         """Successful response produces an EnrichmentResult with expected fields."""
@@ -25,7 +59,7 @@ class TestPhishStatsProvider:
                 {"url": "http://evil.example.com/login", "date": "2026-04-20"},
                 {"url": "http://evil.example.com/phish", "date": "2026-04-21"},
             ],
-            request=httpx.Request("GET", "https://phishstats.info:2096/api/phishing"),
+            request=httpx.Request("GET", "https://api.phishstats.info/api/phishing"),
         )
         with patch.object(provider._client, "get", new_callable=AsyncMock, return_value=mock_response):
             result = await provider.enrich_ip("203.0.113.50")
@@ -41,7 +75,7 @@ class TestPhishStatsProvider:
         mock_response = httpx.Response(
             200,
             json=[],
-            request=httpx.Request("GET", "https://phishstats.info:2096/api/phishing"),
+            request=httpx.Request("GET", "https://api.phishstats.info/api/phishing"),
         )
         with patch.object(provider._client, "get", new_callable=AsyncMock, return_value=mock_response):
             result = await provider.enrich_ip("198.51.100.1")
@@ -50,8 +84,8 @@ class TestPhishStatsProvider:
         assert result.data["phishstats_last_seen"] is None
 
     def test_rate_limit_returns_correct_values(self, provider: PhishStatsProvider) -> None:
-        """Rate limit is 10 requests per 60 seconds."""
-        assert provider.rate_limit() == (10, 60)
+        """Rate limit is 20 requests per 60 seconds."""
+        assert provider.rate_limit() == (20, 60)
 
     @pytest.mark.asyncio()
     async def test_close_shuts_down_client(self, provider: PhishStatsProvider) -> None:

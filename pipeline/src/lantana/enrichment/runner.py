@@ -251,14 +251,22 @@ async def run_enrichment(
     cache = _init_cache(cache_db_path)
     errors: ErrorAccumulator = {}
 
-    # Initialize providers
+    # Initialize providers. GreyNoise and PhishStats are skipped when the
+    # vault key is absent (None); empty strings keep them enabled in their
+    # unauthenticated modes.
     providers: dict[str, _ProviderType] = {
         "abuseipdb": AbuseIPDBProvider(secrets.abuseipdb),
-        "greynoise": GreyNoiseProvider(secrets.greynoise),
-        "phishstats": PhishStatsProvider(secrets.phishstats),
         "shodan": ShodanProvider(secrets.shodan),
         "virustotal": VirusTotalProvider(secrets.virustotal),
     }
+    if secrets.greynoise is not None:
+        providers["greynoise"] = GreyNoiseProvider(secrets.greynoise)
+    else:
+        logger.info("provider_disabled", provider="greynoise", reason="not_configured")
+    if secrets.phishstats is not None:
+        providers["phishstats"] = PhishStatsProvider(secrets.phishstats)
+    else:
+        logger.info("provider_disabled", provider="phishstats", reason="not_configured")
 
     try:
         for dataset in DATASETS:

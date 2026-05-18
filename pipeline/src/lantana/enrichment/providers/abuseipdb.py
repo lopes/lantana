@@ -1,13 +1,17 @@
-"""AbuseIPDB enrichment provider."""
+"""AbuseIPDB enrichment provider.
+
+API documentation: https://docs.abuseipdb.com/ (v2)
+Free-tier rate limit: 1000 checks per day.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from lantana.enrichment.providers.base import EnrichmentResult
+from lantana.enrichment.providers.base import EnrichmentResult, is_retryable_http_error
 
 
 class AbuseIPDBProvider:
@@ -29,7 +33,7 @@ class AbuseIPDBProvider:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(httpx.HTTPStatusError),
+        retry=retry_if_exception(is_retryable_http_error),
     )
     async def enrich_ip(self, ip: str) -> EnrichmentResult:
         """Query AbuseIPDB for abuse reports on an IP address."""

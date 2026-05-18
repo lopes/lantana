@@ -1,26 +1,34 @@
-"""PhishStats enrichment provider."""
+"""PhishStats enrichment provider.
+
+PhishStats exposes an unauthenticated public API. The ``api_key``
+parameter is accepted for symmetry with the other providers but is
+intentionally ignored — supplying a key has no effect on the request.
+
+API documentation: https://phishstats.info/api-docs
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from lantana.enrichment.providers.base import EnrichmentResult
+from lantana.enrichment.providers.base import EnrichmentResult, is_retryable_http_error
 
 
 class PhishStatsProvider:
     """PhishStats phishing URL intelligence provider.
 
     Queries PhishStats for phishing URLs associated with an IP address.
-    Rate limit: 10 requests per 60 seconds (free tier).
+    Public, no authentication. Rate limit: 20 requests per 60 seconds.
     """
 
-    _BASE_URL = "https://phishstats.info:2096/api/phishing"
+    _BASE_URL = "https://api.phishstats.info/api/phishing"
 
-    def __init__(self, api_key: str) -> None:
-        self._api_key = api_key
+    def __init__(self, api_key: str | None = None) -> None:
+        # api_key accepted but ignored — PhishStats has no auth endpoint.
+        del api_key
         self._client = httpx.AsyncClient(timeout=30.0)
 
     async def close(self) -> None:
@@ -30,7 +38,7 @@ class PhishStatsProvider:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(httpx.HTTPStatusError),
+        retry=retry_if_exception(is_retryable_http_error),
     )
     async def enrich_ip(self, ip: str) -> EnrichmentResult:
         """Query PhishStats for phishing URLs hosted on an IP address."""
@@ -61,5 +69,5 @@ class PhishStatsProvider:
         )
 
     def rate_limit(self) -> tuple[int, int]:
-        """Return (10, 60) — 10 requests per minute."""
-        return (10, 60)
+        """Return (20, 60) — 20 requests per minute."""
+        return (20, 60)

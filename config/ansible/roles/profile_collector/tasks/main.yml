@@ -94,13 +94,13 @@
 - name: "Download GeoLite2 MMDB files"
   become: true
   ansible.builtin.get_url:
-    url: "https://download.maxmind.com/app/geoip_download?edition_id={{ item }}&license_key={{ vault_maxmind_license_key }}&suffix=tar.gz"
+    url: "https://download.maxmind.com/app/geoip_download?edition_id={{ item }}&license_key={{ vault_apikey_maxmind }}&suffix=tar.gz"
     dest: "/tmp/{{ item }}.tar.gz"
     mode: "0644"
   loop:
     - GeoLite2-City
     - GeoLite2-ASN
-  when: vault_maxmind_license_key is defined and vault_maxmind_license_key != ""
+  when: vault_apikey_maxmind is defined and vault_apikey_maxmind != ""
   tags: [collector, vector]
 
 - name: "Extract MMDB files"
@@ -110,7 +110,7 @@
   loop:
     - GeoLite2-City
     - GeoLite2-ASN
-  when: vault_maxmind_license_key is defined and vault_maxmind_license_key != ""
+  when: vault_apikey_maxmind is defined and vault_apikey_maxmind != ""
   changed_when: false
   tags: [collector, vector]
 
@@ -124,7 +124,7 @@
   loop:
     - GeoLite2-City.mmdb
     - GeoLite2-ASN.mmdb
-  when: vault_maxmind_license_key is defined and vault_maxmind_license_key != ""
+  when: vault_apikey_maxmind is defined and vault_apikey_maxmind != ""
   tags: [collector, vector]
 
 - name: "Add monthly GeoIP update cron"
@@ -133,9 +133,9 @@
     dest: /etc/cron.d/lantana-geoip-update
     content: |
       # Update GeoLite2 MMDB files monthly (1st of month, 02:30 UTC)
-      30 2 1 * * root cd /tmp && curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key={{ vault_maxmind_license_key }}&suffix=tar.gz" | tar -xzf - --wildcards '*.mmdb' --strip-components=1 -C /var/lib/lantana/collector/geoip/ && curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key={{ vault_maxmind_license_key }}&suffix=tar.gz" | tar -xzf - --wildcards '*.mmdb' --strip-components=1 -C /var/lib/lantana/collector/geoip/ && systemctl restart vector
+      30 2 1 * * root cd /tmp && curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key={{ vault_apikey_maxmind }}&suffix=tar.gz" | tar -xzf - --wildcards '*.mmdb' --strip-components=1 -C /var/lib/lantana/collector/geoip/ && curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key={{ vault_apikey_maxmind }}&suffix=tar.gz" | tar -xzf - --wildcards '*.mmdb' --strip-components=1 -C /var/lib/lantana/collector/geoip/ && systemctl restart vector
     mode: "0644"
-  when: vault_maxmind_license_key is defined and vault_maxmind_license_key != ""
+  when: vault_apikey_maxmind is defined and vault_apikey_maxmind != ""
   no_log: true
   tags: [collector, vector]
 

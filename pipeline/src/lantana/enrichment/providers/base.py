@@ -5,7 +5,24 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 - required at runtime by Pydantic
 from typing import Protocol, runtime_checkable
 
+import httpx
 from pydantic import BaseModel
+
+
+def is_retryable_http_error(exc: BaseException) -> bool:
+    """Decide whether a transport-level failure should be retried.
+
+    Retry: timeouts, 429 (rate limit), 5xx (server error).
+    Fail fast: 4xx other than 429. 404 "IP not in dataset" is deterministic;
+    401/403 means the API key is broken — retrying just burns the budget.
+    Non-HTTP errors (DNS, TLS, connection reset) are also retried.
+    """
+    if isinstance(exc, httpx.TimeoutException | httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or 500 <= status < 600
+    return False
 
 
 class EnrichmentResult(BaseModel):

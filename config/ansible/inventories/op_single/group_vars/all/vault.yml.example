@@ -1,0 +1,72 @@
+---
+# Lantana vault — plaintext template
+# ===================================
+#
+# Copy this file as `vault.yml` for a new operation, fill in the values,
+# then encrypt it before committing or deploying:
+#
+#     cp inventories/op_single/group_vars/all/vault.yml.example \
+#        inventories/op_<name>/group_vars/all/vault.yml
+#     # edit vault.yml — fill in real keys
+#     ansible-vault encrypt inventories/op_<name>/group_vars/all/vault.yml
+#
+# Naming convention: `vault_<type>_<service>`.
+# `type` is `apikey` or `webhook`; `service` is the lowercase provider name.
+# The rendered `/etc/lantana/collector/secrets.json` keeps the same keys verbatim
+# — secrets.json is the decrypted view of this file, not a different schema.
+
+
+# --- Enrichment provider keys ---------------------------------------------
+# These three providers have no free public endpoint — you need a key for
+# each. Free-tier accounts (Shodan Membership, AbuseIPDB free, VirusTotal
+# Public API) are sufficient for a research honeypot.
+
+vault_apikey_virustotal: "REPLACE_ME"
+vault_apikey_shodan:     "REPLACE_ME"
+vault_apikey_abuseipdb:  "REPLACE_ME"
+
+# GreyNoise and PhishStats have public unauthenticated endpoints. Three modes:
+#
+#     vault_apikey_greynoise: "<key>"  -> community endpoint, key in header
+#                                          (higher rate limit; same response)
+#     vault_apikey_greynoise: ""       -> community endpoint, anonymous
+#                                          (50 searches per 7 days)
+#     line omitted entirely            -> provider disabled, runner skips it
+#
+# PhishStats has no auth at all — empty string enables it; any value is
+# silently ignored. Omit to disable.
+
+vault_apikey_greynoise:  ""
+vault_apikey_phishstats: ""
+
+
+# --- GeoIP enrichment (MaxMind GeoLite2) ----------------------------------
+# License key for MaxMind GeoLite2 City + ASN MMDB downloads. The Ansible
+# collector role downloads both databases at deploy time and refreshes them
+# monthly via cron. Vector loads them as enrichment tables and tags every
+# event with .geo.{country_code, city, asn, isp, ...} at wire speed.
+#
+# Free signup:  https://www.maxmind.com/en/geolite2/signup
+# After signup: Account -> Manage License Keys -> Generate new license key
+#
+# Set to ""        -> Ansible skips the download. Vector starts but emits no
+#                     .geo.* fields. Silent failure — every IP becomes "unknown
+#                     country" in the dashboard.
+# Set to "<key>"   -> normal operation; MMDBs downloaded and refreshed monthly.
+# Line omitted     -> same as empty string (Ansible's `when:` guard skips).
+
+vault_apikey_maxmind:    "REPLACE_ME"
+
+
+# --- Reporting ------------------------------------------------------------
+# Discord webhook URL for the daily intel brief. Omit (or leave blank) to
+# disable Discord delivery; reports are still generated and stored locally.
+
+vault_webhook_discord:   "https://discord.com/api/webhooks/REPLACE_ME"
+
+
+# --- Ansible sudo (optional) ----------------------------------------------
+# Set this if you'd rather not pass --ask-become-pass on every playbook run.
+# Requires uncommenting `ansible_become_password` in main.yml.
+
+# vault_become_password: "REPLACE_ME"
