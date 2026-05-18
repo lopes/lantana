@@ -240,7 +240,7 @@ All cron jobs run as the `nectar` user (UID 2002), which owns the datalake direc
 
 ---
 
-## 7.1 Third-Party Integrations
+### 7.1 Third-Party Integrations
 
 Enrichment providers, their endpoints, free-tier limits, extracted fields, and live-probe workflows live in [`integrations.md`](integrations.md). Quick reference:
 
@@ -255,7 +255,7 @@ Enrichment providers, their endpoints, free-tier limits, extracted fields, and l
 
 See [`integrations.md`](integrations.md) for endpoint URLs, per-provider field extraction, the probe scripts (`probe-enrichment.py` for HTTP providers, `probe-mmdb.py` for MaxMind), and historical incidents.
 
-## 7.2 Provider Auth Modes
+### 7.2 Provider Auth Modes
 
 Not every enrichment provider requires an API key. The vault file controls per-provider enablement and authentication:
 
@@ -279,7 +279,7 @@ Uses the [GreyNoise Community API](https://docs.greynoise.io/docs/using-the-grey
 
 ### PhishStats
 
-Uses the [PhishStats public API](https://phishstats.info/api-docs) at `https://phishstats.info:2096/api/phishing`. No authentication, no key header. Rate limit: 20 requests per minute.
+Uses the [PhishStats public API](https://phishstats.info/api-docs) at `https://api.phishstats.info/api/phishing` (the host migrated off the legacy `phishstats.info:2096` origin in 2026-05 — see the incident note in [`integrations.md`](integrations.md#phishstats-endpoint-migration-2026-05)). No authentication, no key header. Rate limit: 20 requests per minute.
 
 - Setting `vault_apikey_phishstats: ""` enables the provider on the public endpoint. Setting it to a value works too, but the value is dropped before the request is built — PhishStats has no auth header to attach it to.
 
@@ -287,7 +287,7 @@ Uses the [PhishStats public API](https://phishstats.info/api-docs) at `https://p
 
 Omit the vault variable entirely. The Ansible template at [`profile_collector/templates/secrets.json.j2`](../config/ansible/roles/profile_collector/templates/secrets.json.j2) emits JSON `null` when the variable is undefined, and the runner skips any provider whose secret is `null`. A log line `provider_disabled provider=<name> reason=not_configured` is emitted so the operator can confirm the skip.
 
-### Vault ↔ `secrets.json` nomenclature
+### 7.3 Vault ↔ `secrets.json` nomenclature
 
 `secrets.json` on the collector mirrors `vault.yml` verbatim — every key in the rendered file uses the same `vault_apikey_<service>` / `vault_webhook_<service>` pattern as the source vault, so the operator's mental model is "decrypted view of the vault" rather than "different schema":
 

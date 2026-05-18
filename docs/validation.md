@@ -26,7 +26,7 @@ cd config/ansible
 cp -r inventories/op_single inventories/op_myop
 ```
 
-Edit these files under `inventories/op_myop/group_vars/all/`:
+Edit these files under `inventories/op_myop/group_vars/all/` (see [`runbook.md`](runbook.md) for an annotated walkthrough):
 
 | File | What to customize |
 |---|---|
@@ -221,8 +221,11 @@ print('Columns:', sorted(df.columns))
 
 **Verify OPSEC redaction:**
 
+This is a one-off spot check; the production redaction validator (`common/redact.py::validate_no_leaks`) runs every enrichment cycle and asserts against the full infrastructure IP set plus CIDR containment. Replace `YOUR_WAN_IP` with the public IPv4 your operation actually binds:
+
 ```bash
 /opt/lantana/pipeline/venv/bin/python3 -c "
+import polars as pl
 from datetime import date, timedelta
 from lantana.common.datalake import read_silver_partition
 yesterday = date.today() - timedelta(days=1)
@@ -252,10 +255,11 @@ sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT COUNT(*) FROM cac
 # Check cron ran
 grep lantana-transform /var/log/syslog | tail -5
 
-# Gold tables should exist
+# Gold tables should exist — seven directories, one per table
 ls /var/lib/lantana/datalake/gold/
-# daily_summary/, ip_reputation/, behavioral_progression/, campaign_clusters/,
-# behavioral_progression_multiday/
+# daily_summary/, ip_reputation/, behavioral_progression/,
+# behavioral_progression_multiday/, campaign_clusters/,
+# geographic_summary/, detection_findings/
 ```
 
 **Inspect gold tables:**
@@ -265,7 +269,16 @@ ls /var/lib/lantana/datalake/gold/
 from datetime import date, timedelta
 from lantana.common.datalake import read_gold_table
 yesterday = date.today() - timedelta(days=1)
-for table in ['daily_summary', 'ip_reputation', 'behavioral_progression', 'campaign_clusters', 'behavioral_progression_multiday']:
+tables = [
+    'daily_summary',
+    'ip_reputation',
+    'behavioral_progression',
+    'behavioral_progression_multiday',
+    'campaign_clusters',
+    'geographic_summary',
+    'detection_findings',
+]
+for table in tables:
     df = read_gold_table(table, yesterday)
     print(f'{table}: {df.shape}')
 "

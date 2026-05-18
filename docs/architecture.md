@@ -67,13 +67,13 @@ This separation means an operator can completely destroy and rebuild the Terrafo
 
 ## 3. Architecture
 
-With the hosts provisioned, Lantana is structured around a **zoned architecture**. Each zone enforces a strict security and functional boundary.
+With the hosts provisioned, Lantana is structured around a **zoned architecture**. Each zone enforces a strict security and functional boundary. The terms below are summarised in the [glossary](glossary.md#2-deception-artifacts--infrastructure).
 
 ### Logical Zones
 
 - **Honeywall Zone:** The network safeguard. It protects the public interface, enforcing strict egress filtering via [nftables](https://www.netfilter.org/projects/nftables/index.html) to ensure compromised decoys cannot be weaponized. It utilizes an IDS ([Suricata](https://suricata.io/)) to identify attacks and monitors connection logs. The Honeywall never hosts decoys.
 - **Sensor Zone:** The deception runtime. This zone runs the actual honeypots. Low-interaction honeypots run inside isolated, hardened [podman](https://podman.io/) containers. It is responsible for capturing attacker interactions, performing lightweight local log parsing, and forwarding telemetry.
-- **Collector Zone:** The data brain. Explicitly out-of-band and never exposed to adversaries, this zone receives parsed logs from the Honeywall and Sensor zones. It enriches the data, normalizes it into OCSF format, builds the central data lake, and periodically persists the data to secure external storage.
+- **Collector Zone:** The data brain. Explicitly out-of-band and never exposed to adversaries, this zone receives parsed logs from the Honeywall and Sensor zones. It enriches the data, normalizes it into OCSF format, builds the central data lake (bronze → silver → gold; see [`pipeline.md`](pipeline.md)), and periodically persists the data to secure external storage.
 
 ### System Identities & Least Privilege
 
@@ -245,7 +245,7 @@ Lantana favors modern, native Linux tooling over heavy abstractions. This reduce
 - **nftables:** Handles all firewalling, NAT, network segmentation, and strict egress containment policies. It is configured modularly: `/etc/nftables.conf` sets the base and includes routing definitions from `/etc/lantana/honeywall/nftables`, while plugin-specific rules are dynamically ingested from the `/sensors` subdirectory.
 - **systemd:** Manages service orchestration, ensuring honeypots and telemetry pipelines start reliably and recover from crashes.
 - **iproute2:** Manages network configurations, routing tables, and the creation of dummy interfaces for Single-Node mode.
-- **logrotate & cron:** Manages log retention and rotation deterministically. To avoid the unpredictable execution times of standard `anacron` (used by `/etc/cron.daily`), Lantana uses strict schedules in `/etc/cron.d/` to trigger explicit rotation scripts located in `/etc/lantana/logrotate.d/`, ensuring log processing aligns perfectly with downstream pipeline expectations.
+- **logrotate & cron:** Manages log retention and rotation deterministically. To avoid the unpredictable execution times of standard `anacron` (used by `/etc/cron.daily`), Lantana uses strict schedules in `/etc/cron.d/` to trigger explicit rotation scripts located in `/etc/lantana/logrotate.d/`, ensuring log processing aligns perfectly with downstream pipeline expectations. Raw logs under `/var/log/lantana/` are a transient forwarding buffer for Vector, not a system of record — the durable copy is the bronze NDJSON on the collector, and disk-safety circuit breakers live at the lake layer (`lantana-prune`), not in logrotate.
 
 ### Specialized Deception & Data Tools
 

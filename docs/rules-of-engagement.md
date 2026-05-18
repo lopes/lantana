@@ -23,3 +23,7 @@ Telemetry collection must respect privacy and data governance constraints. While
 ## 5. Align with operational goals
 
 Narratives, exposure profiles, and sensor configurations must align with a defined operational goal. Honeypots exist to answer questions, not merely to collect noise. Sensor rotation, profile changes, and topology shifts are part of the operational lifecycle, not ad hoc events.
+
+## 6. No infrastructure disclosure
+
+Real operator-identifying values — WAN IPs, hostnames, domains, ASNs, SSH host fingerprints, hosting-provider account IDs — must never appear in any artifact that leaves the operator's control. That includes shareable intelligence (Discord reports, STIX bundles), this repository's docs and code, commit messages, pull requests, conference talks, and screenshots. The only place real values live is inside each operation's untracked or vault-encrypted inventory (`config/ansible/inventories/op_<name>/group_vars/all/`). Examples in tracked files use reserved documentation ranges only (RFC 5737 for IPv4, RFC 3849 for IPv6, RFC 2606 for domains, RFC 5398 for ASNs).

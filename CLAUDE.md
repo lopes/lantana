@@ -120,6 +120,22 @@ lantana/
 
 Lantana produces shareable intelligence (Discord reports, STIX bundles). The primary OPSEC concern is **external/WAN IP leakage** — the public-facing addresses that identify the honeypot on the internet. If an attacker or peer discovers these, they can blacklist the honeypot, fingerprint the setup, or map the operator's infrastructure. Only the honeypot owner should know these addresses. OPSEC is enforced at every layer:
 
+### Layer 0: Source code, docs, and examples (placeholders only)
+
+The repository is **public on GitHub** (`github.com/lopes/lantana`). Anything committed under `docs/`, `README.md`, `scripts/`, `config/ansible/` (except untracked operation inventories), code comments, or playbook examples is world-readable and search-indexable. Real operator-identifying values must never appear in these files.
+
+- **Never paste a real WAN IP, IPv6 address, hostname, MAC, ASN, domain, server provider account ID, or SSH fingerprint into any tracked file.** This applies to runbooks, READMEs, troubleshooting guides, code comments, commit messages, and PR descriptions.
+- **Use reserved documentation ranges in every example:**
+  - IPv4 → RFC 5737 TEST-NET blocks: `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`
+  - IPv6 → RFC 3849: `2001:db8::/32`
+  - Domains → `example.com`, `example.org`, `example.net` (RFC 2606)
+  - ASNs → RFC 5398: `64496–64511`, `65536–65551`
+  - Hostnames → archetype-generic (`vps-01`, `sn-01`) — never the real production hostname
+- **Real values belong only in operation inventories** (`config/ansible/inventories/op_<name>/group_vars/all/`). These directories are either gitignored or vault-encrypted; treat any path outside them as public.
+- **Public IPs as probe payloads are fine** (e.g. `8.8.8.8`, attacker IPs already in OSINT) — they don't identify the operator. The rule is operator-identifying values, not all real IPs.
+- **Before editing any doc that includes an IP, hostname, or domain, verify it falls inside one of the reserved ranges above.** When in doubt, ask the user before committing.
+- **Heuristic for spotting a real one:** if an example IP isn't in an RFC documentation range, it's almost certainly real. Allocations registered to commercial VPS/cloud providers (OVH, Hetzner, DigitalOcean, Linode, AWS, GCP, Azure, …) are the most common slip — replace any such address with the appropriate reserved range before committing.
+
 ### Layer 1: Vector telemetry (noise suppression)
 
 - Every honeypot Vector pipeline must include a `filter_<honeypot>` transform that drops events from non-attacker source IPs before forwarding to the collector

@@ -89,7 +89,7 @@ sudo nft monitor trace
 
 ### Debugging Dual-Stack
 
-Ensure your rules use the `inet` family to cover both IPv4 and IPv6. If IPv6 is failing, verify your rules aren't explicitly matching `ip daddr` (IPv4 only) instead of `ip6 daddr` or generic port matches.
+Ensure your rules use the `inet` family to cover both IPv4 and IPv6. If IPv6 is failing, verify your rules aren't explicitly matching `ip daddr` (IPv4 only) instead of `ip6 daddr` or generic port matches. The same applies to `saddr` matches — `ip saddr` won't trigger on IPv6 source addresses.
 
 ---
 
@@ -162,7 +162,7 @@ Whenever a task is failing due to variable errors, you can add the following tas
 
 ---
 
-## Tests
+## Manual Testing on Sensors
 
 In an "as-code" project, the usual workflow is:
 
@@ -189,7 +189,7 @@ ssh -o PubkeyAuthentication=no -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
 
 ## Third-Party Integrations
 
-Lantana's enrichment depends on five HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise, PhishStats) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog, see [`integrations.md`](integrations.md).
+Lantana's enrichment depends on five HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise, PhishStats) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](pipeline.md#31-bronze-to-silver-daily-enrichment).
 
 ### Probe scripts
 

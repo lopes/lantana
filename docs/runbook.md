@@ -35,8 +35,8 @@ Bootstrap the `lantana` admin user, install your pubkey, and harden `sshd` onto 
 ```bash
 scripts/bootstrap-ssh.sh <host> <initial_ssh_user> <ssh_key> <ssh_port>
 
-# Example: fresh OVH/SoYouStart box where the cloud image gives you `debian`
-scripts/bootstrap-ssh.sh 149.56.130.97 debian ~/.ssh/id_ed25519 60090
+# Example: fresh cloud-image VPS where the default user is `debian`
+scripts/bootstrap-ssh.sh 203.0.113.42 debian ~/.ssh/id_ed25519 60090
 ```
 
 The script will:
@@ -65,20 +65,23 @@ ssh -p 60090 -i ~/.ssh/id_ed25519 lantana@<host>
 # WAN interface and addressing
 ip -br link                       # interface name (eno1, ens3, enp2s0, ...)
 ip -br addr show dev <iface>      # IPv4 + IPv6, with netmask
+ip -4 route show default          # confirm IPv4 default route
 ip -6 route show default          # confirm IPv6 default route if dual-stack
 ```
 
-Write down:
+Record the following — you'll paste them into the inventory in step 4:
 
 - WAN interface name (e.g. `eno1`)
-- IPv4 with prefix (e.g. `149.56.130.97/24`)
-- IPv6 with prefix (e.g. `2607:5300:201:3100::1234/64`) — or note that IPv6 is unavailable.
+- IPv4 address with prefix (e.g. `203.0.113.42/24`)
+- IPv6 address with prefix (e.g. `2001:db8:1::1/64`) — or note that IPv6 is unavailable on this host.
 
 ---
 
 ## 3. Clone an Existing Operation
 
 Each operation is a self-contained Ansible inventory under `config/ansible/inventories/op_*`. `op_single` is the canonical starting point for single-node deployments.
+
+Pick a short, lowercase name for the operation. It surfaces in MOTDs, log paths, Parquet partitions, and STIX bundle IDs, so avoid operator initials, real customer names, or anything tied back to you — opaque codenames (`op_dovetail`, `op_canary`, `op_marlin`) work well.
 
 ```bash
 cd config/ansible
@@ -113,7 +116,7 @@ all:
     single_nodes:
       hosts:
         sn-01:
-          ansible_host: 149.56.130.97
+          ansible_host: 203.0.113.42
           lantana_profile: "single_node_sensor"
           sensor_honeypots:
             - cowrie
@@ -138,13 +141,13 @@ Set the WAN block to the values from step 2.
 network:
   honeywall:
     wan:
-      interface: "eno1"                       # from `ip -br link`
-      ipv4: "149.56.130.97/24"                # public IPv4 + netmask
-      ipv6: "2607:5300:201:3100::1234/64"     # public IPv6 or remove the key
+      interface: "eno1"                       # from `ip -br link` on the server
+      ipv4: "203.0.113.42/24"                 # public IPv4 with prefix length
+      ipv6: "2001:db8:1::1/64"                # public IPv6 with prefix, or remove the key entirely
 ```
 
 > [!WARNING]
-> A wrong WAN interface name is the most common first-run failure. The firewall role binds rules to it. Double-check against `ip -br link` on the server.
+> A wrong WAN interface name is the most common first-run failure: the firewall role binds rules to it, and a typo silently produces a working playbook run with a non-functional firewall. Copy it verbatim from `ip -br link` on the server.
 
 Leave the internal `lan`, `collectors`, and `sensors` blocks alone — they reference the dummy interface and never touch the public network.
 
@@ -180,6 +183,8 @@ After this, modifications use `ansible-vault edit` (auto-decrypt + re-encrypt) a
 ansible-vault edit inventories/op_<name>/group_vars/all/vault.yml
 ansible-vault view inventories/op_<name>/group_vars/all/vault.yml | grep -E '^vault_'
 ```
+
+If you re-deploy often, point `ANSIBLE_VAULT_PASSWORD_FILE` at a 0600-mode file containing just the password, or pass `--vault-password-file <path>` to `ansible-playbook`. Both replace `--ask-vault-pass` without prompting.
 
 ### Naming convention
 
@@ -221,7 +226,7 @@ vault_webhook_discord:   "https://discord.com/api/webhooks/..."
 | `greynoise` | provider skipped (`provider_disabled` log) | community endpoint, anonymous (50/week) | community endpoint, key in header (higher rate limit) |
 | `phishstats` | provider skipped (`provider_disabled` log) | public endpoint, no auth | public endpoint, key value silently ignored |
 | `maxmind` | MMDB download skipped at deploy — Vector emits no `.geo.*` fields | same as missing | MMDBs downloaded + refreshed monthly |
-| `discord_webhook` | reports generated locally only | same | webhook delivers daily brief |
+| `discord` | reports generated locally only | same | webhook delivers daily brief |
 
 So the only way to disable GreyNoise or PhishStats is to **omit the line entirely** — empty string keeps them enabled in unauthenticated mode.
 
@@ -259,7 +264,7 @@ This is where most operations succeed or fail. The narrative is the deception st
 
 ### Workflow
 
-1. **Decide the archetype** (one sentence): sector + geography + hosting story + admin skill level. Example: *"Brazilian fintech, Canada VPS, old Ubuntu, vibe-coded by an unskilled IT contractor."*
+1. **Decide the archetype** (one sentence): sector + geography + hosting story + admin skill level. Example: *"German light-manufacturing SMB, on-prem migration to a budget EU VPS, mid-skill DevOps generalist."*
 2. **Run the `scaffold-narrative` skill** with that sentence as input. It produces a complete `narrative.yml` consistent with the archetype, plus notes on which fields to review.
 3. **Review the output** against the schema below. Check the era / OS / service alignment by hand even when the skill gets it right — this is the file most worth understanding.
 4. **Paste into** `inventories/op_<name>/group_vars/all/narrative.yml`.
@@ -348,7 +353,7 @@ This pulls `/etc/lantana`, `/var/log/lantana`, and `/var/lib/lantana` over SSH v
 
 Two common follow-ups:
 
-- **Rotate the narrative on the same host.** Edit `narrative.yml`, re-run `deploy_single.yml`. The infrastructure is untouched; only the deception layer changes.
+- **Rotate the narrative on the same host.** Edit `narrative.yml`, then re-run `deploy_single.yml` (add `--diff --check` first for a dry-run preview of the rendered banners, MOTD, and certs). The infrastructure is untouched; only the deception layer changes.
 - **Destroy and rebuild.** If using Terraform: `terraform destroy` in `infra/terraform/environments/proxmox/`. If manually provisioned: just wipe the VM. Ansible state is captured entirely by the inventory, so a fresh provision + re-deploy reproduces the operation bit-for-bit.
 
 ---

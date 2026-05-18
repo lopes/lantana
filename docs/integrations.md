@@ -196,7 +196,7 @@ Two probe scripts mirror the two enrichment paths:
 - [`scripts/probe-enrichment.py`](../scripts/probe-enrichment.py) — HTTP API providers (AbuseIPDB, Shodan, VirusTotal, GreyNoise, PhishStats).
 - [`scripts/probe-mmdb.py`](../scripts/probe-mmdb.py) — local MaxMind MMDB files (GeoLite2 City + ASN).
 
-Both produce raw + normalized output side by side so you can compare against the provider's UI (HTTP) or against another lookup tool (MMDB).
+Both produce raw + normalized output side by side so you can compare against the provider's UI (HTTP) or against another lookup tool (MMDB). The example IPs throughout this section use RFC 5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`); swap them for an IP your providers will actually have records on when you run the probe.
 
 ### `probe-enrichment.py` — HTTP API providers
 
@@ -208,11 +208,11 @@ The script hits each provider's live API with a real payload and prints both the
 cd pipeline
 
 # All five providers against one IP
-uv run python ../scripts/probe-enrichment.py --ip 212.115.85.236
+uv run python ../scripts/probe-enrichment.py --ip 198.51.100.42
 
 # Specific providers, multiple payloads
 uv run python ../scripts/probe-enrichment.py \
-  --ip 128.201.19.114 --ip 64.239.123.129 \
+  --ip 198.51.100.7 --ip 203.0.113.7 \
   --provider greynoise,phishstats
 
 # Hash against VirusTotal
@@ -274,7 +274,7 @@ uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8 \
 uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8
 
 # Multiple IPs, custom directory
-uv run python ../scripts/probe-mmdb.py --ip 1.1.1.1 --ip 64.239.123.129 \
+uv run python ../scripts/probe-mmdb.py --ip 1.1.1.1 --ip 203.0.113.7 \
     --mmdb-dir ~/lantana-mmdb --secrets ./local-secrets.json
 
 # Force refresh (re-download even though files exist — mirrors the monthly cron)
