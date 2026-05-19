@@ -225,18 +225,19 @@ Notifications use Discord embeds with color-coded severity (green=info, orange=w
 
 The pipeline is deployed by Ansible as part of the `profile_collector` role:
 
-1. **Source sync**: `pipeline/` directory synced to `/opt/lantana/pipeline/src/`
-2. **Virtual environment**: Python 3.13 venv at `/opt/lantana/pipeline/venv/`
-3. **Package install**: `pip install` into the venv
-4. **Cron schedule** (`/etc/cron.d/lantana-pipeline`):
+1. **Source clone**: shallow `git clone` of the public repo (default `https://github.com/lopes/lantana.git`, configurable via `lantana_repo_url` and `lantana_repo_ref`) into `/opt/lantana/repo/`. The ref defaults to `main`; an operation can pin a tag or commit for reproducibility.
+2. **Virtual environment**: managed by `uv` (pinned via `roles/base/defaults/main.yml`) at `/opt/lantana/pipeline/venv/`. The Python interpreter comes from the system (`UV_PYTHON_DOWNLOADS=never`), not uv-managed.
+3. **Package install**: `uv sync --frozen --project /opt/lantana/repo/pipeline/`. `--frozen` enforces exact versions from the checked-in `uv.lock` — any drift fails the deploy rather than silently picking newer transitives.
+4. **Cron schedule** (`/etc/cron.d/lantana-pipeline` and `/etc/cron.d/lantana-geoip-update`):
 
 | Time (UTC) | Command | Description |
 | --- | --- | --- |
-| 00:15 | `lantana-prune` | Retention + disk monitoring |
-| 01:00 | `lantana-enrich` | Bronze -> Silver (yesterday) |
-| 02:00 | `lantana-transform` | Silver -> Gold (yesterday) |
+| 00:15 daily | `lantana-prune` | Retention + disk monitoring |
+| 01:00 daily | `lantana-enrich` | Bronze -> Silver (yesterday) |
+| 02:00 daily | `lantana-transform` | Silver -> Gold (yesterday) |
+| 02:30 monthly (1st) | `lantana-geoip-update` | Refresh MaxMind City + ASN MMDBs |
 
-All cron jobs run as the `nectar` user (UID 2002), which owns the datalake directories. The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`.
+All daily cron jobs run as the `nectar` user (UID 2002), which owns the datalake directories. The GeoIP refresh runs as root (writes the MMDBs and restarts Vector). The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`.
 
 ---
 
