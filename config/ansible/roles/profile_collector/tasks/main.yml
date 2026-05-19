@@ -91,40 +91,24 @@
     mode: "0755"
   tags: [collector, vector]
 
-- name: "Download GeoLite2 MMDB files"
+- name: "Deploy GeoIP refresh script"
   become: true
-  ansible.builtin.get_url:
-    url: "https://download.maxmind.com/app/geoip_download?edition_id={{ item }}&license_key={{ vault_apikey_maxmind }}&suffix=tar.gz"
-    dest: "/tmp/{{ item }}.tar.gz"
-    mode: "0644"
-  loop:
-    - GeoLite2-City
-    - GeoLite2-ASN
+  ansible.builtin.template:
+    src: lantana-geoip-update.sh.j2
+    dest: /usr/local/sbin/lantana-geoip-update
+    owner: root
+    group: root
+    mode: "0750"
   when: vault_apikey_maxmind is defined and vault_apikey_maxmind != ""
+  no_log: true
   tags: [collector, vector]
 
-- name: "Extract MMDB files"
+- name: "Run GeoIP refresh"
   become: true
-  ansible.builtin.shell:
-    cmd: "tar -xzf /tmp/{{ item }}.tar.gz --wildcards '*.mmdb' --strip-components=1 -C /var/lib/lantana/collector/geoip/"
-  loop:
-    - GeoLite2-City
-    - GeoLite2-ASN
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/lantana-geoip-update
   when: vault_apikey_maxmind is defined and vault_apikey_maxmind != ""
   changed_when: false
-  tags: [collector, vector]
-
-- name: "Set MMDB file ownership"
-  become: true
-  ansible.builtin.file:
-    path: "/var/lib/lantana/collector/geoip/{{ item }}"
-    owner: vector
-    group: "{{ system.users.collector.name }}"
-    mode: "0644"
-  loop:
-    - GeoLite2-City.mmdb
-    - GeoLite2-ASN.mmdb
-  when: vault_apikey_maxmind is defined and vault_apikey_maxmind != ""
   tags: [collector, vector]
 
 - name: "Add monthly GeoIP update cron"
@@ -132,15 +116,14 @@
   ansible.builtin.copy:
     dest: /etc/cron.d/lantana-geoip-update
     content: |
-      # Update GeoLite2 MMDB files monthly (1st of month, 02:30 UTC)
-      30 2 1 * * root cd /tmp && curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key={{ vault_apikey_maxmind }}&suffix=tar.gz" | tar -xzf - --wildcards '*.mmdb' --strip-components=1 -C /var/lib/lantana/collector/geoip/ && curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key={{ vault_apikey_maxmind }}&suffix=tar.gz" | tar -xzf - --wildcards '*.mmdb' --strip-components=1 -C /var/lib/lantana/collector/geoip/ && systemctl restart vector
+      # Refresh GeoLite2 MMDBs monthly (1st of month, 02:30 UTC)
+      30 2 1 * * root /usr/local/sbin/lantana-geoip-update && systemctl restart vector
     mode: "0644"
   when: vault_apikey_maxmind is defined and vault_apikey_maxmind != ""
-  no_log: true
   tags: [collector, vector]
 
 # --- PYTHON PIPELINE ---
-- name: "Create pipeline directory"
+- name: "Create pipeline directories"
   become: true
   ansible.builtin.file:
     path: "{{ item }}"
@@ -150,35 +133,34 @@
     mode: "0755"
   loop:
     - /opt/lantana/pipeline
-    - /opt/lantana/pipeline/src
+    - /opt/lantana/pipeline/cache
+    - /opt/lantana/repo
   tags: [collector, pipeline]
 
-- name: "Sync pipeline source"
+- name: "Clone Lantana repository"
   become: true
-  ansible.builtin.synchronize:
-    src: "{{ playbook_dir }}/../../pipeline/"
-    dest: /opt/lantana/pipeline/src/
-    delete: true
-    rsync_opts:
-      - "--exclude=.venv"
-      - "--exclude=__pycache__"
-      - "--exclude=.pytest_cache"
-      - "--exclude=*.egg-info"
+  become_user: "{{ system.users.collector.name }}"
+  ansible.builtin.git:
+    repo: "{{ lantana_repo_url | default('https://github.com/lopes/lantana.git') }}"
+    dest: /opt/lantana/repo
+    version: "{{ lantana_repo_ref | default('main') }}"
+    depth: 1
+    force: false
   tags: [collector, pipeline]
 
-- name: "Create pipeline venv"
+- name: "Sync pipeline with uv"
   become: true
   become_user: "{{ system.users.collector.name }}"
   ansible.builtin.command:
-    cmd: python3 -m venv /opt/lantana/pipeline/venv
-    creates: /opt/lantana/pipeline/venv/bin/python3
-  tags: [collector, pipeline]
-
-- name: "Install pipeline package"
-  become: true
-  become_user: "{{ system.users.collector.name }}"
-  ansible.builtin.command:
-    cmd: /opt/lantana/pipeline/venv/bin/pip install --quiet /opt/lantana/pipeline/src/
+    cmd: >-
+      uv sync
+      --frozen
+      --project /opt/lantana/repo/pipeline/
+      --python python3
+  environment:
+    UV_PROJECT_ENVIRONMENT: /opt/lantana/pipeline/venv
+    UV_CACHE_DIR: /opt/lantana/pipeline/cache/uv
+    UV_PYTHON_DOWNLOADS: never
   changed_when: false
   tags: [collector, pipeline]
 

@@ -1,0 +1,45 @@
+---
+# --- UV BINARY INSTALL ---
+
+- name: "Assert uv checksum is defined for {{ uv_target }}"
+  ansible.builtin.assert:
+    that:
+      - uv_target in uv_checksums
+      - uv_checksums[uv_target] | length > 0
+    fail_msg: >-
+      No uv checksum configured for {{ uv_target }}.
+      Add it to uv_checksums in roles/base/defaults/main.yml using the .sha256
+      file at https://github.com/astral-sh/uv/releases/download/{{ uv_version }}/
+  tags: [base, uv]
+
+- name: "Check installed uv version"
+  ansible.builtin.command:
+    cmd: /usr/local/bin/uv --version
+  register: _uv_installed
+  changed_when: false
+  failed_when: false
+  tags: [base, uv]
+
+- name: "Download uv {{ uv_version }}"
+  become: true
+  ansible.builtin.get_url:
+    url: "https://github.com/astral-sh/uv/releases/download/{{ uv_version }}/uv-{{ uv_target }}.tar.gz"
+    dest: "/tmp/uv-{{ uv_version }}-{{ uv_target }}.tar.gz"
+    checksum: "sha256:{{ uv_checksums[uv_target] }}"
+    mode: "0644"
+  when: uv_version not in (_uv_installed.stdout | default(''))
+  tags: [base, uv]
+
+- name: "Install uv {{ uv_version }}"
+  become: true
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      tmpdir=$(mktemp -d)
+      trap 'rm -rf "$tmpdir" "/tmp/uv-{{ uv_version }}-{{ uv_target }}.tar.gz"' EXIT
+      tar -xzf "/tmp/uv-{{ uv_version }}-{{ uv_target }}.tar.gz" -C "$tmpdir"
+      find "$tmpdir" -name 'uv'  -type f -exec install -m 0755 {} /usr/local/bin/uv  \;
+      find "$tmpdir" -name 'uvx' -type f -exec install -m 0755 {} /usr/local/bin/uvx \;
+  when: uv_version not in (_uv_installed.stdout | default(''))
+  changed_when: true
+  tags: [base, uv]

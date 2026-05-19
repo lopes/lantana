@@ -137,7 +137,8 @@
       loop:
         # Must match what roles deploy in /etc/cron.d/
         - /etc/cron.d/lantana-logs
-        - /etc/cron.d/lantana-prune
+        - /etc/cron.d/lantana-pipeline
+        - /etc/cron.d/lantana-geoip-update
       register: cron_check
 
     - name: "Assert Cron Jobs exist"

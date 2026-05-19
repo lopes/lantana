@@ -16,21 +16,49 @@ The flow is the same for every operation:
 > [!IMPORTANT]
 > Steps 1–5 are mechanical. Step 6 is creative and load-bearing. Budget more time for the narrative than for everything else combined.
 
+> [!NOTE]
+> All IPs, ports, hostnames, and domains in this runbook are placeholders — IPs come from RFC 5737 (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and RFC 3849 (`2001:db8::/32`); domains from RFC 2606. Substitute your own values throughout. For the SSH admin port, **pick a random ephemeral port (49152–65535)** rather than reusing the runbook's `60090` — a known default makes a host fingerprintable as a Lantana deployment.
+
 ---
 
 ## 0. Prerequisites
 
-- A Debian-family VPS or VM with public IPv4 (IPv6 optional but recommended).
-- SSH access as a sudo-capable user (cloud images typically ship one: `debian`, `ubuntu`, `admin`, ...).
-- An SSH key pair on your workstation (`~/.ssh/id_ed25519` and `.pub`).
-- Local checkout of this repo.
+### On your workstation
+
+- A local checkout of this repo.
+- An SSH key pair (`~/.ssh/id_ed25519` and `.pub` by default).
 - `ansible-core` and `ansible-vault` installed locally.
+- One of:
+  - **For the bootstrap path** (step 1, Option A): SSH access to a freshly provisioned Debian-family VPS as an existing sudo-capable user. Cloud images typically ship one (`debian`, `ubuntu`, `admin`, …).
+  - **For the Terraform path** (step 1, Option B): `terraform >= 1.5`, credentials for your Proxmox cluster, and a Debian 13 cloud-init template VM available on it.
+
+### On the server (Deployment Contract)
+
+The Ansible playbooks assume the target host is already in this state when a deploy starts. Both provisioning paths in step 1 — `bootstrap-ssh.sh` and the Terraform Proxmox module — deliver it.
+
+- **OS**: Debian 13.
+- **Admin user** (conventionally `lantana`):
+  - Member of `sudo` with `NOPASSWD:ALL` via `/etc/sudoers.d/lantana`.
+  - Your SSH public key in `~/.ssh/authorized_keys`.
+  - Name matches `ansible_user` in the operation's `main.yml`.
+- **SSH service** — `/etc/ssh/sshd_config.d/00-lantana.conf` contains:
+  - `PasswordAuthentication no`, `PubkeyAuthentication yes`, `AuthenticationMethods publickey`, `PermitRootLogin no`.
+  - `Port <random ephemeral port 49152–65535 chosen by the operator>` — never `22`, never the runbook's example `60090`.
+  - That port matches `ansible_port` in the operation's `main.yml`.
+- **`ssh.socket` disabled** — Debian 13 ships socket activation enabled, which silently keeps `sshd` listening on `22` regardless of the drop-in config.
+- **Python 3** installed (required for Ansible module execution).
+
+If you provision by hand (no Terraform, no script), satisfy the contract manually before step 2.
 
 ---
 
 ## 1. Prepare the Server
 
-Bootstrap the `lantana` admin user, install your pubkey, and harden `sshd` onto a custom port. This script handles all of it.
+Two paths to satisfy the [deployment contract](#on-the-server-deployment-contract). Pick whichever fits your infrastructure.
+
+### Option A — Bootstrap an existing VPS
+
+For a Debian-family VPS or pre-existing host you already have SSH access to. `bootstrap-ssh.sh` creates the `lantana` admin user, installs your pubkey, and hardens `sshd` onto your chosen port.
 
 ```bash
 scripts/bootstrap-ssh.sh <host> <initial_ssh_user> <ssh_key> <ssh_port>
@@ -43,15 +71,28 @@ The script will:
 
 - Create the `lantana` admin user with passwordless sudo.
 - Inject your public key into `lantana@host:~/.ssh/authorized_keys`.
-- Write `/etc/ssh/sshd_config.d/00-lantana.conf` (key-only, custom port).
-- Comment out any explicit `Port 22` in the main config and disable `ssh.socket` (Debian 13 trap).
+- Write `/etc/ssh/sshd_config.d/00-lantana.conf` (key-only auth, your chosen port).
+- Comment out any explicit `Port 22` in the main config and disable `ssh.socket`.
 - Restart `ssh.service`.
 
-Verify before moving on:
+### Option B — Provision with Terraform (Proxmox)
+
+For Proxmox-hosted operations, `infra/terraform/environments/proxmox/` clones a Debian 13 template and applies a cloud-init that delivers the same end-state as `bootstrap-ssh.sh`.
+
+1. Pick a random ephemeral SSH admin port (49152–65535) — same rule as Option A.
+2. Provide your variables (Proxmox endpoint and credentials, `template_vm_id`, `operation_name`, `ssh_public_key`, and the `ssh_port` you just picked). See `infra/terraform/environments/proxmox/variables.tf` for the full input list — `ssh_port` has no default and is validated against the ephemeral range.
+3. `terraform init && terraform apply` from `infra/terraform/environments/proxmox/`.
+4. Use that same `ssh_port` value as `ansible_port` in step 4's `main.yml`.
+
+The rendered cloud-init writes the same `/etc/ssh/sshd_config.d/00-lantana.conf` drop-in `bootstrap-ssh.sh` does, disables `ssh.socket`, and restarts `ssh.service` — so the host arrives at a contract-identical state.
+
+### Verify (both paths)
 
 ```bash
-ssh -p 60090 -i ~/.ssh/id_ed25519 lantana@<host> 'sudo -n true && echo ok'
+ssh -p <ssh_port> -i ~/.ssh/id_ed25519 lantana@<host> 'sudo -n true && echo ok'
 ```
+
+Expected output: `ok`. Anything else means the contract isn't fully satisfied — re-check sshd, sudo, key, and port before moving to step 2.
 
 ---
 
@@ -104,11 +145,13 @@ inventories/op_<name>/
 
 ---
 
-## 4. Configure Inventory and Network
+## 4. Configure Inventory, Network, and Reporting
+
+Walk through each file below and fill in the values from steps 1–2. The vault (`vault.yml`) is handled separately in step 5.
 
 ### `inventory.yml`
 
-Set `ansible_host` to the server's public IP.
+Set `ansible_host` to the server's public IP. Pick which honeypots to ship via `sensor_honeypots` — `cowrie` alone is a sensible first deploy; uncomment additional roles later.
 
 ```yaml
 all:
@@ -125,12 +168,15 @@ all:
 
 ### `group_vars/all/main.yml`
 
-Confirm SSH user, port, and key path match what `bootstrap-ssh.sh` configured. Defaults work for the standard flow:
+Confirm the SSH user, port, and key path match what `bootstrap-ssh.sh` configured, and set `lantana.mode` to `single` or `multi` (single is the default this runbook assumes):
 
 ```yaml
 ansible_user: "lantana"
-ansible_port: "60090"
+ansible_port: "60090"                          # the ephemeral port you chose in step 1
 ansible_private_key_file: "~/.ssh/id_ed25519"
+
+lantana:
+  mode: "single"                               # or "multi"
 ```
 
 ### `group_vars/all/network.yml`
@@ -150,6 +196,26 @@ network:
 > A wrong WAN interface name is the most common first-run failure: the firewall role binds rules to it, and a typo silently produces a working playbook run with a non-functional firewall. Copy it verbatim from `ip -br link` on the server.
 
 Leave the internal `lan`, `collectors`, and `sensors` blocks alone — they reference the dummy interface and never touch the public network.
+
+### `group_vars/all/reporting.yml`
+
+This file controls how the operation identifies itself in shared intelligence (Discord posts, STIX bundles). Set the operator identity — **you, the CTI publisher**, not the persona — and the sharing policy:
+
+```yaml
+reporting:
+  operator:
+    name: "Your Name or Handle"
+    handle: "your_handle"
+    contact: "https://yoursite.example/contact"
+    pgp_fingerprint: ""                       # optional
+
+  sharing:
+    tlp: "GREEN"                              # CLEAR / GREEN / AMBER / RED
+    community: "Lantana Threat Intel"
+    discord_channel: "lantana-intel"          # channel name shown in reports
+```
+
+The Discord webhook URL itself lives in the vault (step 5), not here. Leave the `pseudonym_map` block alone — those labels are what your real WAN and internal IPs get rewritten to in shared output.
 
 ---
 
@@ -265,9 +331,19 @@ This is where most operations succeed or fail. The narrative is the deception st
 ### Workflow
 
 1. **Decide the archetype** (one sentence): sector + geography + hosting story + admin skill level. Example: *"German light-manufacturing SMB, on-prem migration to a budget EU VPS, mid-skill DevOps generalist."*
-2. **Run the `scaffold-narrative` skill** with that sentence as input. It produces a complete `narrative.yml` consistent with the archetype, plus notes on which fields to review.
+2. **Invoke the `scaffold-narrative` skill** in Claude Code (opened in this repo) with that sentence as input. Trigger it explicitly with `/scaffold-narrative …` or just describe the persona in plain English — the skill auto-triggers on phrases like "scaffold a narrative," "generate narrative.yml," or "create a persona for op_<name>." It produces a complete `narrative.yml` consistent with the archetype plus a list of fields worth reviewing.
 3. **Review the output** against the schema below. Check the era / OS / service alignment by hand even when the skill gets it right — this is the file most worth understanding.
 4. **Paste into** `inventories/op_<name>/group_vars/all/narrative.yml`.
+
+#### Example invocations
+
+> `/scaffold-narrative` German light-manufacturing SMB, on-prem migration to a budget EU VPS, mid-skill DevOps generalist who left default SMB workgroups and an unpatched kernel in place.
+
+> Scaffold a narrative for `op_marlin`: small Brazilian fintech that outsourced infrastructure to a cheap Canadian VPS provider. Junior contractor stood up the host — defaults everywhere, EOL Ubuntu LTS, mismatched zoo of services.
+
+> Generate `narrative.yml` for a Japanese e-commerce mid-market shop, hosted on a domestic provider, run by a skilled SRE who keeps banners minimal and the service surface tight.
+
+The skill infers the company identity, host profile (OS release, kernel build, hostname), and internally consistent banners (SSH, FTP, HTTP, SMB, MySQL, MSSQL) for the era and admin archetype, then flags fields worth a manual sanity-check.
 
 ### Manual checklist (if not using the skill)
 
@@ -289,29 +365,24 @@ The persona is fiction. Everything in `narrative.yml` ships in artifacts attacke
 
 ---
 
-## 7. Deploy
+## 7. Deploy Base Platform
 
 From `config/ansible/`:
 
 ```bash
-# Base platform: users, firewall, Vector, Suricata, dummy interface
 ansible-playbook -i inventories/op_<name>/inventory.yml \
-  playbooks/deploy_single.yml --ask-vault-pass --ask-become-pass
-
-# Honeypots: rolls out roles listed in sensor_honeypots
-ansible-playbook -i inventories/op_<name>/inventory.yml \
-  playbooks/deploy_honeypots.yml --ask-vault-pass --ask-become-pass
+  playbooks/deploy_single.yml --ask-vault-pass
 ```
 
-Drop `--ask-become-pass` if `vault_become_password` is set in the vault.
+`bootstrap-ssh.sh` configures the `lantana` user with passwordless `sudo`, so privilege escalation needs no extra flag. If you've tightened `sudo` on the host to require a password, append `--ask-become-pass` (prompt at runtime) or set `vault_become_password` in `vault.yml` (no prompt).
 
 For multi-node, swap `deploy_single.yml` for `deploy_multi.yml` and use the corresponding inventory.
 
 ---
 
-## 8. Validate
+## 8. Validate Base Platform
 
-Run the validation playbook and the manual checks in `docs/validation.md`:
+Run the automated validation playbook:
 
 ```bash
 ansible-playbook -i inventories/op_<name>/inventory.yml \
@@ -321,31 +392,143 @@ ansible-playbook -i inventories/op_<name>/inventory.yml \
 Then verify on the host:
 
 - `id stigma` (UID 2001) and `id nectar` (UID 2002) exist.
-- `systemctl --user status cowrie` (as `stigma`) is active.
-- `sudo nft list ruleset | grep lantana_nat` shows DNAT rules for the published ports.
 - The MOTD on login shows the operation name and persona hostname.
-- `cat /etc/lantana/sensor/cowrie/cowrie.cfg | head -5` reflects the narrative.
+- `sudo systemctl status vector` is active.
+- `sudo nft list ruleset` loads without error.
 
-External smoke test from your workstation:
-
-```bash
-nmap -sV -Pn -p 22,23,80,445,3306,1433 <host>     # banners should match narrative
-ssh root@<host>                                    # should land in cowrie's shell
-```
-
-See `docs/validation.md` for the full day-by-day checklist (honeypots, telemetry, enrichment, dashboard).
+Move to step 9 only after the validation playbook passes cleanly.
 
 ---
 
-## 9. Backup Baseline
+## 9. Deploy and Validate Honeypots
 
-Before letting the box receive attacker traffic, snapshot a clean baseline so you can diff later or restore after an incident.
+Deploy the honeypot roles listed in `sensor_honeypots` in the operation's inventory. The same command applies for both single-node and multi-node — the playbook targets `single_nodes` and `sensor_low_nodes` automatically:
 
 ```bash
-scripts/backup-vps.sh <host> lantana ~/.ssh/id_ed25519 60090 ./backups/<op_name>/baseline
+ansible-playbook -i inventories/op_<name>/inventory.yml \
+  playbooks/deploy_honeypots.yml --ask-vault-pass
 ```
 
-This pulls `/etc/lantana`, `/var/log/lantana`, and `/var/lib/lantana` over SSH via streaming tar.
+### Validate on the sensor
+
+For single-node, connect to the host. For multi-node, connect to the sensor node. For each deployed honeypot, verify the service is running and the nftables DNAT rules are present. For `cowrie`:
+
+```bash
+sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user status cowrie
+sudo nft list ruleset | grep lantana_nat
+cat /etc/lantana/sensor/cowrie/cowrie.cfg | head -5
+```
+
+### External smoke test (from your workstation)
+
+Target the WAN IP. For multi-node, all external traffic enters via the honeywall, so the WAN IP is the honeywall's.
+
+**Banner scan** — fingerprints must match the narrative era and OS:
+
+```bash
+nmap -sV -Pn -p 22,23,80,445,3306,1433 <host>
+```
+
+The SSH banner must match `services.ssh.version` in `narrative.yml`. If it does, the deception layer is live.
+
+**SSH — simulate an attacker with no prior key** (forces password prompt, no local config pollution):
+
+```bash
+ssh -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o PubkeyAuthentication=no \
+    -o IdentityAgent=none \
+    root@<host>
+```
+
+Type any password. You should land in Cowrie's fake shell. Confirm the prompt hostname matches `host.hostname` in `narrative.yml`, then disconnect. Without `PubkeyAuthentication=no` and `IdentityAgent=none`, your SSH agent may hand a key to Cowrie which accepts it silently — no password prompt and a false sense that auth was skipped.
+
+**Telnet** (macOS ships without `telnet`; use `nc`):
+
+```bash
+nc <host> 23
+```
+
+### Validate telemetry and pipeline
+
+Do this after at least one external connection (SSH or nc) so there are events to trace.
+
+**Raw Cowrie events captured:**
+
+```bash
+sudo tail -3 /var/log/lantana/sensor/cowrie/cowrie.json
+```
+
+Should show JSON lines with `src_ip` matching your workstation's IP.
+
+**Bronze datalake populated (Vector forwarded and enriched):**
+
+```bash
+sudo find /var/lib/lantana/datalake/bronze/ -type f
+```
+
+Expected on day one: `dataset=cowrie/date=YYYY-MM-DD/server=<hostname>/events.json` and equivalent paths for each active sensor. Vector writes `.json` (NDJSON codec), not `.ndjson`.
+
+**Vector healthy (no pipeline errors):**
+
+```bash
+sudo journalctl -u vector --since "1 hour ago" | grep -i error | tail -10
+```
+
+**Pipeline dry-run (confirm enrichment runs without error):**
+
+```bash
+sudo -u nectar /opt/lantana/pipeline/venv/bin/lantana-enrich
+```
+
+On day zero there may be no "yesterday" bronze data yet — a clean exit with nothing to process is correct. The full enrichment run happens at 01:00 UTC via cron.
+
+See `docs/validation.md` for the full day-by-day checklist.
+
+---
+
+## 10. Go Live
+
+The operation is running. This step covers a recommended baseline snapshot and what to expect from the automated routines in the days ahead.
+
+### Recommended: snapshot a baseline
+
+Before significant attacker traffic accumulates, pull a clean baseline you can diff against later or restore from after an incident:
+
+```bash
+scripts/backup-vps.sh <host> <user> <key> <port> ./backups/<op_name>/baseline
+```
+
+This pulls `/etc/lantana`, `/var/log/lantana`, and `/var/lib/lantana` over SSH via streaming tar. Not strictly required, but strongly recommended before walking away.
+
+### What happens next (automated routines)
+
+The platform runs itself from here. Routines to watch for:
+
+| Time (UTC) | Job | What it does |
+|---|---|---|
+| Continuous | Vector | Reads honeypot logs, enriches with GeoIP, writes bronze NDJSON |
+| 00:15 daily | `lantana-prune` | Enforces 180-day retention; emergency prune at >80% disk |
+| 01:00 daily | `lantana-enrich` | Bronze → silver: OCSF normalisation, redaction, Parquet |
+| 02:00 daily | `lantana-transform` | Silver → gold: aggregated intelligence, STIX bundles |
+| 02:30 (1st of month) | `lantana-geoip-update` | Refreshes MaxMind City + ASN databases |
+
+**Day one** — bronze accumulates from live traffic. Enrichment has nothing to process yet (it runs against yesterday's data).
+
+**Day two morning** — first full pipeline cycle. By ~03:00 UTC, check that silver and gold partitions exist alongside bronze:
+
+```bash
+sudo find /var/lib/lantana/datalake/ -maxdepth 3 -type d | sort
+```
+
+**Ongoing** — run the validation playbook periodically to confirm all services are healthy and the datalake is growing as expected:
+
+```bash
+ansible-playbook -i inventories/op_<name>/inventory.yml \
+  tests/validate-single-node.yml -vvv
+```
+
+See `docs/validation.md` for the full day-by-day checklist.
 
 ---
 
@@ -367,6 +550,6 @@ Two common follow-ups:
 | Create vault | `cp inventories/op_single/group_vars/all/vault.yml.example inventories/op_<name>/group_vars/all/vault.yml` then edit, then `ansible-vault encrypt` |
 | Scaffold narrative | invoke the `scaffold-narrative` skill with a one-sentence archetype |
 | Deploy base | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_single.yml --ask-vault-pass` |
+| Validate base | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv` |
 | Deploy honeypots | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_honeypots.yml --ask-vault-pass` |
-| Validate | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv` |
-| Backup | `scripts/backup-vps.sh <host> lantana <key> <port> ./backups/<op_name>/baseline` |
+| Baseline snapshot | `scripts/backup-vps.sh <host> <user> <key> <port> ./backups/<op_name>/baseline` |

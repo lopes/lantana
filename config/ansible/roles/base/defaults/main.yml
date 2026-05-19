@@ -1,0 +1,9 @@
+---
+# --- UV ---
+# To upgrade: bump uv_version and update uv_checksums for each arch.
+# Checksums at: https://github.com/astral-sh/uv/releases/download/<version>/uv-<arch>-unknown-linux-gnu.tar.gz.sha256
+uv_version: "0.11.15"
+uv_target: "{{ ansible_facts['architecture'] }}-unknown-linux-gnu"
+uv_checksums:
+  x86_64-unknown-linux-gnu: "b03e572f010bea94a4a52d42671ba72981e12894f71576181a1d26ff68546da7"
+  aarch64-unknown-linux-gnu: ""  # fill in before deploying on ARM

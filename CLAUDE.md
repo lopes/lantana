@@ -71,7 +71,7 @@ Each honeypot role self-registers by dropping files into three locations:
 
 - IPv4: `10.50.99.0/24` | IPv6 ULA: `fd99:10:50:99::/64`
 - Collector: `.10` | Sensor: `.100` | Honeywall gateway (multi-node): `.1`
-- Custom SSH admin port: 60090, certificate-based auth, user `lantana`
+- SSH admin: user `lantana`, key-based auth, operator-chosen random ephemeral port (see the deployment contract in `docs/runbook.md`)
 
 ### Telemetry Pipeline
 

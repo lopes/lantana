@@ -14,6 +14,22 @@ packages:
   - python3
   - openssh-server
 
+write_files:
+  - path: /etc/ssh/sshd_config.d/00-lantana.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      Port ${ssh_port}
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+      PermitRootLogin no
+      ChallengeResponseAuthentication no
+      AuthenticationMethods publickey
+      X11Forwarding no
+
 runcmd:
-  - sed -i 's/#Port 22/Port 60090/' /etc/ssh/sshd_config
-  - systemctl restart sshd
+  - sed -i -E 's/^[[:space:]]*Port[[:space:]]+22[[:space:]]*$/#&/' /etc/ssh/sshd_config
+  - systemctl list-unit-files ssh.socket >/dev/null 2>&1 && systemctl disable --now ssh.socket || true
+  - sshd -t
+  - systemctl enable ssh.service
+  - systemctl restart ssh.service

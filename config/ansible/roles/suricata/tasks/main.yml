@@ -29,15 +29,18 @@
   tags: [suricata]
 
 # --- SURICATA CONFIGURATION ---
-- name: "Create empty suricata.rules to pass initial validation"
+- name: "Create empty rule stubs to pass initial validation"
   become: true
   ansible.builtin.copy:
-    dest: /var/lib/lantana/honeywall/suricata/rules/suricata.rules
+    dest: "/var/lib/lantana/honeywall/suricata/rules/{{ item }}"
     content: ""
-    force: false # don't overwrite if exists
+    force: false
     owner: "root"
     group: "root"
     mode: "0644"
+  loop:
+    - lantana.rules
+    - suricata.rules
   tags: [suricata]
 
 - name: "Create Suricata's disable.conf with unsupported protocols"

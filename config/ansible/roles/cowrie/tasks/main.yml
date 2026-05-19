@@ -13,7 +13,7 @@
 - name: "Create Cowrie data directories"
   become: true
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ _cowrie_dir }}"
     state: directory
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
@@ -21,12 +21,14 @@
   loop:
     - /var/log/lantana/sensor/cowrie
     - /var/lib/lantana/sensor/cowrie
+  loop_control:
+    loop_var: _cowrie_dir
   tags: [cowrie]
 
 - name: "Create Cowrie artifact directories"
   become: true
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ _cowrie_dir }}"
     state: directory
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
@@ -36,6 +38,8 @@
     - /var/lib/lantana/sensor/cowrie/tty
     - /var/lib/lantana/sensor/cowrie/downloads
     - /var/lib/lantana/sensor/cowrie/misc
+  loop_control:
+    loop_var: _cowrie_dir
   tags: [cowrie]
 
 - name: "Enable linger for sensor-user"
@@ -56,20 +60,17 @@
     mode: "0644"
   tags: [cowrie]
 
-- name: "Create the sensor-user Quadlet directory"
+- name: "Remove legacy Quadlet file from user home path"
   become: true
   ansible.builtin.file:
-    dest: "/home/{{ system.users.sensor.name }}/.config/containers/"
-    state: directory
-    owner: "{{ system.users.sensor.name }}"
-    group: "{{ system.users.sensor.name }}"
-    mode: "0700"
+    path: "/home/{{ system.users.sensor.name }}/.config/containers/systemd/cowrie.container"
+    state: absent
   tags: [cowrie]
 
-- name: "Ensure the Quadlet folder is root-owned"
+- name: "Create Quadlet directory for sensor user"
   become: true
   ansible.builtin.file:
-    path: "/home/{{ system.users.sensor.name }}/.config/containers/systemd"
+    path: "/etc/containers/systemd/users/{{ system.users.sensor.uid }}"
     state: directory
     owner: "root"
     group: "root"
@@ -80,10 +81,20 @@
   become: true
   ansible.builtin.template:
     src: cowrie.container.j2
-    dest: "/home/{{ system.users.sensor.name }}/.config/containers/systemd/cowrie.container"
+    dest: "/etc/containers/systemd/users/{{ system.users.sensor.uid }}/cowrie.container"
     owner: "root"
     group: "root"
     mode: "0644"
+  tags: [cowrie]
+
+- name: "Reload user systemd daemon for Quadlet"
+  become: true
+  become_user: "{{ system.users.sensor.name }}"
+  ansible.builtin.command:
+    cmd: systemctl --user daemon-reload
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+  changed_when: false
   tags: [cowrie]
 
 - name: "Start Cowrie container"
@@ -94,7 +105,6 @@
     state: started
     enabled: true
     scope: user
-    daemon_reload: true
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
   tags: [cowrie]

@@ -51,5 +51,6 @@ transforms:
     condition:
       type: vrl
       source: |-
+        src = to_string(.src_ip) ?? ""
         connection_type = to_string(.connection_type) ?? ""
-        connection_type == "accept" && !starts_with(to_string(.src_ip) ?? "", "127.") && to_string(.src_ip) ?? "" != "::1" && !ip_cidr_contains!("{{ network.prefixes.ipv4 }}", to_string(.src_ip) ?? "0.0.0.0") && !ip_cidr_contains!("{{ network.prefixes.ipv6 }}", to_string(.src_ip) ?? "::")
+        connection_type == "accept" && src != "" && !starts_with(src, "127.") && src != "::1" && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false)

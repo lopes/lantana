@@ -1,0 +1,24 @@
+#!/bin/bash
+# Refresh MaxMind GeoLite2 City + ASN MMDBs for Vector's geoip enrichment.
+# Deployed by ansible role profile_collector; invoked at deploy time and
+# monthly via /etc/cron.d/lantana-geoip-update.
+set -euo pipefail
+
+KEY="{{ vault_apikey_maxmind }}"
+DEST="/var/lib/lantana/collector/geoip"
+OWNER="vector"
+GROUP="{{ system.users.collector.name }}"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+for edition in GeoLite2-City GeoLite2-ASN; do
+  workdir="${tmpdir}/${edition}"
+  mkdir -p "$workdir"
+  url="https://download.maxmind.com/app/geoip_download?edition_id=${edition}&license_key=${KEY}&suffix=tar.gz"
+  curl -fsSL "$url" -o "${workdir}/payload.tar.gz"
+  tar -xzf "${workdir}/payload.tar.gz" -C "${workdir}"
+  mmdb=$(find "${workdir}" -name "${edition}.mmdb" -type f -print -quit)
+  [ -n "$mmdb" ] || { echo "No ${edition}.mmdb in tarball" >&2; exit 1; }
+  install -m 0644 -o "${OWNER}" -g "${GROUP}" "$mmdb" "${DEST}/${edition}.mmdb"
+done

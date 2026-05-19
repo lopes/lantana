@@ -11,6 +11,7 @@
   ansible.builtin.apt:
     name:
       - cron
+      - git
       - rsyslog
   tags: [base]
 
@@ -78,6 +79,10 @@
 
     mode: "0644"
   tags: [base]
+
+- name: "Install uv"
+  ansible.builtin.include_tasks: uv.yml
+  tags: [uv]
 
 - name: "Deploy SSH"
   ansible.builtin.include_tasks: ssh.yml

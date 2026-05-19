@@ -21,6 +21,7 @@ module "cloud_init" {
   source = "../../modules/cloud-init"
 
   ssh_public_key = var.ssh_public_key
+  ssh_port       = var.ssh_port
 }
 
 resource "proxmox_virtual_environment_file" "cloud_init" {
