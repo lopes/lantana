@@ -668,8 +668,62 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
     return result
 
 
+_GEO_SUBFIELDS: tuple[tuple[str, pl.DataType], ...] = (
+    ("country_code", pl.Utf8()),
+    ("region_code", pl.Utf8()),
+    ("city", pl.Utf8()),
+    ("latitude", pl.Float64()),
+    ("longitude", pl.Float64()),
+    ("timezone", pl.Utf8()),
+    ("asn", pl.Int64()),
+    ("isp", pl.Utf8()),
+)
+
+
+def _flatten_geo_struct(df: pl.DataFrame) -> pl.DataFrame:
+    """Extract Vector's nested ``geo`` struct into flat ``geo.<field>`` columns.
+
+    Vector writes geo enrichment as a single struct column at ingest time;
+    downstream transform/metrics code (and the dashboard, STIX export, etc.)
+    expects flat dotted column names (``geo.country_code``, ``geo.asn``, ...).
+    Test fixtures pre-flatten the same fields, so the divergence between
+    production bronze and the test suite went unnoticed until lantana-transform
+    crashed on op_alpha's first complete silver write.
+
+    If the geo struct is absent (no Vector enrichment ever happened, or a
+    different shape on a future honeypot), fill the flat columns with typed
+    nulls so downstream code can rely on the schema regardless. The original
+    `geo` struct column is dropped after extraction to keep silver clean.
+    """
+    geo_dtype = df.schema.get("geo") if "geo" in df.columns else None
+    struct_field_names: set[str] = set()
+    if isinstance(geo_dtype, pl.Struct):
+        struct_field_names = {f.name for f in geo_dtype.fields}
+
+    new_columns: list[pl.Expr] = []
+    for sub, dtype in _GEO_SUBFIELDS:
+        flat_name = f"geo.{sub}"
+        if flat_name in df.columns:
+            continue
+        if sub in struct_field_names:
+            new_columns.append(pl.col("geo").struct.field(sub).alias(flat_name))
+        else:
+            new_columns.append(pl.lit(None, dtype=dtype).alias(flat_name))
+
+    if new_columns:
+        df = df.with_columns(new_columns)
+    if "geo" in df.columns and isinstance(df.schema.get("geo"), pl.Struct):
+        df = df.drop("geo")
+    return df
+
+
 def normalize_dataset(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
-    """Dispatch normalization to the correct per-dataset function."""
+    """Dispatch normalization to the correct per-dataset function.
+
+    Runs `_flatten_geo_struct` after the per-dataset normaliser so every
+    silver row has consistent `geo.<field>` flat columns regardless of
+    bronze shape (struct in production, flat in fixtures).
+    """
     normalizers = {
         "cowrie": normalize_cowrie,
         "suricata": normalize_suricata,
@@ -680,4 +734,4 @@ def normalize_dataset(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
     if normalizer is None:
         msg = f"Unknown dataset: {dataset}"
         raise ValueError(msg)
-    return normalizer(df)
+    return _flatten_geo_struct(normalizer(df))

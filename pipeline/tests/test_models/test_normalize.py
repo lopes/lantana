@@ -276,6 +276,64 @@ class TestNormalizeSuricata:
         assert result.get_column("finding_title").null_count() == result.height
 
 
+class TestGeoStructFlattening:
+    """Vector ships `geo` as a nested struct; transform/metrics expects flat
+    `geo.country_code` / `geo.asn` / etc. The dispatch wrapper bridges them.
+    """
+
+    def test_nested_geo_struct_is_flattened(self) -> None:
+        nested = pl.DataFrame({
+            "eventid": ["cowrie.session.connect"],
+            "src_ip": ["203.0.113.50"],
+            "dst_ip": ["10.50.99.100"],
+            "session": ["abc"],
+            "protocol": ["ssh"],
+            "username": [""],
+            "password": [""],
+            "input": [""],
+            "message": ["new connection"],
+            "timestamp": ["2026-05-19T20:48:48Z"],
+            "geo": [{
+                "asn": 12345,
+                "isp": "Example ISP",
+                "country_code": "BR",
+                "region_code": "SP",
+                "city": "São Paulo",
+                "latitude": -23.5,
+                "longitude": -46.6,
+                "timezone": "America/Sao_Paulo",
+            }],
+        })
+        result = normalize_dataset(nested, "cowrie")
+        assert "geo" not in result.columns
+        for field in ("country_code", "region_code", "city", "latitude",
+                      "longitude", "timezone", "asn", "isp"):
+            assert f"geo.{field}" in result.columns
+        assert result.get_column("geo.country_code").to_list() == ["BR"]
+        assert result.get_column("geo.asn").to_list() == [12345]
+
+    def test_missing_geo_column_fills_nulls(self) -> None:
+        """Bronze without any geo enrichment still produces the flat columns
+        (typed null) so downstream code can rely on the schema.
+        """
+        no_geo = pl.DataFrame({
+            "eventid": ["cowrie.session.connect"],
+            "src_ip": ["203.0.113.50"],
+            "dst_ip": ["10.50.99.100"],
+            "session": ["abc"],
+            "protocol": ["ssh"],
+            "username": [""],
+            "password": [""],
+            "input": [""],
+            "message": ["connect"],
+            "timestamp": ["2026-05-19T20:48:48Z"],
+        })
+        result = normalize_dataset(no_geo, "cowrie")
+        for field in ("country_code", "asn", "isp"):
+            assert f"geo.{field}" in result.columns
+            assert result.get_column(f"geo.{field}").null_count() == result.height
+
+
 class TestNormalizeNftablesDefensive:
     def test_unparsed_bronze_returns_empty(self) -> None:
         """When Vector hasn't parsed nftables logs into structured fields,
