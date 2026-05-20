@@ -116,6 +116,36 @@ lantana/
 - No exotic tools or fancy constructs
 - Readable and auditable
 
+## Pipeline fail-safe principles
+
+Op_alpha's first end-to-end production run (2026-05-20) surfaced eight distinct defects in sequence, six of which were variations on the same theme: production bronze data didn't match the shape the code assumed. The pipeline now has explicit guards against that whole class of bug, codified as principles that all new pipeline code must follow:
+
+### 1. No single defect cancels more than its scope
+
+A bug in any one dataset's normalize/redact/write must affect only that dataset's silver, never cancel the work for subsequent datasets in the loop. A provider outage must affect only that provider's enrichment columns. A row with malformed data drops just that row.
+
+**Implementation pattern:** `run_enrichment` in `enrichment/runner.py` wraps each dataset's Phase C body in try/except, logging `dataset_processing_failed` with `repr(exc)` and continuing. Use the same pattern in any loop that processes datasets / providers / IOCs independently.
+
+### 2. Failures are loud and structured
+
+Every skip / drop / fallback emits a structlog event with `dataset` (where applicable), `reason`, `count`, and `repr(exc)`. Errors are accumulated into `/var/lib/lantana/datalake/enrichment_errors.json` for daily review. Silence is not success.
+
+**Implementation pattern:** never `except Exception: pass`. The catch-all in `_enrich_iocs_with_provider` records `error_type="unknown"` with `repr(exc)` (not `str(exc)`) so the exception class name reaches the log. Mirror this pattern in any new error path.
+
+### 3. Schema variation is tolerated by construction
+
+Three sub-patterns, all proven necessary by today's defects:
+
+- **Nested → flat at dispatcher boundaries.** Vector ships structured fields (`geo`, `alert`) as nested structs; downstream code uses flat dotted names (`geo.country_code`, `alert_severity`). Conversion happens once, in the normaliser's dispatcher (`_flatten_geo_struct` after `normalize_dataset`, `_flatten_suricata_alert_struct` at the top of `normalize_suricata`). If the source struct is absent, fill the flat columns with typed null literals so downstream code can rely on the schema regardless.
+- **Optional columns must be tolerated everywhere.** Any column that exists only when a specific provider succeeded that day (`abuseipdb_*`, `greynoise_*`, `shodan_*`, `vt_*`) is *optional* in every gold metric function. Use the `_optional_first` helper in `transform/metrics.py` — it returns a typed null literal when the column is absent. Never call `pl.col("provider_specific_field")` in `core_aggs`.
+- **Defensive normalize: detect missing required fields, return empty.** When bronze lacks the parser fields a normaliser expects (e.g. nftables without action/chain/src_ip), return `df.clear()` so the runner logs `silver_skipped_empty_after_normalize` and continues. Do not crash, do not write half-formed silver.
+
+### 4. Tests must mirror production shape, not the convenient shape
+
+Test fixtures must not pre-flatten what Vector ships nested. If a future test fixture uses `{"geo.country_code": "BR"}` (dotted-key dict), the test is asserting against the *post-normaliser* shape — make sure the test exercises `normalize_dataset`, not a function that bypasses it. Production-shape fixtures must use `{"geo": {"country_code": "BR", ...}}` (nested struct).
+
+The plan at `PLAN.md` (Issue C) tracks the load-bearing integration test that pipes production-shape fixtures through the whole bronze → silver → gold path.
+
 ## Pipeline verification discipline
 
 End-to-end pipeline runs on a live operation consume real provider budget and real time. They are a final verification step, never a feedback loop.
