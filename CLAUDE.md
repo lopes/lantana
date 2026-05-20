@@ -116,6 +116,26 @@ lantana/
 - No exotic tools or fancy constructs
 - Readable and auditable
 
+## Pipeline verification discipline
+
+End-to-end pipeline runs on a live operation consume real provider budget and real time. They are a final verification step, never a feedback loop.
+
+**Free-tier cost model** (no cached IOCs, ~1100 unique attacker IPs/day on op_alpha):
+
+- AbuseIPDB: 1000/day → exhausts before all IPs covered.
+- Shodan: 100/month → exhausts in minutes.
+- VirusTotal: 4/min throttle + 500/day → dominates wall-clock time (hours).
+- GreyNoise Community: 50/week → exhausts fast on busy days.
+
+**Discipline:**
+
+- **Mock first.** `tests/test_enrichment/` patterns (`AsyncMock` + `patch.object(provider._client, "get", ...)`) cover status codes, sparse responses, retries, RetryError unwrapping, and parse errors without an API call. If a change can be validated against mocked unit tests, it must be — before any live run.
+- **Gate the live run.** `uv run pytest && uv run ruff check && uv run mypy --strict` must be clean before touching the VPS.
+- **Inspect the cache before a re-run.** `sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT provider, ioc_type, COUNT(*) FROM cache GROUP BY provider, ioc_type"` tells you how much fresh budget the re-run will burn.
+- **Use `--date YYYY-MM-DD` for targeted re-runs** rather than waiting for the 01:00 UTC cron. `write_silver_partition` overwrites the date partition, so a re-run cleanly replaces a partial earlier write.
+- **A failed live run is expensive.** It may have burned the day's / month's quota for the providers it reached, blocking the next attempt for 24h+ on AbuseIPDB, until UTC midnight on VT, until the monthly reset on Shodan, and 7 days on GreyNoise.
+- **Mid-run hotfix protocol.** If a defect surfaces during an active live run, do not kill the run and do not redeploy mid-flight. Silver write is the last phase — killing means no silver. Let it finish, deploy the fix, then targeted re-run with `--date` after the relevant rate-limit windows reset.
+
 ## OPSEC Requirements
 
 Lantana produces shareable intelligence (Discord reports, STIX bundles). The primary OPSEC concern is **external/WAN IP leakage** — the public-facing addresses that identify the honeypot on the internet. If an attacker or peer discovers these, they can blacklist the honeypot, fingerprint the setup, or map the operator's infrastructure. Only the honeypot owner should know these addresses. OPSEC is enforced at every layer:
