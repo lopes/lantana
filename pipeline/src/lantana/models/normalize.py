@@ -433,13 +433,28 @@ def normalize_suricata(df: pl.DataFrame) -> pl.DataFrame:
     return result
 
 
+_NFTABLES_REQUIRED_FIELDS = ("action", "protocol", "chain")
+
+
 def normalize_nftables(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize bronze nftables events to OCSF Network Activity columns.
 
     All nftables events map to Network Activity (4001).
+
+    Production bronze must contain the parsed nftables fields produced by
+    Vector's nftables pipeline (`action`, `protocol`, `chain`, plus the
+    shared `src_ip` / `dst_ip` etc.). When upstream parsing is broken,
+    events ship as raw `message` strings with only Vector metadata
+    columns — nothing meaningful to OCSF-normalize. In that case we
+    return an empty DataFrame so the runner skips the silver write
+    cleanly rather than crashing on a missing column.
     """
     if df.is_empty():
         return df
+
+    missing = [field for field in _NFTABLES_REQUIRED_FIELDS if field not in df.columns]
+    if missing:
+        return df.clear()
 
     # Map action to activity_id
     action_expr = (

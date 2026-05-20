@@ -276,6 +276,34 @@ class TestNormalizeSuricata:
         assert result.get_column("finding_title").null_count() == result.height
 
 
+class TestNormalizeNftablesDefensive:
+    def test_unparsed_bronze_returns_empty(self) -> None:
+        """When Vector hasn't parsed nftables logs into structured fields,
+        bronze only carries metadata + raw `message`. Normaliser returns
+        empty rather than crashing on missing columns.
+        """
+        unparsed = pl.DataFrame({
+            "dataset": ["nftables"],
+            "host": ["sn-01"],
+            "message": ["[chain] IN=eth0 OUT= SRC=203.0.113.50 ..."],
+            "timestamp": ["2026-05-19T20:48:00Z"],
+        })
+        result = normalize_nftables(unparsed)
+        assert result.is_empty()
+
+    def test_missing_one_required_field_returns_empty(self) -> None:
+        """Even partial parsing (e.g. has action but not chain) is rejected."""
+        partial = pl.DataFrame({
+            "action": ["drop"],
+            "protocol": ["tcp"],
+            "src_ip": ["203.0.113.50"],
+            "dst_ip": ["10.50.99.100"],
+            # chain missing
+        })
+        result = normalize_nftables(partial)
+        assert result.is_empty()
+
+
 # ---------------------------------------------------------------------------
 # Nftables normalization
 # ---------------------------------------------------------------------------

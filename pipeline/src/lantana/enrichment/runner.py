@@ -458,42 +458,64 @@ async def run_enrichment(
         ip_lookup = _build_lookup(ip_results)
         hash_lookup = _build_lookup(hash_results)
 
-        # Phase C: per-dataset merge + normalise + redact + write
+        # Phase C: per-dataset merge + normalise + redact + write.
+        # Each dataset is wrapped in try/except so a failure in one dataset's
+        # normaliser (e.g. unparsed bronze, schema drift, polars error) doesn't
+        # cancel the silver writes for the others. Today's op_alpha runs hit
+        # this twice in one day (suricata struct, nftables raw-message) — one
+        # dataset's defect should never torpedo the rest.
         for dataset, df in dfs.items():
-            enriched_df = _merge_lookup(df, "src_ip", ip_lookup)
-            if dataset == "cowrie":
-                enriched_df = _merge_lookup(enriched_df, "shasum", hash_lookup)
+            try:
+                enriched_df = _merge_lookup(df, "src_ip", ip_lookup)
+                if dataset == "cowrie":
+                    enriched_df = _merge_lookup(enriched_df, "shasum", hash_lookup)
 
-            normalized_df = normalize_dataset(enriched_df, dataset)
-            # Drop outbound-response noise where the honeypot itself appears as
-            # source (Suricata sees both flow directions; Vector's Layer-1 filter
-            # currently catches internal-prefix sources but not WAN sources).
-            row_count_before = normalized_df.height
-            cleaned_df = drop_infrastructure_source_rows(normalized_df, redact_config)
-            dropped = row_count_before - cleaned_df.height
-            if dropped:
-                logger.info(
-                    "infrastructure_source_rows_dropped",
+                normalized_df = normalize_dataset(enriched_df, dataset)
+                if normalized_df.is_empty():
+                    logger.info(
+                        "silver_skipped_empty_after_normalize",
+                        dataset=dataset,
+                        reason="bronze_lacked_required_fields_or_normalize_returned_empty",
+                    )
+                    continue
+
+                # Drop outbound-response noise where the honeypot itself appears
+                # as source (Suricata sees both flow directions; Vector's
+                # Layer-1 filter currently catches internal-prefix sources but
+                # not WAN sources).
+                row_count_before = normalized_df.height
+                cleaned_df = drop_infrastructure_source_rows(normalized_df, redact_config)
+                dropped = row_count_before - cleaned_df.height
+                if dropped:
+                    logger.info(
+                        "infrastructure_source_rows_dropped",
+                        dataset=dataset,
+                        count=dropped,
+                    )
+                redacted_df = redact_infrastructure_ips(cleaned_df, redact_config)
+                validate_no_leaks(redacted_df, redact_config)
+
+                servers = (
+                    redacted_df.get_column("server").unique().to_list()
+                    if "server" in redacted_df.columns
+                    else ["unknown"]
+                )
+                for server in servers:
+                    server_df = (
+                        redacted_df.filter(pl.col("server") == server)
+                        if len(servers) > 1
+                        else redacted_df
+                    )
+                    write_silver_partition(server_df, target_date, dataset, str(server))
+
+                logger.info("enrichment_done", dataset=dataset, rows=len(redacted_df))
+            except Exception as exc:
+                logger.error(
+                    "dataset_processing_failed",
                     dataset=dataset,
-                    count=dropped,
+                    exc_repr=repr(exc),
                 )
-            redacted_df = redact_infrastructure_ips(cleaned_df, redact_config)
-            validate_no_leaks(redacted_df, redact_config)
-
-            servers = (
-                redacted_df.get_column("server").unique().to_list()
-                if "server" in redacted_df.columns
-                else ["unknown"]
-            )
-            for server in servers:
-                server_df = (
-                    redacted_df.filter(pl.col("server") == server)
-                    if len(servers) > 1
-                    else redacted_df
-                )
-                write_silver_partition(server_df, target_date, dataset, str(server))
-
-            logger.info("enrichment_done", dataset=dataset, rows=len(redacted_df))
+                _record_error(errors, "pipeline", "dataset_processing_failed", repr(exc))
 
         _write_error_summary(errors, target_date, errors_path)
 
