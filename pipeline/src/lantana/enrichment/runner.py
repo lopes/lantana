@@ -12,8 +12,10 @@ Daily workflow:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
+import ipaddress
 import json
 import os
 import sqlite3
@@ -62,14 +64,30 @@ def _init_cache(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _get_cached(conn: sqlite3.Connection, key: str) -> bool:
-    """Check if a key was enriched within the TTL."""
+def _get_cached(conn: sqlite3.Connection, key: str) -> EnrichmentResult | None:
+    """Return the cached EnrichmentResult for a key, or None if absent/expired.
+
+    A malformed cached row (provider name or data JSON that no longer
+    deserializes cleanly) is treated as a miss so one bad row cannot
+    poison a whole batch.
+    """
     cutoff = (datetime.now(tz=UTC) - timedelta(days=CACHE_TTL_DAYS)).isoformat()
     row = conn.execute(
-        "SELECT 1 FROM cache WHERE key = ? AND queried_at > ?",
+        "SELECT provider, data, queried_at FROM cache WHERE key = ? AND queried_at > ?",
         (key, cutoff),
     ).fetchone()
-    return row is not None
+    if row is None:
+        return None
+    provider_name, data_json, queried_at_str = row
+    try:
+        return EnrichmentResult(
+            provider=provider_name,
+            ip=key.split(":", 1)[1] if ":" in key else key,
+            data=json.loads(data_json),
+            queried_at=datetime.fromisoformat(queried_at_str),
+        )
+    except (ValueError, json.JSONDecodeError):
+        return None
 
 
 def _set_cached(conn: sqlite3.Connection, result: EnrichmentResult) -> None:
@@ -92,6 +110,30 @@ def _extract_unique_ips(df: pl.DataFrame) -> list[str]:
     if src_col is None:
         return []
     return df.get_column(src_col).drop_nulls().unique().cast(pl.Utf8).to_list()
+
+
+def _filter_internal_ips(ips: list[str], config: RedactionConfig) -> list[str]:
+    """Drop operation-owned IPs before any provider call.
+
+    OPSEC Layer-1.5: even if Vector's source-IP filter (Layer 1) lets
+    something through, we must never send a honeypot's own WAN address
+    to AbuseIPDB / Shodan / VirusTotal.
+    """
+    infra_set = set(config.infrastructure_ips)
+    cidr_nets = [ipaddress.ip_network(cidr) for cidr in config.infrastructure_cidrs]
+    kept: list[str] = []
+    for ip in ips:
+        if ip in infra_set:
+            continue
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            kept.append(ip)
+            continue
+        if any(addr in net for net in cidr_nets):
+            continue
+        kept.append(ip)
+    return kept
 
 
 def _extract_unique_hashes(df: pl.DataFrame, sensor_dir: Path) -> list[str]:
@@ -208,12 +250,20 @@ async def _enrich_ips_with_provider(
     ips: list[str],
     cache: sqlite3.Connection,
     errors: ErrorAccumulator,
-) -> list[EnrichmentResult]:
-    """Enrich a list of IPs with a single provider, respecting cache."""
+) -> tuple[list[EnrichmentResult], int]:
+    """Enrich a list of IPs with a single provider, respecting cache.
+
+    Returns the combined results (cached + freshly queried) and the count
+    of cache hits, so the caller can log fresh vs cached separately.
+    """
     results: list[EnrichmentResult] = []
+    cache_hits = 0
     for ip in ips:
         cache_key = f"{provider_name}:{ip}"
-        if _get_cached(cache, cache_key):
+        cached = _get_cached(cache, cache_key)
+        if cached is not None:
+            results.append(cached)
+            cache_hits += 1
             continue
         try:
             result = await provider.enrich_ip(ip)
@@ -229,7 +279,7 @@ async def _enrich_ips_with_provider(
         except Exception as exc:
             _record_error(errors, provider_name, "unknown", str(exc))
             logger.warning("enrichment_failed", provider=provider_name, ip=ip, error_type="unknown")
-    return results
+    return results, cache_hits
 
 
 async def run_enrichment(
@@ -277,16 +327,28 @@ async def run_enrichment(
                 logger.info("enrichment_skip_empty", dataset=dataset)
                 continue
 
-            # Extract unique IPs
-            unique_ips = _extract_unique_ips(df)
+            # Extract unique IPs and filter out operation-owned addresses (OPSEC)
+            raw_ips = _extract_unique_ips(df)
+            unique_ips = _filter_internal_ips(raw_ips, redact_config)
+            filtered = len(raw_ips) - len(unique_ips)
+            if filtered:
+                logger.info("internal_ips_filtered", dataset=dataset, count=filtered)
             logger.info("unique_ips_found", dataset=dataset, count=len(unique_ips))
 
             # Enrich with each provider (sequential to respect rate limits)
             enrichments: dict[str, list[EnrichmentResult]] = {}
             for name, provider in providers.items():
-                results = await _enrich_ips_with_provider(name, provider, unique_ips, cache, errors)
+                results, cache_hits = await _enrich_ips_with_provider(
+                    name, provider, unique_ips, cache, errors,
+                )
                 enrichments[name] = results
-                logger.info("provider_done", provider=name, enriched=len(results))
+                logger.info(
+                    "provider_done",
+                    provider=name,
+                    enriched=len(results),
+                    fresh=len(results) - cache_hits,
+                    cache_hits=cache_hits,
+                )
 
             # Enrich file hashes with VirusTotal
             if dataset in ("cowrie", "dionaea"):
@@ -354,5 +416,17 @@ async def run_enrichment(
 
 def main() -> None:
     """CLI entry point for lantana-enrich."""
-    yesterday = date.today() - timedelta(days=1)
-    asyncio.run(run_enrichment(yesterday))
+    parser = argparse.ArgumentParser(
+        prog="lantana-enrich",
+        description="Enrich bronze NDJSON into silver Parquet for a given date.",
+    )
+    parser.add_argument(
+        "--date",
+        type=date.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Date to enrich (UTC). Defaults to yesterday.",
+    )
+    args = parser.parse_args()
+    target = args.date if args.date is not None else date.today() - timedelta(days=1)
+    asyncio.run(run_enrichment(target))

@@ -11,12 +11,16 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from lantana.common.redact import RedactionConfig
 from lantana.enrichment.providers.base import EnrichmentResult
 from lantana.enrichment.runner import (
     ErrorAccumulator,
     _classify_http_error,
     _enrich_ips_with_provider,
+    _filter_internal_ips,
+    _get_cached,
     _record_error,
+    _set_cached,
     _write_error_summary,
 )
 
@@ -169,12 +173,13 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider(
+        results, cache_hits = await _enrich_ips_with_provider(
             "test_provider", provider, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
         assert results == []
+        assert cache_hits == 0
         assert ("test_provider", "rate_limit") in errors
         assert errors[("test_provider", "rate_limit")].count == 1
 
@@ -185,12 +190,13 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider(
+        results, cache_hits = await _enrich_ips_with_provider(
             "test_provider", provider, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
         assert results == []
+        assert cache_hits == 0
         assert ("test_provider", "timeout") in errors
 
     @pytest.mark.asyncio()
@@ -200,12 +206,13 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider(
+        results, cache_hits = await _enrich_ips_with_provider(
             "test_provider", provider, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
         assert results == []
+        assert cache_hits == 0
         assert ("test_provider", "unknown") in errors
         assert "unexpected" in errors[("test_provider", "unknown")].error_message
 
@@ -221,12 +228,13 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider(
+        results, cache_hits = await _enrich_ips_with_provider(
             "test_provider", provider, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
         assert len(results) == 1
+        assert cache_hits == 0
         assert errors == {}
 
     @pytest.mark.asyncio()
@@ -246,11 +254,129 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results = await _enrich_ips_with_provider(
+        results, cache_hits = await _enrich_ips_with_provider(
             "test_provider", provider, ["1.2.3.4", "5.6.7.8"], cache, errors
         )
         cache.close()
 
         assert len(results) == 1
         assert results[0].ip == "1.2.3.4"
+        assert cache_hits == 0
         assert ("test_provider", "rate_limit") in errors
+
+
+# --- Cache hit semantics (Phase 1 bug fix) ---
+
+
+class TestCacheBehaviour:
+    @pytest.mark.asyncio()
+    async def test_cache_hit_returns_data(self, tmp_path: Path) -> None:
+        """A cached result must be returned without calling the provider."""
+        cache = _make_cache(tmp_path)
+        cached_result = EnrichmentResult(
+            provider="test_provider",
+            ip="1.2.3.4",
+            data={"abuseipdb_confidence_score": 90},
+            queried_at=datetime.now(tz=UTC),
+        )
+        _set_cached(cache, cached_result)
+
+        provider = AsyncMock()
+        provider.enrich_ip.side_effect = AssertionError("provider must not be called on cache hit")
+
+        errors: ErrorAccumulator = {}
+        results, cache_hits = await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
+        cache.close()
+
+        assert len(results) == 1
+        assert results[0].ip == "1.2.3.4"
+        assert results[0].data["abuseipdb_confidence_score"] == 90
+        assert cache_hits == 1
+        assert errors == {}
+        provider.enrich_ip.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_cache_miss_then_hit(self, tmp_path: Path) -> None:
+        """First call fetches and caches; second call returns cached data."""
+        cache = _make_cache(tmp_path)
+        fresh = EnrichmentResult(
+            provider="test_provider",
+            ip="1.2.3.4",
+            data={"score": 50},
+            queried_at=datetime.now(tz=UTC),
+        )
+        provider = AsyncMock()
+        provider.enrich_ip.return_value = fresh
+
+        errors: ErrorAccumulator = {}
+        results1, hits1 = await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
+        results2, hits2 = await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
+        cache.close()
+
+        assert len(results1) == 1
+        assert hits1 == 0
+        assert len(results2) == 1
+        assert hits2 == 1
+        assert results2[0].data["score"] == 50
+        assert provider.enrich_ip.call_count == 1
+
+    def test_get_cached_returns_none_when_missing(self, tmp_path: Path) -> None:
+        cache = _make_cache(tmp_path)
+        assert _get_cached(cache, "abuseipdb:1.2.3.4") is None
+        cache.close()
+
+    def test_get_cached_handles_malformed_row(self, tmp_path: Path) -> None:
+        """A corrupt cached row is treated as a miss, not a crash."""
+        cache = _make_cache(tmp_path)
+        cache.execute(
+            "INSERT INTO cache (key, provider, data, queried_at) VALUES (?, ?, ?, ?)",
+            ("abuseipdb:1.2.3.4", "abuseipdb", "{not json}", datetime.now(tz=UTC).isoformat()),
+        )
+        cache.commit()
+
+        assert _get_cached(cache, "abuseipdb:1.2.3.4") is None
+        cache.close()
+
+
+# --- OPSEC IP filter ---
+
+
+class TestFilterInternalIps:
+    def _config(self) -> RedactionConfig:
+        return RedactionConfig(
+            infrastructure_ips=["192.0.2.10", "2001:db8::10"],
+            infrastructure_cidrs=["10.50.99.0/24", "fd99:10:50:99::/64"],
+            pseudonym_map={},
+        )
+
+    def test_keeps_external_ips(self) -> None:
+        kept = _filter_internal_ips(["203.0.113.50", "198.51.100.22"], self._config())
+        assert kept == ["203.0.113.50", "198.51.100.22"]
+
+    def test_drops_exact_infrastructure_ip(self) -> None:
+        kept = _filter_internal_ips(
+            ["203.0.113.50", "192.0.2.10", "198.51.100.22"], self._config(),
+        )
+        assert "192.0.2.10" not in kept
+        assert kept == ["203.0.113.50", "198.51.100.22"]
+
+    def test_drops_cidr_member(self) -> None:
+        kept = _filter_internal_ips(["10.50.99.100", "203.0.113.50"], self._config())
+        assert kept == ["203.0.113.50"]
+
+    def test_drops_ipv6_cidr_member(self) -> None:
+        kept = _filter_internal_ips(
+            ["fd99:10:50:99::1", "2001:db8:1::beef"], self._config(),
+        )
+        assert kept == ["2001:db8:1::beef"]
+
+    def test_non_ip_strings_kept(self) -> None:
+        """Hostnames or junk pass through unchanged — runner filters later."""
+        kept = _filter_internal_ips(["not.an.ip", "203.0.113.50"], self._config())
+        assert kept == ["not.an.ip", "203.0.113.50"]
