@@ -123,7 +123,8 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
 
-    # Core columns always present in silver
+    # Core columns always present in silver (built by the normaliser, not
+    # dependent on which providers ran).
     core_aggs: list[pl.Expr] = [
         pl.len().alias("total_events"),
         pl.col("dataset").unique().alias("datasets"),
@@ -139,16 +140,19 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
         pl.col("geo.country_code").first().alias("geo_country"),
         pl.col("geo.asn").first().alias("geo_asn"),
         pl.col("geo.isp").first().alias("geo_isp"),
-        pl.col("abuseipdb_confidence_score").first().alias("abuseipdb_score"),
-        pl.col("greynoise_classification").first().alias("greynoise_class"),
     ]
 
-    # Optional enrichment columns (may be absent in test data or partial runs)
+    # Optional enrichment columns — may be absent on any given day when a
+    # provider was rate-limited, circuit-broken, or simply not configured.
+    # _optional_first returns a typed null literal when the column is absent
+    # so the group_by aggregation doesn't crash.
     optional = [
         ("geo.city", "geo_city"),
         ("geo.latitude", "geo_latitude"),
         ("geo.longitude", "geo_longitude"),
+        ("abuseipdb_confidence_score", "abuseipdb_score"),
         ("abuseipdb_total_reports", "abuseipdb_reports"),
+        ("greynoise_classification", "greynoise_class"),
         ("greynoise_name", "greynoise_name"),
         ("shodan_ports", "shodan_ports"),
         ("shodan_os", "shodan_os"),
@@ -221,8 +225,9 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
         .min()
         .alias("first_success_time"),
         pl.col("time").filter(cls == CLASS_PROCESS_ACTIVITY).min().alias("first_command_time"),
-        # Automated detection inputs
-        pl.col("greynoise_noise").first().alias("greynoise_noise"),
+        # Automated detection inputs (greynoise_noise absent when the provider
+        # didn't contribute to this date — fall back to false via fill_null below)
+        _optional_first(silver, "greynoise_noise", "greynoise_noise"),
     )
 
     # Compute max_stage

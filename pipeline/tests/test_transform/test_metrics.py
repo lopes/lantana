@@ -384,6 +384,34 @@ class TestIPReputation:
         datasets = set(a1.get_column("datasets").to_list()[0])
         assert datasets == {"cowrie", "nftables", "suricata"}
 
+    def test_partial_enrichment_day(self) -> None:
+        """When a provider was rate-limited / circuit-broken for the whole day,
+        its silver columns are simply absent. compute_ip_reputation must not
+        crash — the aggregation columns get null values, the risk formula uses
+        fill_null(0) to absorb them.
+        """
+        partial = pl.DataFrame({
+            "src_endpoint_ip": ["203.0.113.50"],
+            "dataset": ["suricata"],
+            "class_uid": [CLASS_NETWORK_ACTIVITY],
+            "status_id": [STATUS_UNKNOWN],
+            "user_name": [None],
+            "unmapped_password": [None],
+            "time": [datetime(2026, 5, 19, 12, 0, tzinfo=UTC)],
+            "geo.country_code": ["BR"],
+            "geo.asn": [12345],
+            "geo.isp": ["Example ISP"],
+            # No abuseipdb_*, greynoise_*, shodan_*, vt_* columns at all
+        })
+        result = compute_ip_reputation(partial)
+        assert result.height == 1
+        row = result.row(0, named=True)
+        # Optional columns return null when absent — required to be tolerated.
+        assert row["abuseipdb_score"] is None
+        assert row["greynoise_class"] is None
+        # Risk score still computes (no crash) — only behavioural signals here.
+        assert 0.0 <= row["risk_score"] <= 100.0
+
 
 # ---------------------------------------------------------------------------
 # behavioral_progression
