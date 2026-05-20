@@ -58,6 +58,14 @@ DATASETS = ["cowrie", "suricata", "nftables", "dionaea"]
 IOC_TYPE_IP = "ip"
 IOC_TYPE_HASH = "hash"
 
+# Circuit-breaker thresholds for _enrich_iocs_with_provider.
+# Rate limits don't reset within a single run, so once we've consistently been
+# 429'd there's no point retrying every remaining IOC and burning ~14s of
+# tenacity backoff each. Auth failures don't fix themselves mid-run either —
+# one is enough.
+CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD = 5
+CIRCUIT_BREAKER_AUTH_FAILED_THRESHOLD = 1
+
 
 # -- Cache -------------------------------------------------------------------
 
@@ -258,20 +266,49 @@ async def _enrich_iocs_with_provider(
     log_field = "ip" if ioc_type == IOC_TYPE_IP else "sha256"
     results: list[EnrichmentResult] = []
     cache_hits = 0
-    for value in iocs:
+    consecutive_rate_limits = 0
+    auth_failures = 0
+    for index, value in enumerate(iocs):
         cached = _get_cached(cache, provider_name, ioc_type, value)
         if cached is not None:
             results.append(cached)
             cache_hits += 1
+            consecutive_rate_limits = 0
             continue
+        if consecutive_rate_limits >= CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD:
+            logger.warning(
+                "provider_short_circuited",
+                provider=provider_name,
+                ioc_type=ioc_type,
+                reason="rate_limit_threshold",
+                consecutive=consecutive_rate_limits,
+                skipped=len(iocs) - index,
+            )
+            break
+        if auth_failures >= CIRCUIT_BREAKER_AUTH_FAILED_THRESHOLD:
+            logger.error(
+                "provider_short_circuited",
+                provider=provider_name,
+                ioc_type=ioc_type,
+                reason="auth_failed",
+                skipped=len(iocs) - index,
+            )
+            break
         try:
             result = await _query_provider(provider, ioc_type, value)
             _set_cached(cache, provider_name, ioc_type, value, result)
             results.append(result)
+            consecutive_rate_limits = 0
         except httpx.HTTPStatusError as exc:
             etype = _classify_http_error(exc.response.status_code)
             _record_error(errors, provider_name, etype, str(exc))
             _log_failure(etype, provider=provider_name, **{log_field: value})
+            if etype == "rate_limit":
+                consecutive_rate_limits += 1
+            elif etype == "auth_failed":
+                auth_failures += 1
+            else:
+                consecutive_rate_limits = 0
         except httpx.TimeoutException:
             _record_error(errors, provider_name, "timeout", "request timed out")
             _log_failure("timeout", provider=provider_name, **{log_field: value})

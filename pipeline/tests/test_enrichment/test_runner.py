@@ -16,6 +16,7 @@ from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.base import EnrichmentResult
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
 from lantana.enrichment.runner import (
+    CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD,
     IOC_TYPE_HASH,
     IOC_TYPE_IP,
     ErrorAccumulator,
@@ -645,4 +646,153 @@ class TestIocDedupAcrossDatasets:
         cache.close()
 
         assert provider.enrich_ip.call_count == 1
+        assert len(results) == 1
+
+
+# --- Circuit breaker ---
+
+
+def _rate_limit_error() -> httpx.HTTPStatusError:
+    req = httpx.Request("GET", "https://api.test")
+    resp = httpx.Response(status_code=429, request=req)
+    return httpx.HTTPStatusError("429 Too Many Requests", request=req, response=resp)
+
+
+def _auth_error() -> httpx.HTTPStatusError:
+    req = httpx.Request("GET", "https://api.test")
+    resp = httpx.Response(status_code=401, request=req)
+    return httpx.HTTPStatusError("401 Unauthorized", request=req, response=resp)
+
+
+class TestCircuitBreaker:
+    @pytest.mark.asyncio()
+    async def test_rate_limit_trips_after_threshold(self, tmp_path: Path) -> None:
+        """N consecutive rate_limit failures stop the loop, skipping remaining IOCs."""
+        provider = AsyncMock()
+        provider.enrich_ip.side_effect = _rate_limit_error()
+
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        # Threshold + 10 IPs in queue. Should bail after threshold attempts.
+        ips = [f"203.0.113.{i}" for i in range(1, CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD + 11)]
+        results, _ = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ips, cache, errors,
+        )
+        cache.close()
+
+        assert results == []
+        # The breaker fires on the IP AFTER the threshold-th failure (the next
+        # iteration sees the counter at threshold and breaks before calling).
+        # So total calls = threshold.
+        assert provider.enrich_ip.call_count == CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD
+        assert ("test_provider", "rate_limit") in errors
+
+    @pytest.mark.asyncio()
+    async def test_success_resets_counter(self, tmp_path: Path) -> None:
+        """A successful call resets the consecutive-failure counter."""
+        provider = AsyncMock()
+        ok = EnrichmentResult(
+            provider="test_provider",
+            ip="ok",
+            data={"score": 1},
+            queried_at=datetime.now(tz=UTC),
+        )
+        # Pattern: threshold-1 rate_limits, then success, then threshold-1 more
+        # rate_limits — should NOT trip (counter reset by success).
+        pre = [_rate_limit_error()] * (CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD - 1)
+        post = [_rate_limit_error()] * (CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD - 1)
+        provider.enrich_ip.side_effect = [*pre, ok, *post]
+
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        ips = [f"203.0.113.{i}" for i in range(1, len(pre) + len(post) + 2)]
+        results, _ = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ips, cache, errors,
+        )
+        cache.close()
+
+        # All IPs attempted because counter resets on the success.
+        assert provider.enrich_ip.call_count == len(ips)
+        assert len(results) == 1  # only the one success
+
+    @pytest.mark.asyncio()
+    async def test_cache_hit_resets_counter(self, tmp_path: Path) -> None:
+        """A cache hit between failures also resets the breaker."""
+        cache = _make_cache(tmp_path)
+        cached = EnrichmentResult(
+            provider="test_provider",
+            ip="cached.ip",
+            data={"score": 1},
+            queried_at=datetime.now(tz=UTC),
+        )
+        _set_cached(cache, "test_provider", IOC_TYPE_IP, "cached.ip", cached)
+
+        provider = AsyncMock()
+        provider.enrich_ip.side_effect = _rate_limit_error()
+
+        # threshold-1 fails, then cache hit, then threshold-1 fails → no trip
+        ips: list[str] = []
+        for i in range(CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD - 1):
+            ips.append(f"203.0.113.{i}")
+        ips.append("cached.ip")
+        for i in range(CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD - 1):
+            ips.append(f"203.0.114.{i}")
+
+        errors: ErrorAccumulator = {}
+        results, cache_hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ips, cache, errors,
+        )
+        cache.close()
+
+        # Provider called for every non-cached IP.
+        assert provider.enrich_ip.call_count == len(ips) - 1
+        assert cache_hits == 1
+        # Cached result is the one entry in results; no successes from API.
+        assert len(results) == 1
+
+    @pytest.mark.asyncio()
+    async def test_auth_failed_trips_immediately(self, tmp_path: Path) -> None:
+        """A single auth_failed short-circuits the provider's queue."""
+        provider = AsyncMock()
+        provider.enrich_ip.side_effect = _auth_error()
+
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        ips = [f"203.0.113.{i}" for i in range(1, 21)]
+        results, _ = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ips, cache, errors,
+        )
+        cache.close()
+
+        assert results == []
+        # One call burnt to discover auth is broken, then bail.
+        assert provider.enrich_ip.call_count == 1
+        assert ("test_provider", "auth_failed") in errors
+
+    @pytest.mark.asyncio()
+    async def test_transient_errors_dont_count(self, tmp_path: Path) -> None:
+        """timeout / network_error / unknown do NOT count toward the rate-limit trip."""
+        provider = AsyncMock()
+        provider.enrich_ip.side_effect = [
+            httpx.ReadTimeout("transient"),
+            httpx.ConnectError("transient"),
+            ValueError("unexpected"),
+            EnrichmentResult(
+                provider="test_provider",
+                ip="ok",
+                data={"score": 1},
+                queried_at=datetime.now(tz=UTC),
+            ),
+        ]
+
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        ips = ["a", "b", "c", "d"]
+        results, _ = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ips, cache, errors,
+        )
+        cache.close()
+
+        # All four attempted; the last succeeds. No premature bail.
+        assert provider.enrich_ip.call_count == 4
         assert len(results) == 1
