@@ -144,3 +144,22 @@
     state: restarted
     enabled: true
   tags: [cowrie, vector]
+
+# --- PIPELINE BRIDGE ---
+# Cowrie writes downloaded malware files at mode 0600 via Python's tempfile
+# module (hardcoded, ignores umask). The lantana pipeline (running as
+# nectar) needs to read them to compute SHA256 hashes. This cron uses the
+# lantana-grant-read utility to relax perms once a day, just before the
+# 01:00 UTC enrichment run.
+- name: "Schedule daily read-permission fix for Cowrie downloads"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cron.d/lantana-cowrie-downloads
+    content: |
+      # Grant nectar read access to Cowrie downloads (0600 from tempfile) before
+      # the daily enrichment run. Managed by Ansible.
+      30 0 * * * root /usr/local/sbin/lantana-grant-read /var/lib/lantana/sensor/cowrie/downloads
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cowrie]

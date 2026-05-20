@@ -1,0 +1,19 @@
+#!/bin/sh
+# Recursively grant world-read permission on directory trees.
+# Used by per-honeypot crons to expose rootless-container subUID-owned files
+# (which default to 0600) to the lantana pipeline user (nectar). Deployed by
+# ansible role base; called from /etc/cron.d/lantana-<honeypot>-* files.
+set -eu
+
+if [ $# -eq 0 ]; then
+  echo "Usage: $0 <path> [<path>...]" >&2
+  exit 1
+fi
+
+for path in "$@"; do
+  if [ ! -d "$path" ]; then
+    echo "Not a directory: $path" >&2
+    exit 1
+  fi
+  chmod -R o+r "$path"
+done

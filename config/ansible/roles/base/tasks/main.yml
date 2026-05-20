@@ -69,6 +69,16 @@
     - /var/lib/lantana
   tags: [base]
 
+- name: "Deploy lantana-grant-read utility"
+  become: true
+  ansible.builtin.copy:
+    src: lantana-grant-read
+    dest: /usr/local/sbin/lantana-grant-read
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [base]
+
 - name: "Setup log rotation"
   become: true
   ansible.builtin.copy:
