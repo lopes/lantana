@@ -100,3 +100,29 @@ class TestFilterInternalIps:
         """Hostnames or junk pass through unchanged."""
         kept = filter_internal_ips({"not.an.ip", "203.0.113.50"}, _config())
         assert kept == {"not.an.ip", "203.0.113.50"}
+
+    def test_drops_rfc1918(self) -> None:
+        """RFC1918 addresses unrelated to this operation are dropped too —
+        no threat-intel value at any provider, and we observed them
+        leaking through bronze in op_alpha's first run.
+        """
+        kept = filter_internal_ips(
+            {"10.69.215.134", "172.16.5.1", "192.168.1.1", "203.0.113.50"},
+            _config(),
+        )
+        assert kept == {"203.0.113.50"}
+
+    def test_drops_link_local(self) -> None:
+        """Link-local (fe80::/10, 169.254.0.0/16) is dropped."""
+        kept = filter_internal_ips(
+            {"fe80::3878:dbff:feae:d1f0", "169.254.1.1", "203.0.113.50"},
+            _config(),
+        )
+        assert kept == {"203.0.113.50"}
+
+    def test_drops_loopback_and_multicast(self) -> None:
+        kept = filter_internal_ips(
+            {"127.0.0.1", "::1", "224.0.0.1", "203.0.113.50"},
+            _config(),
+        )
+        assert kept == {"203.0.113.50"}
