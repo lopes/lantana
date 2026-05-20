@@ -72,6 +72,29 @@ class TestShodanProvider:
         assert result.data["shodan_vulns"] is None
 
     @pytest.mark.asyncio()
+    async def test_200_without_asn_and_org_returns_empty_strings(
+        self, provider: ShodanProvider,
+    ) -> None:
+        """Some 200 responses are sparse — `asn`/`org` may simply be absent.
+
+        Observed in op_alpha's first enrichment run: ~30 IPs returned
+        200 OK but no asn key, causing KeyError before this fix.
+        """
+        sparse = httpx.Response(
+            200,
+            json={"ports": [22], "ip_str": "1.2.3.4"},
+            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
+        )
+        with patch.object(
+            provider._client, "get", new_callable=AsyncMock, return_value=sparse,
+        ):
+            result = await provider.enrich_ip("1.2.3.4")
+
+        assert result.data["shodan_ports"] == "22"
+        assert result.data["shodan_asn"] == ""
+        assert result.data["shodan_org"] == ""
+
+    @pytest.mark.asyncio()
     async def test_500_is_retried_then_raises(self, provider: ShodanProvider) -> None:
         """5xx server errors are retried; with reraise=True the original
         HTTPStatusError surfaces after the retry budget is exhausted."""

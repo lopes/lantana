@@ -118,6 +118,38 @@ class TestVirusTotalHash:
         assert result.data["vt_file_name"] == ""
         assert result.data["vt_file_type"] == ""
 
+    @pytest.mark.asyncio()
+    async def test_200_ip_without_as_owner_returns_empty_string(
+        self, provider: VirusTotalProvider,
+    ) -> None:
+        """Some VT 200 responses lack `as_owner` (notably on private-space IPs).
+
+        Observed in op_alpha's first enrichment run: KeyError('as_owner')
+        on 10.69.215.134. The runner now defends against missing optional
+        attributes the same way it does for missing last_analysis_stats keys.
+        """
+        sparse = httpx.Response(
+            200,
+            json={
+                "data": {
+                    "attributes": {
+                        "last_analysis_stats": {"malicious": 0, "suspicious": 0},
+                        "reputation": 0,
+                    },
+                },
+            },
+            request=httpx.Request(
+                "GET", "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
+            ),
+        )
+        with patch.object(
+            provider._client, "get", new_callable=AsyncMock, return_value=sparse,
+        ):
+            result = await provider.enrich_ip("1.2.3.4")
+
+        assert result.data["vt_malicious_count"] == 0
+        assert result.data["vt_as_owner"] == ""
+
 
 class TestVirusTotalRetry:
     @pytest.mark.asyncio()

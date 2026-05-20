@@ -71,6 +71,9 @@ class ShodanProvider:
 
         os_value: str | None = data.get("os")  # type: ignore[assignment]
 
+        # Shodan's 200 responses are sparse — fields like `org` / `asn` are
+        # routinely absent on hosts the scanner has only partial data for.
+        # Default to empty string, matching the 404-fallback shape above.
         return EnrichmentResult(
             provider="shodan",
             ip=ip,
@@ -78,8 +81,8 @@ class ShodanProvider:
                 "shodan_ports": ports_str,
                 "shodan_os": os_value,
                 "shodan_vulns": vulns_str,
-                "shodan_org": str(data["org"]),
-                "shodan_asn": str(data["asn"]),
+                "shodan_org": str(data.get("org") or ""),
+                "shodan_asn": str(data.get("asn") or ""),
             },
             queried_at=datetime.now(tz=UTC),
         )

@@ -78,16 +78,16 @@ class VirusTotalProvider:
         response.raise_for_status()
         payload: dict[str, dict[str, dict[str, int | str]]] = response.json()
         attributes = payload["data"]["attributes"]
-        last_analysis: dict[str, int] = attributes["last_analysis_stats"]  # type: ignore[assignment]
+        last_analysis: dict[str, int] = attributes.get("last_analysis_stats", {})  # type: ignore[assignment]
 
         return EnrichmentResult(
             provider="virustotal",
             ip=ip,
             data={
-                "vt_malicious_count": int(last_analysis["malicious"]),
-                "vt_suspicious_count": int(last_analysis["suspicious"]),
-                "vt_ip_reputation": int(attributes["reputation"]),
-                "vt_as_owner": str(attributes["as_owner"]),
+                "vt_malicious_count": int(last_analysis.get("malicious", 0)),
+                "vt_suspicious_count": int(last_analysis.get("suspicious", 0)),
+                "vt_ip_reputation": int(attributes.get("reputation", 0)),
+                "vt_as_owner": str(attributes.get("as_owner") or ""),
             },
             queried_at=datetime.now(tz=UTC),
         )
@@ -113,16 +113,16 @@ class VirusTotalProvider:
         response.raise_for_status()
         payload: dict[str, dict[str, dict[str, int | str]]] = response.json()
         attributes = payload["data"]["attributes"]
-        last_analysis: dict[str, int] = attributes["last_analysis_stats"]  # type: ignore[assignment]
+        last_analysis: dict[str, int] = attributes.get("last_analysis_stats", {})  # type: ignore[assignment]
 
         return EnrichmentResult(
             provider="virustotal",
             ip=sha256,
             data={
-                "vt_file_malicious_count": int(last_analysis["malicious"]),
-                "vt_file_undetected_count": int(last_analysis["undetected"]),
-                "vt_file_name": str(attributes["meaningful_name"]),
-                "vt_file_type": str(attributes["type_tag"]),
+                "vt_file_malicious_count": int(last_analysis.get("malicious", 0)),
+                "vt_file_undetected_count": int(last_analysis.get("undetected", 0)),
+                "vt_file_name": str(attributes.get("meaningful_name") or ""),
+                "vt_file_type": str(attributes.get("type_tag") or ""),
             },
             queried_at=datetime.now(tz=UTC),
         )
