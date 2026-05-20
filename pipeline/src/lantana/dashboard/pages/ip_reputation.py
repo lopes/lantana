@@ -74,7 +74,6 @@ def render(selected_date: date) -> None:
         "greynoise_class",
         "greynoise_name",
         "vt_malicious",
-        "phishstats_urls",
         "shodan_ports",
         "shodan_os",
         "shodan_vulns",

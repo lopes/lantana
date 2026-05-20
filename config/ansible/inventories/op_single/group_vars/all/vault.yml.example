@@ -25,19 +25,15 @@ vault_apikey_virustotal: "REPLACE_ME"
 vault_apikey_shodan:     "REPLACE_ME"
 vault_apikey_abuseipdb:  "REPLACE_ME"
 
-# GreyNoise and PhishStats have public unauthenticated endpoints. Three modes:
+# GreyNoise has a public unauthenticated Community endpoint. Three modes:
 #
 #     vault_apikey_greynoise: "<key>"  -> community endpoint, key in header
 #                                          (higher rate limit; same response)
 #     vault_apikey_greynoise: ""       -> community endpoint, anonymous
 #                                          (50 searches per 7 days)
 #     line omitted entirely            -> provider disabled, runner skips it
-#
-# PhishStats has no auth at all — empty string enables it; any value is
-# silently ignored. Omit to disable.
 
 vault_apikey_greynoise:  ""
-vault_apikey_phishstats: ""
 
 
 # --- GeoIP enrichment (MaxMind GeoLite2) ----------------------------------

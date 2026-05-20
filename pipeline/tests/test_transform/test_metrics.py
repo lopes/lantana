@@ -826,7 +826,6 @@ class TestEnhancedRiskScoring:
             "shodan_org": "Hetzner",
             "vt_malicious_count": 5,
             "vt_ip_reputation": -10,
-            "phishstats_url_count": 3,
         }
         df = pl.DataFrame([base])
         result = compute_ip_reputation(df)
@@ -836,4 +835,3 @@ class TestEnhancedRiskScoring:
         assert row["greynoise_name"] == "Mirai"
         assert row["shodan_ports"] == "22,80,443"
         assert row["vt_malicious"] == 5
-        assert row["phishstats_urls"] == 3

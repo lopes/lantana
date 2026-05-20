@@ -51,7 +51,7 @@ Each deployment is an Ansible inventory under `config/ansible/inventories/op_*`.
 - `main.yml` - platform mode, system users, connection settings
 - `network.yml` - IP addressing, interface assignments
 - `narrative.yml` - deception story, fake host profiles, service versions
-- `vault.yml` - encrypted API keys (VirusTotal, AbuseIPDB, GreyNoise, Shodan, PhishStats, Discord)
+- `vault.yml` - encrypted API keys (VirusTotal, AbuseIPDB, GreyNoise, Shodan, Discord)
 
 ### Role Hierarchy
 
@@ -191,11 +191,11 @@ The repository is **public on GitHub** (`github.com/lopes/lantana`). Anything co
 Six integrations across two stages, all keyed in the vault (`vault_apikey_<service>` / `vault_webhook_<service>`):
 
 - **Wire-speed (Vector, local MMDB):** MaxMind GeoLite2 (City + ASN). Foundational integration — every event passes through it before reaching bronze. Ansible downloads the MMDBs at deploy time and refreshes monthly via cron. License key required for download; lookup is offline.
-- **Daily batch (Python pipeline, HTTP APIs):** AbuseIPDB, Shodan, VirusTotal (required keys); GreyNoise, PhishStats (free public endpoints, optional keys).
+- **Daily batch (Python pipeline, HTTP APIs):** AbuseIPDB, Shodan, VirusTotal (required keys); GreyNoise (free Community endpoint, optional key).
 
 Validation tooling:
 
 - `scripts/probe-mmdb.py` — full-stack MaxMind validation. Reads `vault_apikey_maxmind` from `--secrets <secrets.json>`, downloads the City + ASN tarballs if not already on disk, queries them, and prints raw + Vector-VRL-normalized output. Auto-falls back to `/tmp/lantana/mmdb` when the collector path isn't present.
 - `scripts/probe-enrichment.py` — hits each HTTP provider's live API; prints raw upstream response + normalized `EnrichmentResult.data`.
 
-See [docs/integrations.md](docs/integrations.md) for endpoints, free-tier limits, field-extraction tables, enablement rules, and the history of upstream incidents (e.g. PhishStats's 2026-05 host migration).
+See [docs/integrations.md](docs/integrations.md) for endpoints, free-tier limits, field-extraction tables, and enablement rules.

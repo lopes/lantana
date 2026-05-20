@@ -326,7 +326,7 @@ By day 3, the enrichment cache should have meaningful entries from the API provi
 sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "
 SELECT provider, COUNT(*) as entries FROM cache GROUP BY provider;
 "
-# Expected: abuseipdb, greynoise, shodan, virustotal, phishstats
+# Expected: abuseipdb, greynoise, shodan, virustotal
 # Counts depend on API key availability and rate limits
 ```
 
@@ -338,7 +338,7 @@ from datetime import date, timedelta
 from lantana.common.datalake import read_silver_partition
 d = date.today() - timedelta(days=1)
 df = read_silver_partition(d).collect()
-enrichment_cols = [c for c in df.columns if any(c.startswith(p) for p in ['abuseipdb_', 'greynoise_', 'shodan_', 'virustotal_', 'phishstats_', 'geo.'])]
+enrichment_cols = [c for c in df.columns if any(c.startswith(p) for p in ['abuseipdb_', 'greynoise_', 'shodan_', 'virustotal_', 'vt_', 'geo.'])]
 print('Enrichment columns present:', enrichment_cols)
 for col in enrichment_cols:
     non_null = df.get_column(col).drop_nulls().len()

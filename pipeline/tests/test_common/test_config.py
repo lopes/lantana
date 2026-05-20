@@ -24,7 +24,6 @@ def secrets_file(tmp_path: Path) -> Path:
         "vault_apikey_shodan":     "shodan-key-456",
         "vault_apikey_abuseipdb":  "abuse-key-789",
         "vault_apikey_greynoise":  "gn-key-012",
-        "vault_apikey_phishstats": "ps-key-345",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -75,7 +74,6 @@ def test_load_secrets_with_discord_webhook(tmp_path: Path) -> None:
         "vault_apikey_shodan":     "sh",
         "vault_apikey_abuseipdb":  "ab",
         "vault_apikey_greynoise":  "gn",
-        "vault_apikey_phishstats": "ps",
         "vault_webhook_discord":   "https://discord.com/api/webhooks/123/abc",
     }
     path = tmp_path / "secrets.json"
@@ -93,7 +91,7 @@ def test_load_secrets_missing_key(tmp_path: Path) -> None:
 
 
 def test_load_secrets_greynoise_optional(tmp_path: Path) -> None:
-    """greynoise/phishstats are optional and default to None when omitted."""
+    """greynoise is optional and defaults to None when omitted."""
     data = {
         "vault_apikey_virustotal": "vt",
         "vault_apikey_shodan":     "sh",
@@ -103,7 +101,6 @@ def test_load_secrets_greynoise_optional(tmp_path: Path) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
     config = load_secrets(path)
     assert config.greynoise is None
-    assert config.phishstats is None
 
 
 def test_load_secrets_greynoise_null_means_disabled(tmp_path: Path) -> None:
@@ -113,13 +110,11 @@ def test_load_secrets_greynoise_null_means_disabled(tmp_path: Path) -> None:
         "vault_apikey_shodan":     "sh",
         "vault_apikey_abuseipdb":  "ab",
         "vault_apikey_greynoise":  None,
-        "vault_apikey_phishstats": None,
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     config = load_secrets(path)
     assert config.greynoise is None
-    assert config.phishstats is None
 
 
 def test_load_secrets_empty_string_means_anonymous(tmp_path: Path) -> None:
@@ -129,13 +124,30 @@ def test_load_secrets_empty_string_means_anonymous(tmp_path: Path) -> None:
         "vault_apikey_shodan":     "sh",
         "vault_apikey_abuseipdb":  "ab",
         "vault_apikey_greynoise":  "",
-        "vault_apikey_phishstats": "",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     config = load_secrets(path)
     assert config.greynoise == ""
-    assert config.phishstats == ""
+
+
+def test_load_secrets_drops_removed_provider_keys(tmp_path: Path) -> None:
+    """Vault keys for removed providers (PhishStats) are silently stripped.
+
+    Operator vault files written when PhishStats existed must still parse.
+    """
+    data = {
+        "vault_apikey_virustotal": "vt",
+        "vault_apikey_shodan":     "sh",
+        "vault_apikey_abuseipdb":  "ab",
+        "vault_apikey_phishstats": "leftover-key",
+    }
+    path = tmp_path / "secrets.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    config = load_secrets(path)
+    # The PhishStats key was dropped, the rest parsed fine.
+    assert config.virustotal == "vt"
+    assert not hasattr(config, "phishstats")
 
 
 def test_load_secrets_accepts_short_field_names(tmp_path: Path) -> None:
@@ -187,7 +199,6 @@ def test_load_secrets_tolerant_translates_legacy_keys(tmp_path: Path) -> None:
         "vault_shodan_api_key":      "sh",
         "vault_abuseipdb_api_key":   "ab",
         "vault_greynoise_api_key":   "gn",
-        "vault_phishstats_api_key":  "ps",
         "vault_maxmind_license_key": "mm",
         "vault_discord_webhook_url": "https://discord.com/api/webhooks/x/y",
     }

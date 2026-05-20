@@ -22,10 +22,17 @@ _LEGACY_KEYS: dict[str, str] = {
     "vault_shodan_api_key":      "vault_apikey_shodan",
     "vault_abuseipdb_api_key":   "vault_apikey_abuseipdb",
     "vault_greynoise_api_key":   "vault_apikey_greynoise",
-    "vault_phishstats_api_key":  "vault_apikey_phishstats",
     "vault_maxmind_license_key": "vault_apikey_maxmind",
     "vault_discord_webhook_url": "vault_webhook_discord",
 }
+
+# Keys silently dropped when loading a secrets.json — providers that used to
+# exist but have been removed from Lantana. Keeps existing vault files parsing
+# cleanly instead of failing Pydantic validation on a now-unknown field.
+_DROPPED_KEYS: frozenset[str] = frozenset({
+    "vault_apikey_phishstats",
+    "vault_phishstats_api_key",
+})
 
 
 class SecretsConfig(BaseModel):
@@ -36,10 +43,9 @@ class SecretsConfig(BaseModel):
     attributes use short names (``secrets.virustotal``, etc.) via Pydantic
     field aliases, so consumer code stays clean.
 
-    ``greynoise`` and ``phishstats`` are optional. A missing or null
-    entry disables the provider; an empty string keeps it enabled in
-    its unauthenticated mode (GreyNoise community endpoint, PhishStats
-    public API).
+    ``greynoise`` is optional. A missing or null entry disables the
+    provider; an empty string keeps it enabled in its unauthenticated
+    mode (GreyNoise community endpoint).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -48,7 +54,6 @@ class SecretsConfig(BaseModel):
     shodan:          str        = Field(alias="vault_apikey_shodan")
     abuseipdb:       str        = Field(alias="vault_apikey_abuseipdb")
     greynoise:       str | None = Field(alias="vault_apikey_greynoise",  default=None)
-    phishstats:      str | None = Field(alias="vault_apikey_phishstats", default=None)
     maxmind:         str | None = Field(alias="vault_apikey_maxmind",    default=None)
     discord_webhook: str        = Field(alias="vault_webhook_discord",   default="")
 
@@ -97,10 +102,21 @@ class ReportingConfig(BaseModel):
     redact: RedactConfig
 
 
+def _strip_dropped_keys(raw: dict[str, Any]) -> dict[str, Any]:
+    """Remove vault keys for providers that no longer exist in Lantana."""
+    return {k: v for k, v in raw.items() if k not in _DROPPED_KEYS}
+
+
 def load_secrets(path: Path = DEFAULT_SECRETS_PATH) -> SecretsConfig:
-    """Load and validate secrets.json. Strict — expects canonical keys."""
+    """Load and validate secrets.json. Strict — expects canonical keys.
+
+    Vault keys for providers that have been removed (see _DROPPED_KEYS)
+    are tolerated for backwards compat — they're stripped silently rather
+    than raising a Pydantic validation error. Operator templates can
+    omit them at their leisure.
+    """
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return SecretsConfig.model_validate(raw)
+    return SecretsConfig.model_validate(_strip_dropped_keys(raw))
 
 
 def _translate_legacy_keys(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -130,6 +146,7 @@ def load_secrets_tolerant(path: Path) -> tuple[SecretsConfig, bool]:
     if not isinstance(raw, dict):
         raise ValueError(f"expected a JSON object at {path}, got {type(raw).__name__}")
     translated, did_translate = _translate_legacy_keys(raw)
+    translated = _strip_dropped_keys(translated)
     return SecretsConfig.model_validate(translated), did_translate
 
 

@@ -80,7 +80,6 @@ For each dataset (cowrie, suricata, nftables, dionaea):
    - GreyNoise (classification, noise/riot status, last seen, label) — IPs — see [Provider auth modes](#provider-auth-modes)
    - Shodan (open ports, services, vulns) — IPs
    - VirusTotal — IPs (reputation) and SHA256 hashes (file analysis, into `vt_file_*` columns)
-   - PhishStats (phishing URL count per IP) — IPs — public, no auth
 5. **Cache results** in SQLite keyed by `(provider, ioc_type, ioc_value)` with a 7-day TTL. Cache hits short-circuit the HTTP call entirely.
 6. **Record errors** — `_classify_http_error` maps statuses to actionable labels (`auth_failed`, `rate_limit`, `not_found`, `server_error`, `network_error`, `timeout`) and writes an NDJSON summary to `enrichment_errors.json`. `auth_failed` is logged at error level (operators must rotate the broken vault key); `not_found` is logged at debug (normal "IP/hash not in DB").
 7. **Merge enrichment** per dataset: IP enrichments joined on `src_ip`; hash enrichments joined on `shasum` for cowrie (see [§3.1.1](#311-how-enrichment-merges-into-events))
@@ -111,12 +110,12 @@ per provider, per IP:
     })
 
 merged enrichment DataFrame (one row per IP, all providers' fields):
-    src_ip      | abuseipdb_* | shodan_* | vt_* | greynoise_* | phishstats_*
-    1.2.3.4     | filled      | filled   | 404→0 | 404→unknown | filled
-    5.6.7.8     | error→null  | filled   | filled | filled      | filled
+    src_ip      | abuseipdb_* | shodan_* | vt_* | greynoise_*
+    1.2.3.4     | filled      | filled   | 404→0 | 404→unknown
+    5.6.7.8     | error→null  | filled   | filled | filled
 
 left-joined back onto bronze by src_ip → silver Parquet row:
-    { src_ip, timestamp, eventid, ..., geo.*, abuseipdb_*, shodan_*, vt_*, greynoise_*, phishstats_* }
+    { src_ip, timestamp, eventid, ..., geo.*, abuseipdb_*, shodan_*, vt_*, greynoise_* }
 ```
 
 The runner code lives in [`enrichment/runner.py`](../pipeline/src/lantana/enrichment/runner.py); IOC extraction helpers in [`enrichment/ioc.py`](../pipeline/src/lantana/enrichment/ioc.py):
@@ -165,7 +164,7 @@ The pipeline normalizes bronze events to [OCSF v1.3.0](https://schema.ocsf.io/1.
 1. **Class dispatch** — Each dataset (Cowrie, Suricata, nftables, Dionaea) has a normalizer function that inspects event fields (e.g., `eventid`, `event_type`, `credential_username`) to determine the OCSF event class: Authentication (3002), Process Activity (1007), File Activity (1001), Detection Finding (2004), or Network Activity (4001 — the fallback).
 2. **Field mapping** — Raw fields are renamed to OCSF equivalents (e.g., `src_ip` -> `src_endpoint_ip`, `timestamp` -> `time`). Some fields are conditionally mapped based on event type (e.g., `password` only populated for login events). Intel-valuable fields (passwords, protocols, alert metadata) are never dropped during mapping.
 3. **OCSF metadata** — Generated columns (`class_uid`, `category_uid`, `severity_id`, `activity_id`, `type_uid`, `status_id`) are added based on the dispatched class and event context.
-4. **Passthrough** — Vector tags (`dataset`, `server`, `operation`), GeoIP fields (`geo.*`), and API enrichment columns (`abuseipdb_*`, `greynoise_*`, `shodan_*`, `vt_*`, `phishstats_*`) pass through untouched.
+4. **Passthrough** — Vector tags (`dataset`, `server`, `operation`), GeoIP fields (`geo.*`), and API enrichment columns (`abuseipdb_*`, `greynoise_*`, `shodan_*`, `vt_*`) pass through untouched.
 
 The OCSF schema contract is defined in [`models/ocsf.py`](../pipeline/src/lantana/models/ocsf.py). Per-dataset normalization logic (class dispatch, field mapping, and metadata generation) is in [`models/normalize.py`](../pipeline/src/lantana/models/normalize.py).
 
@@ -256,7 +255,6 @@ Enrichment providers, their endpoints, free-tier limits, extracted fields, and l
 | Daily batch                     | Shodan           | `key=` query param, required          | ~100 queries/month (Membership) |
 | Daily batch                     | VirusTotal       | `x-apikey:` header, required          | 4 req/min, 500/day |
 | Daily batch                     | GreyNoise        | `key:` header, **optional**           | 50 searches per 7 days (unauthenticated) |
-| Daily batch                     | PhishStats       | none                                  | 20 req/min |
 
 See [`integrations.md`](integrations.md) for endpoint URLs, per-provider field extraction, the probe scripts (`probe-enrichment.py` for HTTP providers, `probe-mmdb.py` for MaxMind), and historical incidents.
 
@@ -270,9 +268,8 @@ Not every enrichment provider requires an API key. The vault file controls per-p
 | Shodan | Yes | Same as above | Same as above | Authenticated |
 | VirusTotal | Yes | Same as above | Same as above | Authenticated |
 | **GreyNoise** | **No (community)** | **Provider skipped** | **Anonymous community queries** | **Community queries with `key` header (higher rate limit)** |
-| **PhishStats** | **No** | **Provider skipped** | **Queries with no auth** | **Queries with no auth (key value silently ignored)** |
 
-In short: GreyNoise and PhishStats can run on the free public endpoints with zero credentials, and the vault still controls whether each one runs at all.
+In short: GreyNoise can run on the free public endpoint with zero credentials, and the vault still controls whether it runs at all.
 
 ### GreyNoise
 
@@ -282,13 +279,7 @@ Uses the [GreyNoise Community API](https://docs.greynoise.io/docs/using-the-grey
 - HTTP 404 responses are treated as "no info" (the IP is not in the dataset) — silver receives a row with `greynoise_classification = "unknown"` rather than an enrichment error.
 - Setting `vault_apikey_greynoise: ""` opts in to anonymous community queries. Setting it to a real key raises the rate limit and adds the `key` header; the response shape is identical.
 
-### PhishStats
-
-Uses the [PhishStats public API](https://phishstats.info/api-docs) at `https://api.phishstats.info/api/phishing` (the host migrated off the legacy `phishstats.info:2096` origin in 2026-05 — see the incident note in [`integrations.md`](integrations.md#phishstats-endpoint-migration-2026-05)). No authentication, no key header. Rate limit: 20 requests per minute.
-
-- Setting `vault_apikey_phishstats: ""` enables the provider on the public endpoint. Setting it to a value works too, but the value is dropped before the request is built — PhishStats has no auth header to attach it to.
-
-### How to disable either provider
+### How to disable GreyNoise
 
 Omit the vault variable entirely. The Ansible template at [`profile_collector/templates/secrets.json.j2`](../config/ansible/roles/profile_collector/templates/secrets.json.j2) emits JSON `null` when the variable is undefined, and the runner skips any provider whose secret is `null`. A log line `provider_disabled provider=<name> reason=not_configured` is emitted so the operator can confirm the skip.
 
@@ -302,7 +293,6 @@ Omit the vault variable entirely. The Ansible template at [`profile_collector/te
   "vault_apikey_shodan":      "...",
   "vault_apikey_abuseipdb":   "...",
   "vault_apikey_greynoise":   "",
-  "vault_apikey_phishstats":  "",
   "vault_webhook_discord":    "https://..."
 }
 ```
@@ -340,7 +330,7 @@ pipeline/
 │   │   └── schema.py                 # Bronze Polars schema definitions
 │   ├── enrichment/
 │   │   ├── runner.py                 # Main enrichment orchestrator
-│   │   └── providers/                # AbuseIPDB, GreyNoise, PhishStats, Shodan, VirusTotal
+│   │   └── providers/                # AbuseIPDB, GreyNoise, Shodan, VirusTotal
 │   ├── transform/
 │   │   ├── runner.py                 # Gold aggregation orchestrator
 │   │   └── metrics.py                # 7 metric functions (summary, reputation, progression, multiday, clusters, geographic, findings)

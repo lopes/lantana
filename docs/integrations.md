@@ -1,9 +1,9 @@
 # Lantana: Third-Party Integrations
 
-Lantana enriches honeypot telemetry with external data from six third-party integrations across two stages:
+Lantana enriches honeypot telemetry with external data from five third-party integrations across two stages:
 
 1. **Wire-speed (Vector, local MMDB) — MaxMind GeoLite2.** The foundational integration. Every event passes through it the moment Vector ingests it, before reaching bronze. Geo + ASN attribution is non-negotiable: the gold geographic_summary, the dashboard map, and the STIX bundle's `country` indicators all assume this data is present.
-2. **Daily batch (Python pipeline, HTTP APIs) — AbuseIPDB, Shodan, VirusTotal, GreyNoise, PhishStats.** Run once per day during bronze → silver, only against unique attacker IPs that landed events the previous day. Adds reputation, exposed services, malware history, phishing context, and scanner classification on top of what MaxMind already produced.
+2. **Daily batch (Python pipeline, HTTP APIs) — AbuseIPDB, Shodan, VirusTotal, GreyNoise.** Run once per day during bronze → silver, only against unique attacker IPs that landed events the previous day. Adds reputation, exposed services, malware history, and scanner classification on top of what MaxMind already produced.
 
 This document is the single reference for how each integration works — endpoints/files, authentication, rate limits, docs links, and how to verify them end-to-end.
 
@@ -27,9 +27,8 @@ For where enrichment fits in the pipeline (bronze → silver, OCSF normalization
 | [Shodan](#shodan)        | `https://api.shodan.io/shodan/host/{ip}`                              | `key=` query param, required   | ~100 queries/month (Membership)          | [developer.shodan.io/api](https://developer.shodan.io/api) |
 | [VirusTotal](#virustotal)| `https://www.virustotal.com/api/v3/ip_addresses/{ip}` · `/files/{sha256}` | `x-apikey:` header, required   | 4 req/min, 500 req/day                   | [docs.virustotal.com](https://docs.virustotal.com/reference/overview) |
 | [GreyNoise](#greynoise)  | `https://api.greynoise.io/v3/community/{ip}`                          | `key:` header, **optional**    | 50 searches per 7 days (unauthenticated) | [Community API](https://docs.greynoise.io/docs/using-the-greynoise-community-api) · [Full v3 API](https://docs.greynoise.io/docs/using-the-greynoise-api) |
-| [PhishStats](#phishstats)| `https://api.phishstats.info/api/phishing?_where=(ip,eq,{ip})`        | none                           | 20 req/min                               | [phishstats.info/api-docs](https://phishstats.info/api-docs) |
 
-All five HTTP providers accept an IPv4 / IPv6 address. Only VirusTotal also accepts a SHA-256 file hash (used for cowrie/dionaea downloads). MaxMind accepts only IPs.
+All four HTTP providers accept an IPv4 / IPv6 address. Only VirusTotal also accepts a SHA-256 file hash (used for cowrie downloads). MaxMind accepts only IPs.
 
 ---
 
@@ -156,36 +155,19 @@ Internet background-noise classifier — identifies IPs that scan the entire int
 
 **HTTP 404 behaviour.** A 404 from this endpoint means "IP not in dataset," not an error. The provider returns a normalized result with `greynoise_classification: "unknown"` and all booleans false. Don't treat 404 as a pipeline failure.
 
-### PhishStats
-
-Free phishing-URL feed. Returns recent phishing URLs hosted on a given IP, with scores and metadata.
-
-- **Endpoint:** `GET https://api.phishstats.info/api/phishing?_where=(ip,eq,{ip})`
-- **Auth:** none (any `api_key` value is accepted but silently dropped)
-- **Provider file:** [`phishstats.py`](../pipeline/src/lantana/enrichment/providers/phishstats.py)
-- **Free-tier limit:** 20 requests per minute
-- **Docs:** https://phishstats.info/api-docs
-
-**Fields we extract into silver:**
-
-| Silver column | Source | Notes |
-|---|---|---|
-| `phishstats_url_count` | `len(response)` | Number of phishing URLs reported for this IP |
-| `phishstats_last_seen` | `max(entry.date)` | Most recent report timestamp |
-
 ---
 
 ## 3. Enablement and Vault Layout
 
 The vault key `vault_apikey_<service>` controls per-provider behaviour. The rendered `secrets.json` on the collector uses the same keys verbatim, including `vault_apikey_maxmind` — see [Vault ↔ secrets.json nomenclature](pipeline.md#vault--secretsjson-nomenclature). The HTTP daily-batch providers consume their fields from `SecretsConfig` at runtime; MaxMind's field is consumed only by the probe script (`probe-mmdb.py`) and ignored by the Python pipeline. Ansible reads `vault_apikey_maxmind` straight from the vault at deploy time to download the MMDBs.
 
-| Vault line state | AbuseIPDB / Shodan / VirusTotal | GreyNoise | PhishStats | MaxMind |
-|---|---|---|---|---|
-| Line omitted          | provider runs with empty key → 401 (misconfiguration) | **provider skipped** (`provider_disabled` log) | **provider skipped** (`provider_disabled` log) | **MMDB download skipped at deploy** — Vector starts without `.geo.*` enrichment |
-| Line `""` (empty)     | same as above                                          | community endpoint, anonymous (50/week)        | public endpoint, no auth                       | same as missing (Ansible `when:` guard fails the truthiness check) |
-| Line `"<key>"`        | authenticated                                          | community endpoint, key sent in header (higher rate limit) | public endpoint, key silently dropped | MMDBs downloaded + refreshed monthly |
+| Vault line state | AbuseIPDB / Shodan / VirusTotal | GreyNoise | MaxMind |
+|---|---|---|---|
+| Line omitted          | provider runs with empty key → 401 (misconfiguration) | **provider skipped** (`provider_disabled` log) | **MMDB download skipped at deploy** — Vector starts without `.geo.*` enrichment |
+| Line `""` (empty)     | same as above                                          | community endpoint, anonymous (50/week)        | same as missing (Ansible `when:` guard fails the truthiness check) |
+| Line `"<key>"`        | authenticated                                          | community endpoint, key sent in header (higher rate limit) | MMDBs downloaded + refreshed monthly |
 
-The only way to disable GreyNoise or PhishStats is to **omit the vault line entirely** — both have working unauthenticated modes that take over when the key is empty. MaxMind has no unauthenticated mode for download, so omitting the key disables it.
+The only way to disable GreyNoise is to **omit the vault line entirely** — its unauthenticated community mode takes over when the key is empty. MaxMind has no unauthenticated mode for download, so omitting the key disables it.
 
 ---
 
@@ -193,7 +175,7 @@ The only way to disable GreyNoise or PhishStats is to **omit the vault line enti
 
 Two probe scripts mirror the two enrichment paths:
 
-- [`scripts/probe-enrichment.py`](../scripts/probe-enrichment.py) — HTTP API providers (AbuseIPDB, Shodan, VirusTotal, GreyNoise, PhishStats).
+- [`scripts/probe-enrichment.py`](../scripts/probe-enrichment.py) — HTTP API providers (AbuseIPDB, Shodan, VirusTotal, GreyNoise).
 - [`scripts/probe-mmdb.py`](../scripts/probe-mmdb.py) — local MaxMind MMDB files (GeoLite2 City + ASN).
 
 Both produce raw + normalized output side by side so you can compare against the provider's UI (HTTP) or against another lookup tool (MMDB). The example IPs throughout this section use RFC 5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`); swap them for an IP your providers will actually have records on when you run the probe.
@@ -207,13 +189,13 @@ The script hits each provider's live API with a real payload and prints both the
 ```bash
 cd pipeline
 
-# All five providers against one IP
+# All four providers against one IP
 uv run python ../scripts/probe-enrichment.py --ip 198.51.100.42
 
 # Specific providers, multiple payloads
 uv run python ../scripts/probe-enrichment.py \
   --ip 198.51.100.7 --ip 203.0.113.7 \
-  --provider greynoise,phishstats
+  --provider greynoise,virustotal
 
 # Hash against VirusTotal
 uv run python ../scripts/probe-enrichment.py \
@@ -326,7 +308,7 @@ Run it once when you generate or rotate a key — you'll find any operational pr
 
 ### What to compare
 
-For HTTP providers, open the same payload in the provider's web UI and confirm (1) the raw response matches what the UI shows and (2) the normalized block contains the fields documented in [§2](#2-per-provider-detail). Discrepancies usually mean either (a) the provider changed its response shape and field extraction needs updating, or (b) the endpoint moved (see PhishStats below).
+For HTTP providers, open the same payload in the provider's web UI and confirm (1) the raw response matches what the UI shows and (2) the normalized block contains the fields documented in [§2](#2-per-provider-detail). Discrepancies usually mean either (a) the provider changed its response shape and field extraction needs updating, or (b) the endpoint moved.
 
 For MaxMind, cross-check against `mmdblookup --file <path> --ip <ip>` (the `mmdb-bin` package) or a reputable third-party tool like ipinfo.io's web UI. Any mismatch usually means the MMDB is stale — run the deploy task again or wait for the monthly cron.
 
@@ -334,11 +316,9 @@ For MaxMind, cross-check against `mmdblookup --file <path> --ip <ip>` (the `mmdb
 
 ## 5. Historical Incidents
 
-### PhishStats endpoint migration (2026-05)
+### PhishStats dropped (2026-05)
 
-PhishStats retired its `phishstats.info:2096` origin and moved the public API to `api.phishstats.info` on standard port 443. Symptom: Cloudflare HTTP 522 "Connection timed out" on every request, indefinitely. Fixed in [`phishstats.py`](../pipeline/src/lantana/enrichment/providers/phishstats.py) by updating `_BASE_URL`.
-
-If you see 522 against PhishStats again, check the docs URL above — the host may have moved again.
+PhishStats was an unauthenticated phishing-URL feed. Its public endpoint moved off `phishstats.info:2096` to `api.phishstats.info` in early 2026-05 (Cloudflare HTTP 522 symptoms), and then in op_alpha's first live enrichment run on 2026-05-20 it began returning HTTP 401/403 on every request — apparently introducing a previously-undocumented auth requirement. Rather than maintain a fragile provider whose intel value was already marginal (most attacker IPs return zero phishing URLs), Lantana dropped PhishStats support entirely. Silver no longer carries `phishstats_*` columns; gold's risk score no longer includes a phishing-URL signal.
 
 ### Workstation TLS verification failures
 

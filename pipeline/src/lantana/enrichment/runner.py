@@ -45,7 +45,6 @@ from lantana.enrichment.ioc import (
 from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.base import EnrichmentError, EnrichmentResult
 from lantana.enrichment.providers.greynoise import GreyNoiseProvider
-from lantana.enrichment.providers.phishstats import PhishStatsProvider
 from lantana.enrichment.providers.shodan import ShodanProvider
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
 from lantana.models.normalize import normalize_dataset
@@ -238,7 +237,7 @@ def _write_error_summary(
 
 
 _ProviderType = (
-    AbuseIPDBProvider | GreyNoiseProvider | PhishStatsProvider | ShodanProvider | VirusTotalProvider
+    AbuseIPDBProvider | GreyNoiseProvider | ShodanProvider | VirusTotalProvider
 )
 
 
@@ -375,8 +374,8 @@ async def run_enrichment(
     cache = _init_cache(cache_db_path)
     errors: ErrorAccumulator = {}
 
-    # GreyNoise / PhishStats are skipped when the vault key is absent (None);
-    # empty strings keep them enabled in their unauthenticated modes.
+    # GreyNoise is skipped when the vault key is absent (None); an empty
+    # string keeps it enabled in its unauthenticated Community-API mode.
     providers: dict[str, _ProviderType] = {
         "abuseipdb": AbuseIPDBProvider(secrets.abuseipdb),
         "shodan": ShodanProvider(secrets.shodan),
@@ -386,10 +385,6 @@ async def run_enrichment(
         providers["greynoise"] = GreyNoiseProvider(secrets.greynoise)
     else:
         logger.info("provider_disabled", provider="greynoise", reason="not_configured")
-    if secrets.phishstats is not None:
-        providers["phishstats"] = PhishStatsProvider(secrets.phishstats)
-    else:
-        logger.info("provider_disabled", provider="phishstats", reason="not_configured")
 
     try:
         # Phase A: load all bronze, extract IOCs globally

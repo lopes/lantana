@@ -269,9 +269,8 @@ vault_apikey_virustotal: "..."
 vault_apikey_shodan:     "..."
 vault_apikey_abuseipdb:  "..."
 
-# Optional — public endpoints exist (see auth modes below)
+# Optional — public Community endpoint exists (see auth modes below)
 vault_apikey_greynoise:  ""
-vault_apikey_phishstats: ""
 
 # GeoIP enrichment (MaxMind GeoLite2 City + ASN)
 # Free signup: https://www.maxmind.com/en/geolite2/signup
@@ -290,16 +289,14 @@ vault_webhook_discord:   "https://discord.com/api/webhooks/..."
 |---|---|---|---|
 | `virustotal` / `shodan` / `abuseipdb` | misconfiguration — provider runs with empty key, gets 401 | same | authenticated |
 | `greynoise` | provider skipped (`provider_disabled` log) | community endpoint, anonymous (50/week) | community endpoint, key in header (higher rate limit) |
-| `phishstats` | provider skipped (`provider_disabled` log) | public endpoint, no auth | public endpoint, key value silently ignored |
 | `maxmind` | MMDB download skipped at deploy — Vector emits no `.geo.*` fields | same as missing | MMDBs downloaded + refreshed monthly |
 | `discord` | reports generated locally only | same | webhook delivers daily brief |
 
-So the only way to disable GreyNoise or PhishStats is to **omit the line entirely** — empty string keeps them enabled in unauthenticated mode.
+So the only way to disable GreyNoise is to **omit the line entirely** — empty string keeps it enabled in unauthenticated community mode.
 
 ### References
 
 - GreyNoise Community API: https://docs.greynoise.io/docs/using-the-greynoise-community-api (50 searches per 7 days)
-- PhishStats public API: https://phishstats.info/api-docs (20 requests per minute)
 - Endpoints, free-tier limits, extracted fields, and the live-probe workflow: [`integrations.md`](integrations.md)
 - Auth-mode matrix (per-provider behaviour by vault state): [Provider auth modes](pipeline.md#72-provider-auth-modes)
 

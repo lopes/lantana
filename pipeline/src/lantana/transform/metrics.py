@@ -115,7 +115,6 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     - +min(auth_attempts, 100) * 0.1 (max 10)
     - +10 if vt_malicious_count >= 3
     - +10 if shodan_vulns present
-    - +10 if phishstats_url_count > 0
     - +5  if abuseipdb_total_reports >= 10
     """
     if silver.is_empty():
@@ -157,7 +156,6 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
         ("shodan_org", "shodan_org"),
         ("vt_malicious_count", "vt_malicious"),
         ("vt_ip_reputation", "vt_reputation"),
-        ("phishstats_url_count", "phishstats_urls"),
     ]
     enrichment_aggs = [_optional_first(silver, col, alias) for col, alias in optional]
 
@@ -177,7 +175,6 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
             + pl.when(
                 pl.col("shodan_vulns").is_not_null() & (pl.col("shodan_vulns") != "")
             ).then(10.0).otherwise(0.0)
-            + pl.when(pl.col("phishstats_urls").fill_null(0) > 0).then(10.0).otherwise(0.0)
             + pl.when(
                 pl.col("abuseipdb_reports").fill_null(0) >= 10
             ).then(5.0).otherwise(0.0)

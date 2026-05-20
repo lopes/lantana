@@ -189,7 +189,7 @@ ssh -o PubkeyAuthentication=no -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
 
 ## Third-Party Integrations
 
-Lantana's enrichment depends on five HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise, PhishStats) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](pipeline.md#31-bronze-to-silver-daily-enrichment).
+Lantana's enrichment depends on four HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](pipeline.md#31-bronze-to-silver-daily-enrichment).
 
 ### Probe scripts
 
@@ -212,7 +212,6 @@ The enrichment runner treats a few HTTP responses as **not errors** because they
 | `404` | Shodan    | IP was never scanned → row gets empty `shodan_*` fields. Common for the same reason. |
 | `404` | VirusTotal (IP) | Never indexed → row gets zero counts. Less common but possible. |
 | `404` | VirusTotal (hash) | Fresh malware not yet seen by any AV → zero counts. Common for first-day captures. |
-| Empty `[]` | PhishStats | No phishing URLs known for this IP → `phishstats_url_count: 0`. The default state. |
 | `200` with `abuseConfidenceScore: 0` | AbuseIPDB | No abuse reports → row populated with clean fields. The default state. |
 
 So "missing fields" in silver Parquet is the **normal** state for the vast majority of attacker IPs. It only indicates a problem when columns are missing for ALL rows — that suggests provider misconfiguration.

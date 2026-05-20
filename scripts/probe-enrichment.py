@@ -6,13 +6,13 @@ the raw HTTP response alongside the normalized EnrichmentResult.data, so the
 operator can verify against each provider's web UI / docs.
 
 Provider/input matrix:
-    --ip    routes to: abuseipdb, shodan, virustotal, greynoise, phishstats
+    --ip    routes to: abuseipdb, shodan, virustotal, greynoise
     --hash  routes to: virustotal only
 
 Examples (all invoked from the pipeline/ directory):
     uv run python ../scripts/probe-enrichment.py --ip 212.115.85.236
     uv run python ../scripts/probe-enrichment.py --ip 1.2.3.4 \\
-        --provider greynoise,phishstats
+        --provider greynoise
     uv run python ../scripts/probe-enrichment.py --hash 0a1b2c... \\
         --provider virustotal
     uv run python ../scripts/probe-enrichment.py --ip 1.2.3.4 \\
@@ -49,16 +49,15 @@ import tenacity
 from lantana.common.config import SecretsConfig, load_secrets_tolerant
 from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.greynoise import GreyNoiseProvider
-from lantana.enrichment.providers.phishstats import PhishStatsProvider
 from lantana.enrichment.providers.shodan import ShodanProvider
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
 
 if TYPE_CHECKING:
     from lantana.enrichment.providers.base import EnrichmentResult
 
-IP_PROVIDERS = ("abuseipdb", "shodan", "virustotal", "greynoise", "phishstats")
+IP_PROVIDERS = ("abuseipdb", "shodan", "virustotal", "greynoise")
 HASH_PROVIDERS = ("virustotal",)
-ALL_PROVIDERS = ("abuseipdb", "shodan", "virustotal", "greynoise", "phishstats")
+ALL_PROVIDERS = ("abuseipdb", "shodan", "virustotal", "greynoise")
 
 
 def _resolve_secrets_path(cli_path: str | None) -> Path:
@@ -98,10 +97,6 @@ def _build_provider(name: str, secrets: SecretsConfig) -> tuple[Any | None, str 
         if secrets.greynoise is None:
             return None, "secrets.greynoise is null"
         return GreyNoiseProvider(secrets.greynoise), None
-    if name == "phishstats":
-        if secrets.phishstats is None:
-            return None, "secrets.phishstats is null"
-        return PhishStatsProvider(secrets.phishstats), None
     raise ValueError(f"unknown provider: {name}")
 
 
