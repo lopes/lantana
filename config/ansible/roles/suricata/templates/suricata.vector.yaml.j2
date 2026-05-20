@@ -28,6 +28,11 @@ transforms:
       - tag_suricata
     condition:
       type: vrl
+      # Suricata sees both directions of every flow, so outbound packets from
+      # the honeypot itself show up with src_ip == the operation's WAN address.
+      # Those events are noise (the honeypot responding) and must not reach
+      # bronze, since silver would then have the WAN IP in src_endpoint_ip —
+      # the exact OPSEC leak the redaction layers exist to prevent.
       source: |-
         src = to_string(.src_ip) ?? ""
-        src != "" && !starts_with(src, "127.") && src != "::1" && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false)
+        src != "" && !starts_with(src, "127.") && src != "::1" && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}" && src != "{{ network.honeywall.wan.ipv6.split('/')[0] }}"

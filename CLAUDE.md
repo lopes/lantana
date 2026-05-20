@@ -159,10 +159,10 @@ The repository is **public on GitHub** (`github.com/lopes/lantana`). Anything co
 ### Layer 1: Vector telemetry (noise suppression)
 
 - Every honeypot Vector pipeline must include a `filter_<honeypot>` transform that drops events from non-attacker source IPs before forwarding to the collector
-- Dropped sources: loopback (`127.0.0.0/8`, `::1`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`)
-- This catches health check probes, inter-zone traffic, and operational noise at the earliest possible point
-- Pattern: use VRL `ip_cidr_contains!()` against the operation's network prefixes from inventory
-- **Every new honeypot role must replicate this filter** — see `cowrie.vector.yaml.j2` as the reference
+- Dropped sources: loopback (`127.0.0.0/8`, `::1`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`), and the honeypot's own WAN addresses (`network.honeywall.wan.ipv4`, `network.honeywall.wan.ipv6`)
+- This catches health check probes, inter-zone traffic, operational noise, AND outbound-response packets from the honeypot itself (Suricata sees both flow directions, so these would otherwise leak the WAN IP into `src_endpoint_ip` and trip the silver-layer leak validator)
+- Pattern: use non-aborting VRL `ip_cidr_contains()` + `?? false` for CIDR checks, exact-match `src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}"` for WAN addresses
+- **Every new honeypot role must replicate this filter** — see `suricata.vector.yaml.j2` as the reference (most complete)
 
 ### Layer 2: Silver datalake (pseudonymization)
 

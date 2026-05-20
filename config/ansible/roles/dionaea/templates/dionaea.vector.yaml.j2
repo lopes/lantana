@@ -53,4 +53,4 @@ transforms:
       source: |-
         src = to_string(.src_ip) ?? ""
         connection_type = to_string(.connection_type) ?? ""
-        connection_type == "accept" && src != "" && !starts_with(src, "127.") && src != "::1" && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false)
+        connection_type == "accept" && src != "" && !starts_with(src, "127.") && src != "::1" && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}" && src != "{{ network.honeywall.wan.ipv6.split('/')[0] }}"
