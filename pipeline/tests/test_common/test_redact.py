@@ -5,7 +5,12 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from lantana.common.redact import RedactionConfig, redact_infrastructure_ips, validate_no_leaks
+from lantana.common.redact import (
+    RedactionConfig,
+    drop_infrastructure_source_rows,
+    redact_infrastructure_ips,
+    validate_no_leaks,
+)
 
 
 @pytest.fixture()
@@ -120,3 +125,73 @@ def test_validate_no_leaks_ignores_non_ip_strings(redaction_config: RedactionCon
         }
     )
     assert validate_no_leaks(df, redaction_config) is True
+
+
+# --- drop_infrastructure_source_rows ---
+
+
+def test_drop_source_rows_filters_wan_origin(redaction_config: RedactionConfig) -> None:
+    """Suricata events where src_endpoint_ip is the honeypot WAN are dropped."""
+    df = pl.DataFrame({
+        "src_endpoint_ip": ["203.0.113.50", "172.31.99.129", "198.51.100.22"],
+        "dst_endpoint_ip": ["172.31.99.129", "203.0.113.50", "172.31.99.129"],
+        "event": ["scan", "outbound-response", "scan"],
+    })
+    result = drop_infrastructure_source_rows(df, redaction_config)
+    assert result.height == 2
+    assert "172.31.99.129" not in result.get_column("src_endpoint_ip").to_list()
+
+
+def test_drop_source_rows_handles_src_ip_pre_normalize(
+    redaction_config: RedactionConfig,
+) -> None:
+    """Works on bronze-shaped `src_ip` column too (before normalize rename)."""
+    df = pl.DataFrame({
+        "src_ip": ["203.0.113.50", "172.31.99.129"],
+        "event": ["scan", "outbound-response"],
+    })
+    result = drop_infrastructure_source_rows(df, redaction_config)
+    assert result.height == 1
+    assert result.get_column("src_ip").to_list() == ["203.0.113.50"]
+
+
+def test_drop_source_rows_noop_when_no_source_column(
+    redaction_config: RedactionConfig,
+) -> None:
+    """DataFrames without a recognised source column pass through unchanged."""
+    df = pl.DataFrame({"event": ["scan", "scan"], "command": ["uname", "ls"]})
+    result = drop_infrastructure_source_rows(df, redaction_config)
+    assert result.height == 2
+
+
+def test_drop_source_rows_noop_when_no_infra_match(
+    redaction_config: RedactionConfig,
+) -> None:
+    """Pure attacker traffic is not affected."""
+    df = pl.DataFrame({
+        "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
+        "event": ["scan", "login"],
+    })
+    result = drop_infrastructure_source_rows(df, redaction_config)
+    assert result.height == 2
+    assert result.equals(df)
+
+
+def test_drop_source_rows_handles_ipv6_infrastructure(
+    redaction_config: RedactionConfig,
+) -> None:
+    df = pl.DataFrame({
+        "src_endpoint_ip": ["fd99:10:50:99::100", "2001:db8:1::beef"],
+        "event": ["outbound-response", "scan"],
+    })
+    result = drop_infrastructure_source_rows(df, redaction_config)
+    assert result.height == 1
+    assert result.get_column("src_endpoint_ip").to_list() == ["2001:db8:1::beef"]
+
+
+def test_drop_source_rows_empty_dataframe(redaction_config: RedactionConfig) -> None:
+    df = pl.DataFrame(
+        schema={"src_endpoint_ip": pl.Utf8, "event": pl.Utf8},
+    )
+    result = drop_infrastructure_source_rows(df, redaction_config)
+    assert result.height == 0

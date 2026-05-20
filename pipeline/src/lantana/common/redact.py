@@ -32,6 +32,54 @@ DST_IP_COLUMNS: list[str] = [
     "dst_endpoint_ip",
 ]
 
+# Columns that should contain ATTACKER source IPs, never the operation's own
+# infrastructure. Suricata captures both directions of every flow, so outbound
+# response packets from the honeypot itself end up with `src_ip = <our WAN>`.
+# Vector's Layer-1 source filter is supposed to drop those at ingest, but the
+# default per-honeypot filter only excludes the internal `network.prefixes.*`
+# CIDRs — not the WAN address. Until the Suricata Vector filter is extended to
+# also drop WAN-source events, drop_infrastructure_source_rows is the Layer-2
+# safety net.
+SRC_IP_COLUMNS: list[str] = [
+    "src_ip",
+    "src_endpoint_ip",
+    "source.ip",
+]
+
+
+def drop_infrastructure_source_rows(
+    df: pl.DataFrame,
+    config: RedactionConfig,
+) -> pl.DataFrame:
+    """Drop rows whose source IP is one of the operation's own addresses.
+
+    These events are noise — outbound packets the honeypot generated in
+    response to attackers — and silver should only contain attacker
+    behaviour. Without this filter, `validate_no_leaks` catches the
+    infrastructure IP in `src_endpoint_ip` and aborts the whole run.
+
+    Exact-match only against `config.infrastructure_ips`. CIDR membership
+    is intentionally not checked here: the internal `infrastructure_cidrs`
+    are already dropped at Vector's Layer-1 filter, so any survivor in a
+    source column is one of the discrete WAN addresses.
+    """
+    if df.is_empty():
+        return df
+
+    infra_set = set(config.infrastructure_ips)
+    if not infra_set:
+        return df
+
+    src_columns_present = [col for col in SRC_IP_COLUMNS if col in df.columns]
+    if not src_columns_present:
+        return df
+
+    keep_mask: pl.Expr = pl.lit(value=True)
+    for col in src_columns_present:
+        keep_mask = keep_mask & ~pl.col(col).is_in(list(infra_set))
+
+    return df.filter(keep_mask)
+
 
 def redact_infrastructure_ips(
     df: pl.DataFrame,

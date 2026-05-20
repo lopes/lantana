@@ -30,7 +30,12 @@ import structlog
 
 from lantana.common.config import load_reporting, load_secrets
 from lantana.common.datalake import read_bronze_ndjson, write_silver_partition
-from lantana.common.redact import RedactionConfig, redact_infrastructure_ips, validate_no_leaks
+from lantana.common.redact import (
+    RedactionConfig,
+    drop_infrastructure_source_rows,
+    redact_infrastructure_ips,
+    validate_no_leaks,
+)
 from lantana.enrichment.ioc import (
     extract_hashes_from_bronze,
     extract_hashes_from_disk,
@@ -460,7 +465,19 @@ async def run_enrichment(
                 enriched_df = _merge_lookup(enriched_df, "shasum", hash_lookup)
 
             normalized_df = normalize_dataset(enriched_df, dataset)
-            redacted_df = redact_infrastructure_ips(normalized_df, redact_config)
+            # Drop outbound-response noise where the honeypot itself appears as
+            # source (Suricata sees both flow directions; Vector's Layer-1 filter
+            # currently catches internal-prefix sources but not WAN sources).
+            row_count_before = normalized_df.height
+            cleaned_df = drop_infrastructure_source_rows(normalized_df, redact_config)
+            dropped = row_count_before - cleaned_df.height
+            if dropped:
+                logger.info(
+                    "infrastructure_source_rows_dropped",
+                    dataset=dataset,
+                    count=dropped,
+                )
+            redacted_df = redact_infrastructure_ips(cleaned_df, redact_config)
             validate_no_leaks(redacted_df, redact_config)
 
             servers = (
