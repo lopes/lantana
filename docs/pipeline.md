@@ -72,21 +72,24 @@ Entry point: `lantana-enrich` (cron: 01:00 UTC, processes yesterday's data).
 
 For each dataset (cowrie, suricata, nftables, dionaea):
 
-1. **Read bronze** NDJSON into a Polars DataFrame
-2. **Extract unique source IPs** from attacker events
-3. **Query enrichment providers** sequentially (respecting rate limits):
-   - AbuseIPDB (abuse confidence, report count, ISP)
-   - GreyNoise (classification, noise/riot status, last seen, label) — see [Provider auth modes](#provider-auth-modes)
-   - Shodan (open ports, services, vulns)
-   - VirusTotal (file hash reputation, for cowrie/dionaea downloads)
-   - PhishStats (phishing URL count per IP) — public, no auth
-4. **Cache results** in SQLite (7-day TTL) to avoid re-querying known IPs
-5. **Record errors** — classify failures by type (rate limit, timeout, auth, HTTP error) and write an NDJSON summary to `enrichment_errors.json` at the end of each run
-6. **Merge enrichment** columns back into the event DataFrame by source IP (see [§3.1.1](#311-how-enrichment-merges-into-events))
-7. **OCSF normalize** — rename columns and add OCSF metadata (see Section 4)
-8. **Redact infrastructure IPs** (OPSEC Layer 2) — replace destination IPs with pseudonyms
-9. **Validate no leaks** — assert zero infrastructure IPs in any string column
-10. **Write silver** Parquet partitioned by dataset/date/server
+1. **Read bronze** NDJSON for every dataset into Polars DataFrames
+2. **Extract IOCs globally** across all datasets — unique source IPs from every dataset, plus SHA256 hashes from cowrie `file_download` events (`shasum` field) and a defensive disk scan of `sensor/*/downloads`. An IP appearing in both cowrie and suricata is queried once, not twice.
+3. **OPSEC-filter IPs** against `reporting.redact.infrastructure_ips` and `infrastructure_cidrs` — defense-in-depth behind Vector's Layer-1 source filter; operation-owned addresses never reach an external provider.
+4. **Query enrichment providers** per IOC, cache-first (respecting rate limits):
+   - AbuseIPDB (abuse confidence, report count, ISP) — IPs
+   - GreyNoise (classification, noise/riot status, last seen, label) — IPs — see [Provider auth modes](#provider-auth-modes)
+   - Shodan (open ports, services, vulns) — IPs
+   - VirusTotal — IPs (reputation) and SHA256 hashes (file analysis, into `vt_file_*` columns)
+   - PhishStats (phishing URL count per IP) — IPs — public, no auth
+5. **Cache results** in SQLite keyed by `(provider, ioc_type, ioc_value)` with a 7-day TTL. Cache hits short-circuit the HTTP call entirely.
+6. **Record errors** — `_classify_http_error` maps statuses to actionable labels (`auth_failed`, `rate_limit`, `not_found`, `server_error`, `network_error`, `timeout`) and writes an NDJSON summary to `enrichment_errors.json`. `auth_failed` is logged at error level (operators must rotate the broken vault key); `not_found` is logged at debug (normal "IP/hash not in DB").
+7. **Merge enrichment** per dataset: IP enrichments joined on `src_ip`; hash enrichments joined on `shasum` for cowrie (see [§3.1.1](#311-how-enrichment-merges-into-events))
+8. **OCSF normalize** — rename columns and add OCSF metadata (see Section 4)
+9. **Redact infrastructure IPs** (OPSEC Layer 2) — replace destination IPs with pseudonyms
+10. **Validate no leaks** — assert zero infrastructure IPs in any string column
+11. **Write silver** Parquet partitioned by dataset/date/server
+
+> **One-time cache migration note**: the cache schema changed in the IOC-first refactor (now keyed by `(provider, ioc_type, ioc_value)` instead of a single `key`). `_init_cache` detects the legacy schema on first run and drops + recreates the table. The data lost is ≤7 days old and providers will refill cheaply — with one exception. Shodan's 100-queries-per-month free tier will burn through quickly on the post-migration first run if the unique IP count is high. Plan the migration run for a low-stakes window; consider invoking `lantana-enrich` manually rather than letting the 01:00 UTC cron fire blind.
 
 #### 3.1.1 How enrichment merges into events
 
@@ -116,13 +119,14 @@ left-joined back onto bronze by src_ip → silver Parquet row:
     { src_ip, timestamp, eventid, ..., geo.*, abuseipdb_*, shodan_*, vt_*, greynoise_*, phishstats_* }
 ```
 
-The runner code lives in [`enrichment/runner.py`](../pipeline/src/lantana/enrichment/runner.py):
+The runner code lives in [`enrichment/runner.py`](../pipeline/src/lantana/enrichment/runner.py); IOC extraction helpers in [`enrichment/ioc.py`](../pipeline/src/lantana/enrichment/ioc.py):
 
-- `_enrich_ips_with_provider` iterates IPs per provider with try/except around `provider.enrich_ip(ip)`. Exceptions don't propagate — they're recorded into the error file and the IP just doesn't appear in that provider's result list.
-- `_merge_enrichments` builds a `_enrich_ip → {merged fields}` dict from every provider's results, materialises it as a Polars DataFrame, and `df.join(enrich_df, left_on="src_ip", right_on="_enrich_ip", how="left")`. The left-outer-join is the key — bronze rows without any provider hits still come through to silver, just with null enrichment columns.
+- `_enrich_iocs_with_provider(provider_name, provider, ioc_type, iocs, cache, errors)` iterates IOCs of one type for one provider. For each IOC: cache-first; on miss it calls `provider.enrich_ip(value)` or `provider.enrich_hash(value)` depending on `ioc_type`, caches the result, appends to the returned list. Exceptions don't propagate — they're recorded into the error file and the IOC just doesn't appear in that provider's result list. Returns `(results, cache_hits)`.
+- `_build_lookup(results)` collapses a flat list of `EnrichmentResult` into a per-value merged dict (multiple providers' fields for the same IOC are merged into one entry).
+- `_merge_lookup(df, join_col, lookup)` materialises the lookup as a Polars DataFrame and `df.join(enrich_df, left_on=join_col, right_on="_enrich_key", how="left")`. The left-outer-join is the key — bronze rows without any provider hits still come through to silver, just with null enrichment columns. The same helper handles both `src_ip → IP enrichments` and `shasum → hash enrichments`.
 - The provider classes themselves catch the routine "no info" cases (GreyNoise 404, Shodan 404, VirusTotal 404 for IPs and hashes) and return normalized records with zero/empty fields rather than raising. This keeps the runner's error path reserved for actual failures (auth, rate limit, server error, transport timeout).
 
-Retry semantics: tenacity wraps `provider.enrich_ip` with 3 attempts on 429 / 5xx / transport errors only. 4xx other than 429 fails fast — retrying on a bad API key or a malformed request wastes the rate-limit budget without changing the outcome.
+Retry semantics: tenacity wraps `provider.enrich_ip` / `enrich_hash` with 3 attempts on 429 / 5xx / transport errors only, with `reraise=True` so the original `httpx.HTTPStatusError` / `TimeoutException` / `ConnectError` propagates to the runner and gets classified — never wrapped in a `RetryError`. 4xx other than 429 fails fast — retrying on a bad API key or a malformed request wastes the rate-limit budget without changing the outcome.
 
 ### 3.2 Silver to Gold (daily aggregation)
 

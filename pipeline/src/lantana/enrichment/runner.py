@@ -1,21 +1,23 @@
-"""Main enrichment orchestrator — reads bronze, enriches, writes silver.
+"""Main enrichment orchestrator — IOC-first.
 
 Daily workflow:
-1. Read previous day's bronze NDJSON (already geo-enriched by Vector)
-2. Extract unique source IPs and file hashes
-3. Check SQLite cache, skip recently enriched
-4. Query providers: AbuseIPDB → GreyNoise → Shodan → VirusTotal
-5. Merge enrichment back into events
-6. Redact infrastructure IPs (OPSEC Layer 2)
-7. Write silver Parquet
+1. Load every dataset's bronze NDJSON for the target date.
+2. Extract IOCs globally across datasets (IPs from all four datasets,
+   SHA256 hashes from cowrie file_download events plus a defensive
+   disk scan).
+3. OPSEC-filter IPs against the operation's infrastructure ranges.
+4. For each (provider, ioc_type) pair, fulfil each IOC cache-first;
+   freshly-queried results land in the cache so subsequent runs
+   short-circuit the HTTP call.
+5. Per dataset: merge enrichments by `src_ip` (and by `shasum` for
+   cowrie), OCSF-normalize, redact infrastructure IPs, write silver
+   Parquet.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
-import ipaddress
 import json
 import os
 import sqlite3
@@ -29,6 +31,12 @@ import structlog
 from lantana.common.config import load_reporting, load_secrets
 from lantana.common.datalake import read_bronze_ndjson, write_silver_partition
 from lantana.common.redact import RedactionConfig, redact_infrastructure_ips, validate_no_leaks
+from lantana.enrichment.ioc import (
+    extract_hashes_from_bronze,
+    extract_hashes_from_disk,
+    extract_ips,
+    filter_internal_ips,
+)
 from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.base import EnrichmentError, EnrichmentResult
 from lantana.enrichment.providers.greynoise import GreyNoiseProvider
@@ -47,42 +55,67 @@ ERRORS_PATH = Path(
 
 DATASETS = ["cowrie", "suricata", "nftables", "dionaea"]
 
+IOC_TYPE_IP = "ip"
+IOC_TYPE_HASH = "hash"
+
+
+# -- Cache -------------------------------------------------------------------
+
 
 def _init_cache(db_path: Path) -> sqlite3.Connection:
-    """Initialize the SQLite enrichment cache."""
+    """Initialise the SQLite enrichment cache.
+
+    The Phase 3 schema keys on `(provider, ioc_type, ioc_value)`. If an
+    older single-`key`-column table is on disk, we drop and recreate —
+    the data is at most 7 days old and providers will refill cheaply
+    (with the notable exception of Shodan's 100/month free tier; see
+    docs/pipeline.md for the operational warning).
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(cache)").fetchall()}
+    if existing_cols and "ioc_type" not in existing_cols:
+        logger.info("cache_schema_migration", reason="dropping_legacy_schema")
+        conn.execute("DROP TABLE cache")
+        conn.commit()
     conn.execute(
         "CREATE TABLE IF NOT EXISTS cache ("
-        "  key TEXT PRIMARY KEY,"
         "  provider TEXT NOT NULL,"
+        "  ioc_type TEXT NOT NULL,"
+        "  ioc_value TEXT NOT NULL,"
         "  data TEXT NOT NULL,"
-        "  queried_at TEXT NOT NULL"
+        "  queried_at TEXT NOT NULL,"
+        "  PRIMARY KEY (provider, ioc_type, ioc_value)"
         ")"
     )
     conn.commit()
     return conn
 
 
-def _get_cached(conn: sqlite3.Connection, key: str) -> EnrichmentResult | None:
-    """Return the cached EnrichmentResult for a key, or None if absent/expired.
+def _get_cached(
+    conn: sqlite3.Connection,
+    provider: str,
+    ioc_type: str,
+    ioc_value: str,
+) -> EnrichmentResult | None:
+    """Return the cached result for (provider, ioc_type, ioc_value), or None.
 
-    A malformed cached row (provider name or data JSON that no longer
-    deserializes cleanly) is treated as a miss so one bad row cannot
-    poison a whole batch.
+    Malformed cached rows (data JSON that no longer deserialises) are
+    treated as a miss so one bad row cannot poison a whole batch.
     """
     cutoff = (datetime.now(tz=UTC) - timedelta(days=CACHE_TTL_DAYS)).isoformat()
     row = conn.execute(
-        "SELECT provider, data, queried_at FROM cache WHERE key = ? AND queried_at > ?",
-        (key, cutoff),
+        "SELECT data, queried_at FROM cache "
+        "WHERE provider = ? AND ioc_type = ? AND ioc_value = ? AND queried_at > ?",
+        (provider, ioc_type, ioc_value, cutoff),
     ).fetchone()
     if row is None:
         return None
-    provider_name, data_json, queried_at_str = row
+    data_json, queried_at_str = row
     try:
         return EnrichmentResult(
-            provider=provider_name,
-            ip=key.split(":", 1)[1] if ":" in key else key,
+            provider=provider,
+            ip=ioc_value,
             data=json.loads(data_json),
             queried_at=datetime.fromisoformat(queried_at_str),
         )
@@ -90,13 +123,21 @@ def _get_cached(conn: sqlite3.Connection, key: str) -> EnrichmentResult | None:
         return None
 
 
-def _set_cached(conn: sqlite3.Connection, result: EnrichmentResult) -> None:
-    """Store an enrichment result in the cache."""
+def _set_cached(
+    conn: sqlite3.Connection,
+    provider: str,
+    ioc_type: str,
+    ioc_value: str,
+    result: EnrichmentResult,
+) -> None:
+    """Store an enrichment result keyed by (provider, ioc_type, ioc_value)."""
     conn.execute(
-        "INSERT OR REPLACE INTO cache (key, provider, data, queried_at) VALUES (?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO cache "
+        "(provider, ioc_type, ioc_value, data, queried_at) VALUES (?, ?, ?, ?, ?)",
         (
-            f"{result.provider}:{result.ip}",
-            result.provider,
+            provider,
+            ioc_type,
+            ioc_value,
             json.dumps(result.data),
             result.queried_at.isoformat(),
         ),
@@ -104,84 +145,7 @@ def _set_cached(conn: sqlite3.Connection, result: EnrichmentResult) -> None:
     conn.commit()
 
 
-def _extract_unique_ips(df: pl.DataFrame) -> list[str]:
-    """Extract unique source IP addresses from the DataFrame."""
-    src_col = "src_ip" if "src_ip" in df.columns else None
-    if src_col is None:
-        return []
-    return df.get_column(src_col).drop_nulls().unique().cast(pl.Utf8).to_list()
-
-
-def _filter_internal_ips(ips: list[str], config: RedactionConfig) -> list[str]:
-    """Drop operation-owned IPs before any provider call.
-
-    OPSEC Layer-1.5: even if Vector's source-IP filter (Layer 1) lets
-    something through, we must never send a honeypot's own WAN address
-    to AbuseIPDB / Shodan / VirusTotal.
-    """
-    infra_set = set(config.infrastructure_ips)
-    cidr_nets = [ipaddress.ip_network(cidr) for cidr in config.infrastructure_cidrs]
-    kept: list[str] = []
-    for ip in ips:
-        if ip in infra_set:
-            continue
-        try:
-            addr = ipaddress.ip_address(ip)
-        except ValueError:
-            kept.append(ip)
-            continue
-        if any(addr in net for net in cidr_nets):
-            continue
-        kept.append(ip)
-    return kept
-
-
-def _extract_unique_hashes(df: pl.DataFrame, sensor_dir: Path) -> list[str]:
-    """Scan artifact directories for file hashes to enrich."""
-    download_dirs = list(sensor_dir.glob("*/downloads")) + list(sensor_dir.glob("*/binaries"))
-    hashes: set[str] = set()
-    for download_dir in download_dirs:
-        for file_path in download_dir.iterdir():
-            if file_path.is_file() and file_path.stat().st_size <= 100 * 1024 * 1024:
-                sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
-                hashes.add(sha256)
-    return list(hashes)
-
-
-def _merge_enrichments(
-    df: pl.DataFrame,
-    enrichments: dict[str, list[EnrichmentResult]],
-) -> pl.DataFrame:
-    """Merge enrichment results back into the event DataFrame by source IP."""
-    if df.is_empty():
-        return df
-
-    src_col = "src_ip" if "src_ip" in df.columns else None
-    if src_col is None:
-        return df
-
-    # Build a lookup: ip → merged enrichment fields
-    ip_data: dict[str, dict[str, str | int | float | bool | None]] = {}
-    for results in enrichments.values():
-        for result in results:
-            if result.ip not in ip_data:
-                ip_data[result.ip] = {}
-            ip_data[result.ip].update(result.data)
-
-    if not ip_data:
-        return df
-
-    # Build enrichment DataFrame
-    enrichment_records = [{"_enrich_ip": ip, **data} for ip, data in ip_data.items()]
-    enrich_df = pl.DataFrame(enrichment_records)
-
-    # Join on source IP
-    return df.join(
-        enrich_df,
-        left_on=src_col,
-        right_on="_enrich_ip",
-        how="left",
-    )
+# -- Error handling ----------------------------------------------------------
 
 
 ErrorAccumulator = dict[tuple[str, str], EnrichmentError]
@@ -257,50 +221,97 @@ def _write_error_summary(
             f.write(line + "\n")
 
 
+# -- Enrichment --------------------------------------------------------------
+
+
 _ProviderType = (
     AbuseIPDBProvider | GreyNoiseProvider | PhishStatsProvider | ShodanProvider | VirusTotalProvider
 )
 
 
-async def _enrich_ips_with_provider(
+async def _query_provider(
+    provider: _ProviderType,
+    ioc_type: str,
+    ioc_value: str,
+) -> EnrichmentResult:
+    """Dispatch to enrich_ip / enrich_hash based on ioc_type."""
+    if ioc_type == IOC_TYPE_HASH:
+        if not isinstance(provider, VirusTotalProvider):
+            msg = f"hash enrichment is VirusTotal-only, got {type(provider).__name__}"
+            raise TypeError(msg)
+        return await provider.enrich_hash(ioc_value)
+    return await provider.enrich_ip(ioc_value)
+
+
+async def _enrich_iocs_with_provider(
     provider_name: str,
     provider: _ProviderType,
-    ips: list[str],
+    ioc_type: str,
+    iocs: list[str],
     cache: sqlite3.Connection,
     errors: ErrorAccumulator,
 ) -> tuple[list[EnrichmentResult], int]:
-    """Enrich a list of IPs with a single provider, respecting cache.
+    """For one (provider, ioc_type) pair, enrich each IOC cache-first.
 
-    Returns the combined results (cached + freshly queried) and the count
-    of cache hits, so the caller can log fresh vs cached separately.
+    Returns (combined results including cache hits, cache_hit_count).
     """
+    log_field = "ip" if ioc_type == IOC_TYPE_IP else "sha256"
     results: list[EnrichmentResult] = []
     cache_hits = 0
-    for ip in ips:
-        cache_key = f"{provider_name}:{ip}"
-        cached = _get_cached(cache, cache_key)
+    for value in iocs:
+        cached = _get_cached(cache, provider_name, ioc_type, value)
         if cached is not None:
             results.append(cached)
             cache_hits += 1
             continue
         try:
-            result = await provider.enrich_ip(ip)
-            _set_cached(cache, result)
+            result = await _query_provider(provider, ioc_type, value)
+            _set_cached(cache, provider_name, ioc_type, value, result)
             results.append(result)
         except httpx.HTTPStatusError as exc:
             etype = _classify_http_error(exc.response.status_code)
             _record_error(errors, provider_name, etype, str(exc))
-            _log_failure(etype, provider=provider_name, ip=ip)
+            _log_failure(etype, provider=provider_name, **{log_field: value})
         except httpx.TimeoutException:
             _record_error(errors, provider_name, "timeout", "request timed out")
-            _log_failure("timeout", provider=provider_name, ip=ip)
+            _log_failure("timeout", provider=provider_name, **{log_field: value})
         except httpx.ConnectError as exc:
             _record_error(errors, provider_name, "network_error", str(exc))
-            _log_failure("network_error", provider=provider_name, ip=ip)
+            _log_failure("network_error", provider=provider_name, **{log_field: value})
         except Exception as exc:
             _record_error(errors, provider_name, "unknown", repr(exc))
-            _log_failure("unknown", provider=provider_name, ip=ip, exc_repr=repr(exc))
+            _log_failure(
+                "unknown", provider=provider_name, exc_repr=repr(exc), **{log_field: value},
+            )
     return results, cache_hits
+
+
+def _build_lookup(
+    results: list[EnrichmentResult],
+) -> dict[str, dict[str, str | int | float | bool | None]]:
+    """Collapse a flat list of EnrichmentResult into a `value → merged data` dict."""
+    lookup: dict[str, dict[str, str | int | float | bool | None]] = {}
+    for result in results:
+        if result.ip not in lookup:
+            lookup[result.ip] = {}
+        lookup[result.ip].update(result.data)
+    return lookup
+
+
+def _merge_lookup(
+    df: pl.DataFrame,
+    join_col: str,
+    lookup: dict[str, dict[str, str | int | float | bool | None]],
+) -> pl.DataFrame:
+    """Left-join enrichment columns onto `df` keyed by `join_col`."""
+    if df.is_empty() or not lookup or join_col not in df.columns:
+        return df
+    records = [{"_enrich_key": value, **data} for value, data in lookup.items()]
+    enrich_df = pl.DataFrame(records)
+    return df.join(enrich_df, left_on=join_col, right_on="_enrich_key", how="left")
+
+
+# -- Orchestration -----------------------------------------------------------
 
 
 async def run_enrichment(
@@ -322,9 +333,8 @@ async def run_enrichment(
     cache = _init_cache(cache_db_path)
     errors: ErrorAccumulator = {}
 
-    # Initialize providers. GreyNoise and PhishStats are skipped when the
-    # vault key is absent (None); empty strings keep them enabled in their
-    # unauthenticated modes.
+    # GreyNoise / PhishStats are skipped when the vault key is absent (None);
+    # empty strings keep them enabled in their unauthenticated modes.
     providers: dict[str, _ProviderType] = {
         "abuseipdb": AbuseIPDBProvider(secrets.abuseipdb),
         "shodan": ShodanProvider(secrets.shodan),
@@ -340,78 +350,82 @@ async def run_enrichment(
         logger.info("provider_disabled", provider="phishstats", reason="not_configured")
 
     try:
+        # Phase A: load all bronze, extract IOCs globally
+        dfs: dict[str, pl.DataFrame] = {}
         for dataset in DATASETS:
-            logger.info("enrichment_start", dataset=dataset, date=target_date.isoformat())
-
             df = read_bronze_ndjson(target_date, dataset=dataset)
             if df.is_empty():
                 logger.info("enrichment_skip_empty", dataset=dataset)
                 continue
+            dfs[dataset] = df
 
-            # Extract unique IPs and filter out operation-owned addresses (OPSEC)
-            raw_ips = _extract_unique_ips(df)
-            unique_ips = _filter_internal_ips(raw_ips, redact_config)
-            filtered = len(raw_ips) - len(unique_ips)
-            if filtered:
-                logger.info("internal_ips_filtered", dataset=dataset, count=filtered)
-            logger.info("unique_ips_found", dataset=dataset, count=len(unique_ips))
+        if not dfs:
+            logger.info("enrichment_no_data", date=target_date.isoformat())
+            return
 
-            # Enrich with each provider (sequential to respect rate limits)
-            enrichments: dict[str, list[EnrichmentResult]] = {}
-            for name, provider in providers.items():
-                results, cache_hits = await _enrich_ips_with_provider(
-                    name, provider, unique_ips, cache, errors,
-                )
-                enrichments[name] = results
-                logger.info(
-                    "provider_done",
-                    provider=name,
-                    enriched=len(results),
-                    fresh=len(results) - cache_hits,
-                    cache_hits=cache_hits,
-                )
+        raw_ips: set[str] = set()
+        for ds_df in dfs.values():
+            raw_ips.update(extract_ips(ds_df))
+        unique_ips = filter_internal_ips(raw_ips, redact_config)
+        if len(raw_ips) != len(unique_ips):
+            logger.info("internal_ips_filtered", count=len(raw_ips) - len(unique_ips))
+        logger.info(
+            "unique_iocs_found", ioc_type=IOC_TYPE_IP, count=len(unique_ips),
+        )
 
-            # Enrich file hashes with VirusTotal
-            if dataset in ("cowrie", "dionaea"):
-                hashes = _extract_unique_hashes(df, sensor_dir)
-                vt = providers["virustotal"]
-                assert isinstance(vt, VirusTotalProvider)
-                for sha256 in hashes:
-                    cache_key = f"virustotal:{sha256}"
-                    if _get_cached(cache, cache_key) is not None:
-                        continue
-                    try:
-                        result = await vt.enrich_hash(sha256)
-                        _set_cached(cache, result)
-                    except httpx.HTTPStatusError as exc:
-                        etype = _classify_http_error(exc.response.status_code)
-                        _record_error(errors, "virustotal", etype, str(exc))
-                        _log_failure(etype, provider="virustotal", sha256=sha256)
-                    except httpx.TimeoutException:
-                        _record_error(errors, "virustotal", "timeout", "request timed out")
-                        _log_failure("timeout", provider="virustotal", sha256=sha256)
-                    except httpx.ConnectError as exc:
-                        _record_error(errors, "virustotal", "network_error", str(exc))
-                        _log_failure("network_error", provider="virustotal", sha256=sha256)
-                    except Exception as exc:
-                        _record_error(errors, "virustotal", "unknown", repr(exc))
-                        _log_failure(
-                            "unknown", provider="virustotal", sha256=sha256, exc_repr=repr(exc),
-                        )
+        unique_hashes: set[str] = set()
+        for ds_df in dfs.values():
+            unique_hashes.update(extract_hashes_from_bronze(ds_df))
+        unique_hashes.update(extract_hashes_from_disk(sensor_dir))
+        logger.info(
+            "unique_iocs_found", ioc_type=IOC_TYPE_HASH, count=len(unique_hashes),
+        )
 
-            # Merge enrichment data into events
-            enriched_df = _merge_enrichments(df, enrichments)
+        # Phase B: enrich each IOC type once, across the relevant providers
+        ip_list = sorted(unique_ips)
+        ip_results: list[EnrichmentResult] = []
+        for name, provider in providers.items():
+            results, hits = await _enrich_iocs_with_provider(
+                name, provider, IOC_TYPE_IP, ip_list, cache, errors,
+            )
+            ip_results.extend(results)
+            logger.info(
+                "provider_done",
+                provider=name,
+                ioc_type=IOC_TYPE_IP,
+                enriched=len(results),
+                fresh=len(results) - hits,
+                cache_hits=hits,
+            )
 
-            # OCSF normalization: rename columns to OCSF schema
+        hash_results: list[EnrichmentResult] = []
+        if unique_hashes:
+            vt_provider = providers["virustotal"]
+            hash_results, hash_hits = await _enrich_iocs_with_provider(
+                "virustotal", vt_provider, IOC_TYPE_HASH, sorted(unique_hashes), cache, errors,
+            )
+            logger.info(
+                "provider_done",
+                provider="virustotal",
+                ioc_type=IOC_TYPE_HASH,
+                enriched=len(hash_results),
+                fresh=len(hash_results) - hash_hits,
+                cache_hits=hash_hits,
+            )
+
+        ip_lookup = _build_lookup(ip_results)
+        hash_lookup = _build_lookup(hash_results)
+
+        # Phase C: per-dataset merge + normalise + redact + write
+        for dataset, df in dfs.items():
+            enriched_df = _merge_lookup(df, "src_ip", ip_lookup)
+            if dataset == "cowrie":
+                enriched_df = _merge_lookup(enriched_df, "shasum", hash_lookup)
+
             normalized_df = normalize_dataset(enriched_df, dataset)
-
-            # OPSEC Layer 2: redact infrastructure IPs
             redacted_df = redact_infrastructure_ips(normalized_df, redact_config)
-
-            # Validate no leaks before writing
             validate_no_leaks(redacted_df, redact_config)
 
-            # Extract server from data for partitioning
             servers = (
                 redacted_df.get_column("server").unique().to_list()
                 if "server" in redacted_df.columns

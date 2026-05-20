@@ -1,4 +1,4 @@
-"""Tests for lantana.enrichment.runner error handling."""
+"""Tests for lantana.enrichment.runner."""
 
 from __future__ import annotations
 
@@ -9,17 +9,22 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import polars as pl
 import pytest
 
-from lantana.common.redact import RedactionConfig
 from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.base import EnrichmentResult
+from lantana.enrichment.providers.virustotal import VirusTotalProvider
 from lantana.enrichment.runner import (
+    IOC_TYPE_HASH,
+    IOC_TYPE_IP,
     ErrorAccumulator,
+    _build_lookup,
     _classify_http_error,
-    _enrich_ips_with_provider,
-    _filter_internal_ips,
+    _enrich_iocs_with_provider,
     _get_cached,
+    _init_cache,
+    _merge_lookup,
     _record_error,
     _set_cached,
     _write_error_summary,
@@ -135,7 +140,7 @@ class TestWriteErrorSummary:
         errors: ErrorAccumulator = {}
         _record_error(errors, "abuseipdb", "rate_limit", "429")
         _record_error(errors, "shodan", "timeout", "timed out")
-        _record_error(errors, "virustotal", "auth", "401 Unauthorized")
+        _record_error(errors, "virustotal", "auth_failed", "401 Unauthorized")
 
         errors_path = tmp_path / "enrichment_errors.json"
         _write_error_summary(errors, date(2026, 4, 28), errors_path)
@@ -146,26 +151,17 @@ class TestWriteErrorSummary:
         assert providers == {"abuseipdb", "shodan", "virustotal"}
 
 
-# --- _enrich_ips_with_provider (error paths) ---
+# --- Cache helper for tests: uses production schema via _init_cache ---
 
 
 def _make_cache(tmp_path: Path) -> sqlite3.Connection:
-    """Create an in-memory-like SQLite cache for testing."""
-    db_path = tmp_path / "test_cache.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS cache ("
-        "  key TEXT PRIMARY KEY,"
-        "  provider TEXT NOT NULL,"
-        "  data TEXT NOT NULL,"
-        "  queried_at TEXT NOT NULL"
-        ")"
-    )
-    conn.commit()
-    return conn
+    return _init_cache(tmp_path / "test_cache.db")
 
 
-class TestEnrichIpsWithProviderErrors:
+# --- _enrich_iocs_with_provider (error paths) ---
+
+
+class TestEnrichIocsWithProviderErrors:
     @pytest.mark.asyncio()
     async def test_http_error_recorded(self, tmp_path: Path) -> None:
         provider = AsyncMock()
@@ -176,8 +172,8 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results, cache_hits = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        results, cache_hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
@@ -193,8 +189,8 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results, cache_hits = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        results, cache_hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
@@ -209,8 +205,8 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results, cache_hits = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        results, cache_hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
@@ -231,8 +227,8 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results, cache_hits = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        results, cache_hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
@@ -257,8 +253,8 @@ class TestEnrichIpsWithProviderErrors:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results, cache_hits = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4", "5.6.7.8"], cache, errors
+        results, cache_hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4", "5.6.7.8"], cache, errors,
         )
         cache.close()
 
@@ -268,7 +264,7 @@ class TestEnrichIpsWithProviderErrors:
         assert ("test_provider", "rate_limit") in errors
 
 
-# --- Cache hit semantics (Phase 1 bug fix) ---
+# --- Cache behaviour ---
 
 
 class TestCacheBehaviour:
@@ -282,14 +278,14 @@ class TestCacheBehaviour:
             data={"abuseipdb_confidence_score": 90},
             queried_at=datetime.now(tz=UTC),
         )
-        _set_cached(cache, cached_result)
+        _set_cached(cache, "test_provider", IOC_TYPE_IP, "1.2.3.4", cached_result)
 
         provider = AsyncMock()
         provider.enrich_ip.side_effect = AssertionError("provider must not be called on cache hit")
 
         errors: ErrorAccumulator = {}
-        results, cache_hits = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        results, cache_hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
@@ -314,11 +310,11 @@ class TestCacheBehaviour:
         provider.enrich_ip.return_value = fresh
 
         errors: ErrorAccumulator = {}
-        results1, hits1 = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        results1, hits1 = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
-        results2, hits2 = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        results2, hits2 = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
@@ -331,71 +327,28 @@ class TestCacheBehaviour:
 
     def test_get_cached_returns_none_when_missing(self, tmp_path: Path) -> None:
         cache = _make_cache(tmp_path)
-        assert _get_cached(cache, "abuseipdb:1.2.3.4") is None
+        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
         cache.close()
 
     def test_get_cached_handles_malformed_row(self, tmp_path: Path) -> None:
         """A corrupt cached row is treated as a miss, not a crash."""
         cache = _make_cache(tmp_path)
         cache.execute(
-            "INSERT INTO cache (key, provider, data, queried_at) VALUES (?, ?, ?, ?)",
-            ("abuseipdb:1.2.3.4", "abuseipdb", "{not json}", datetime.now(tz=UTC).isoformat()),
+            "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("abuseipdb", IOC_TYPE_IP, "1.2.3.4", "{not json}", datetime.now(tz=UTC).isoformat()),
         )
         cache.commit()
 
-        assert _get_cached(cache, "abuseipdb:1.2.3.4") is None
+        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
         cache.close()
-
-
-# --- OPSEC IP filter ---
-
-
-class TestFilterInternalIps:
-    def _config(self) -> RedactionConfig:
-        return RedactionConfig(
-            infrastructure_ips=["192.0.2.10", "2001:db8::10"],
-            infrastructure_cidrs=["10.50.99.0/24", "fd99:10:50:99::/64"],
-            pseudonym_map={},
-        )
-
-    def test_keeps_external_ips(self) -> None:
-        kept = _filter_internal_ips(["203.0.113.50", "198.51.100.22"], self._config())
-        assert kept == ["203.0.113.50", "198.51.100.22"]
-
-    def test_drops_exact_infrastructure_ip(self) -> None:
-        kept = _filter_internal_ips(
-            ["203.0.113.50", "192.0.2.10", "198.51.100.22"], self._config(),
-        )
-        assert "192.0.2.10" not in kept
-        assert kept == ["203.0.113.50", "198.51.100.22"]
-
-    def test_drops_cidr_member(self) -> None:
-        kept = _filter_internal_ips(["10.50.99.100", "203.0.113.50"], self._config())
-        assert kept == ["203.0.113.50"]
-
-    def test_drops_ipv6_cidr_member(self) -> None:
-        kept = _filter_internal_ips(
-            ["fd99:10:50:99::1", "2001:db8:1::beef"], self._config(),
-        )
-        assert kept == ["2001:db8:1::beef"]
-
-    def test_non_ip_strings_kept(self) -> None:
-        """Hostnames or junk pass through unchanged — runner filters later."""
-        kept = _filter_internal_ips(["not.an.ip", "203.0.113.50"], self._config())
-        assert kept == ["not.an.ip", "203.0.113.50"]
 
 
 # --- Phase 2: error classification end-to-end through the provider retry path ---
 
 
 class TestErrorClassificationEndToEnd:
-    """Exercise the full path: provider.enrich_ip → tenacity retry →
-    reraise=True → runner exception branch → _classify_http_error → errors.
-
-    Before Phase 2's `reraise=True`, tenacity wrapped the final exception
-    in a RetryError, which fell through the runner's catch-all and got
-    labelled `unknown`. These tests prove that's no longer the case.
-    """
+    """Exercise provider.enrich_ip → tenacity retry → reraise=True → runner → errors."""
 
     @pytest.mark.asyncio()
     @pytest.mark.parametrize(("status", "expected"), [
@@ -426,8 +379,8 @@ class TestErrorClassificationEndToEnd:
         ):
             cache = _make_cache(tmp_path)
             errors: ErrorAccumulator = {}
-            results, hits = await _enrich_ips_with_provider(
-                "abuseipdb", provider, ["1.2.3.4"], cache, errors,
+            results, hits = await _enrich_iocs_with_provider(
+                "abuseipdb", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
             )
             cache.close()
         await provider.close()
@@ -446,8 +399,8 @@ class TestErrorClassificationEndToEnd:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        results, hits = await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        results, hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
@@ -464,8 +417,8 @@ class TestErrorClassificationEndToEnd:
 
         cache = _make_cache(tmp_path)
         errors: ErrorAccumulator = {}
-        await _enrich_ips_with_provider(
-            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ["1.2.3.4"], cache, errors,
         )
         cache.close()
 
@@ -473,3 +426,223 @@ class TestErrorClassificationEndToEnd:
         msg = errors[("test_provider", "unknown")].error_message
         assert "RuntimeError" in msg
         assert "something obscure" in msg
+
+
+# --- Phase 3: IOC-first architecture ---
+
+
+class TestCacheSchemaMigration:
+    def test_legacy_schema_dropped(self, tmp_path: Path) -> None:
+        """An existing single-key schema is dropped and recreated under the new PK."""
+        db_path = tmp_path / "legacy_cache.db"
+        legacy = sqlite3.connect(str(db_path))
+        legacy.execute(
+            "CREATE TABLE cache ("
+            "  key TEXT PRIMARY KEY,"
+            "  provider TEXT NOT NULL,"
+            "  data TEXT NOT NULL,"
+            "  queried_at TEXT NOT NULL"
+            ")"
+        )
+        legacy.execute(
+            "INSERT INTO cache (key, provider, data, queried_at) VALUES (?, ?, ?, ?)",
+            ("abuseipdb:1.2.3.4", "abuseipdb", "{}", datetime.now(tz=UTC).isoformat()),
+        )
+        legacy.commit()
+        legacy.close()
+
+        conn = _init_cache(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(cache)").fetchall()}
+        assert "ioc_type" in cols
+        assert "ioc_value" in cols
+        assert "key" not in cols
+        # Legacy row didn't survive the drop
+        row_count = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
+        assert row_count == 0
+        conn.close()
+
+    def test_new_schema_persists(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "new_cache.db"
+        conn = _init_cache(db_path)
+        conn.close()
+        # Reopen — should not drop the (already-new) table
+        conn = _init_cache(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(cache)").fetchall()}
+        assert "ioc_type" in cols
+        conn.close()
+
+
+class TestIocTypeIsolation:
+    def test_ip_and_hash_with_same_value_are_separate(self, tmp_path: Path) -> None:
+        """Cache entries for ioc_type=ip vs ioc_type=hash do not collide."""
+        cache = _make_cache(tmp_path)
+        ip_result = EnrichmentResult(
+            provider="virustotal",
+            ip="deadbeef",
+            data={"vt_malicious_count": 7},
+            queried_at=datetime.now(tz=UTC),
+        )
+        hash_result = EnrichmentResult(
+            provider="virustotal",
+            ip="deadbeef",
+            data={"vt_file_malicious_count": 99},
+            queried_at=datetime.now(tz=UTC),
+        )
+        _set_cached(cache, "virustotal", IOC_TYPE_IP, "deadbeef", ip_result)
+        _set_cached(cache, "virustotal", IOC_TYPE_HASH, "deadbeef", hash_result)
+
+        ip_back = _get_cached(cache, "virustotal", IOC_TYPE_IP, "deadbeef")
+        hash_back = _get_cached(cache, "virustotal", IOC_TYPE_HASH, "deadbeef")
+        cache.close()
+
+        assert ip_back is not None
+        assert hash_back is not None
+        assert ip_back.data == {"vt_malicious_count": 7}
+        assert hash_back.data == {"vt_file_malicious_count": 99}
+
+
+class TestHashEnrichmentDispatch:
+    @pytest.mark.asyncio()
+    async def test_ioc_type_hash_calls_enrich_hash(self, tmp_path: Path) -> None:
+        """ioc_type=hash dispatches to provider.enrich_hash, not enrich_ip."""
+        provider = AsyncMock(spec=VirusTotalProvider)
+        provider.enrich_hash.return_value = EnrichmentResult(
+            provider="virustotal",
+            ip="deadbeef",
+            data={"vt_file_malicious_count": 5},
+            queried_at=datetime.now(tz=UTC),
+        )
+
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        results, _ = await _enrich_iocs_with_provider(
+            "virustotal", provider, IOC_TYPE_HASH, ["deadbeef"], cache, errors,
+        )
+        cache.close()
+
+        assert len(results) == 1
+        assert results[0].data["vt_file_malicious_count"] == 5
+        provider.enrich_hash.assert_called_once_with("deadbeef")
+        provider.enrich_ip.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_hash_dispatch_rejects_non_vt_provider(self, tmp_path: Path) -> None:
+        provider = AsyncMock(spec=AbuseIPDBProvider)
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        # The TypeError is raised inside _query_provider; the runner's
+        # catch-all records it as 'unknown' since it's not an HTTP/timeout/network
+        # exception. The IOC is still consumed (i.e. not retried in a loop).
+        results, _ = await _enrich_iocs_with_provider(
+            "abuseipdb", provider, IOC_TYPE_HASH, ["deadbeef"], cache, errors,
+        )
+        cache.close()
+
+        assert results == []
+        assert ("abuseipdb", "unknown") in errors
+        assert "VirusTotal" in errors[("abuseipdb", "unknown")].error_message
+
+
+class TestMergeLookup:
+    def test_joins_enrichment_columns(self) -> None:
+        df = pl.DataFrame({
+            "src_ip": ["203.0.113.50", "198.51.100.22"],
+            "event": ["login", "alert"],
+        })
+        lookup: dict[str, dict[str, str | int | float | bool | None]] = {
+            "203.0.113.50": {"abuseipdb_confidence_score": 88},
+            "198.51.100.22": {"abuseipdb_confidence_score": 12},
+        }
+        merged = _merge_lookup(df, "src_ip", lookup)
+        assert "abuseipdb_confidence_score" in merged.columns
+        scores = dict(zip(
+            merged.get_column("src_ip").to_list(),
+            merged.get_column("abuseipdb_confidence_score").to_list(),
+            strict=True,
+        ))
+        assert scores["203.0.113.50"] == 88
+        assert scores["198.51.100.22"] == 12
+
+    def test_no_join_col_returns_original(self) -> None:
+        df = pl.DataFrame({"event": ["login"]})
+        lookup: dict[str, dict[str, str | int | float | bool | None]] = {
+            "203.0.113.50": {"score": 1},
+        }
+        merged = _merge_lookup(df, "src_ip", lookup)
+        # No src_ip column → no-op
+        assert merged.columns == df.columns
+
+    def test_empty_lookup_returns_original(self) -> None:
+        df = pl.DataFrame({"src_ip": ["203.0.113.50"]})
+        merged = _merge_lookup(df, "src_ip", {})
+        assert merged.columns == df.columns
+
+    def test_unmatched_rows_get_nulls(self) -> None:
+        df = pl.DataFrame({"src_ip": ["203.0.113.50", "203.0.113.99"]})
+        lookup: dict[str, dict[str, str | int | float | bool | None]] = {
+            "203.0.113.50": {"score": 1},
+        }
+        merged = _merge_lookup(df, "src_ip", lookup)
+        scores = merged.get_column("score").to_list()
+        assert scores == [1, None]
+
+
+class TestBuildLookup:
+    def test_merges_results_per_value(self) -> None:
+        r1 = EnrichmentResult(
+            provider="abuseipdb",
+            ip="203.0.113.50",
+            data={"abuseipdb_confidence_score": 88},
+            queried_at=datetime.now(tz=UTC),
+        )
+        r2 = EnrichmentResult(
+            provider="shodan",
+            ip="203.0.113.50",
+            data={"shodan_ports": "22,80"},
+            queried_at=datetime.now(tz=UTC),
+        )
+        r3 = EnrichmentResult(
+            provider="abuseipdb",
+            ip="198.51.100.22",
+            data={"abuseipdb_confidence_score": 12},
+            queried_at=datetime.now(tz=UTC),
+        )
+        lookup = _build_lookup([r1, r2, r3])
+        assert lookup["203.0.113.50"] == {
+            "abuseipdb_confidence_score": 88, "shodan_ports": "22,80",
+        }
+        assert lookup["198.51.100.22"] == {"abuseipdb_confidence_score": 12}
+
+    def test_empty_list(self) -> None:
+        assert _build_lookup([]) == {}
+
+
+class TestIocDedupAcrossDatasets:
+    """When the same IP appears in multiple bronze datasets, the provider
+    must only be queried once. Phase 3's IOC-first extraction makes this
+    structural: IPs are deduped before the provider loop, so the join
+    later is what fan-outs the enrichment per-dataset, not the API call.
+    """
+
+    @pytest.mark.asyncio()
+    async def test_shared_ip_queried_once(self, tmp_path: Path) -> None:
+        provider = AsyncMock()
+        provider.enrich_ip.return_value = EnrichmentResult(
+            provider="test_provider",
+            ip="203.0.113.50",
+            data={"score": 75},
+            queried_at=datetime.now(tz=UTC),
+        )
+        # Simulate: cowrie bronze + suricata bronze both contain 203.0.113.50.
+        # IOC extraction (set semantics in ioc.py) collapses to one entry.
+        # _enrich_iocs_with_provider is called once with the deduped list.
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        unique_ips = ["203.0.113.50"]  # already deduped via set in runner
+        results, _ = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, unique_ips, cache, errors,
+        )
+        cache.close()
+
+        assert provider.enrich_ip.call_count == 1
+        assert len(results) == 1

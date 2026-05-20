@@ -33,10 +33,10 @@ def _empty_hash_result(sha256: str) -> EnrichmentResult:
         provider="virustotal",
         ip=sha256,
         data={
-            "vt_malicious_count": 0,
-            "vt_undetected_count": 0,
-            "vt_name": "",
-            "vt_type": "",
+            "vt_file_malicious_count": 0,
+            "vt_file_undetected_count": 0,
+            "vt_file_name": "",
+            "vt_file_type": "",
         },
         queried_at=datetime.now(tz=UTC),
     )
@@ -119,10 +119,10 @@ class VirusTotalProvider:
             provider="virustotal",
             ip=sha256,
             data={
-                "vt_malicious_count": int(last_analysis["malicious"]),
-                "vt_undetected_count": int(last_analysis["undetected"]),
-                "vt_name": str(attributes["meaningful_name"]),
-                "vt_type": str(attributes["type_tag"]),
+                "vt_file_malicious_count": int(last_analysis["malicious"]),
+                "vt_file_undetected_count": int(last_analysis["undetected"]),
+                "vt_file_name": str(attributes["meaningful_name"]),
+                "vt_file_type": str(attributes["type_tag"]),
             },
             queried_at=datetime.now(tz=UTC),
         )

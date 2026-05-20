@@ -92,10 +92,10 @@ class TestVirusTotalHash:
         ):
             result = await provider.enrich_hash("a" * 64)
 
-        assert result.data["vt_malicious_count"] == 30
-        assert result.data["vt_undetected_count"] == 40
-        assert result.data["vt_name"] == "evil.bin"
-        assert result.data["vt_type"] == "elf"
+        assert result.data["vt_file_malicious_count"] == 30
+        assert result.data["vt_file_undetected_count"] == 40
+        assert result.data["vt_file_name"] == "evil.bin"
+        assert result.data["vt_file_type"] == "elf"
 
     @pytest.mark.asyncio()
     async def test_404_hash_returns_zeros_without_raising(
@@ -113,10 +113,10 @@ class TestVirusTotalHash:
         ):
             result = await provider.enrich_hash("a" * 64)
 
-        assert result.data["vt_malicious_count"] == 0
-        assert result.data["vt_undetected_count"] == 0
-        assert result.data["vt_name"] == ""
-        assert result.data["vt_type"] == ""
+        assert result.data["vt_file_malicious_count"] == 0
+        assert result.data["vt_file_undetected_count"] == 0
+        assert result.data["vt_file_name"] == ""
+        assert result.data["vt_file_type"] == ""
 
 
 class TestVirusTotalRetry:
