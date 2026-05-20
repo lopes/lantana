@@ -226,6 +226,55 @@ class TestNormalizeSuricata:
         alerts = result.filter(pl.col("class_uid") == CLASS_DETECTION_FINDING)
         assert "Attempted Information Leak" in alerts.get_column("finding_category").to_list()
 
+    def test_nested_alert_struct_is_flattened(self) -> None:
+        """Production Suricata bronze ships ``alert`` as a nested struct.
+
+        Test fixtures pre-flatten the fields, so the runner crashed in
+        production with ColumnNotFoundError until _flatten_suricata_alert_struct
+        was added. This test pins that behaviour.
+        """
+        nested = pl.DataFrame({
+            "event_type": ["alert", "flow"],
+            "src_ip": ["203.0.113.50", "203.0.113.51"],
+            "dest_ip": ["10.50.99.100", "10.50.99.100"],
+            "proto": ["TCP", "TCP"],
+            "alert": [
+                {
+                    "severity": 2,
+                    "signature": "ET SCAN Potential SSH Scan",
+                    "signature_id": 2001219,
+                    "category": "Attempted Information Leak",
+                    "action": "allowed",
+                },
+                None,
+            ],
+        })
+        result = normalize_suricata(nested)
+        alerts = result.filter(pl.col("class_uid") == CLASS_DETECTION_FINDING)
+        assert alerts.height == 1
+        assert alerts.get_column("finding_title").to_list() == ["ET SCAN Potential SSH Scan"]
+        assert alerts.get_column("finding_uid").to_list() == ["2001219"]
+        assert alerts.get_column("finding_category").to_list() == ["Attempted Information Leak"]
+
+    def test_missing_alert_column_filled_with_nulls(self) -> None:
+        """No `alert` column AND no flat alert_* columns — pure flow data.
+
+        Older or differently-configured Suricata sources may not emit
+        alert events at all; the normaliser must still complete and just
+        leave the detection columns null on every row.
+        """
+        flow_only = pl.DataFrame({
+            "event_type": ["flow", "flow"],
+            "src_ip": ["203.0.113.50", "198.51.100.22"],
+            "dest_ip": ["10.50.99.100", "10.50.99.100"],
+            "proto": ["TCP", "TCP"],
+        })
+        result = normalize_suricata(flow_only)
+        # All rows classified as network activity (no alerts present)
+        assert (result.get_column("class_uid") != CLASS_DETECTION_FINDING).all()
+        # finding_title is null for every row
+        assert result.get_column("finding_title").null_count() == result.height
+
 
 # ---------------------------------------------------------------------------
 # Nftables normalization

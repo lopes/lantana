@@ -273,6 +273,41 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
     return result
 
 
+def _flatten_suricata_alert_struct(df: pl.DataFrame) -> pl.DataFrame:
+    """Ensure flat ``alert_*`` columns exist regardless of bronze shape.
+
+    Production Suricata bronze (via Vector's eve.json) ships alert metadata
+    nested under an ``alert`` struct; test fixtures pre-flatten the same
+    fields. This helper hides the difference so the normaliser below can
+    always reference ``alert_severity`` etc. directly.
+    """
+    flat_targets: list[tuple[str, str, pl.DataType]] = [
+        ("severity", "alert_severity", pl.Int64()),
+        ("signature", "alert_signature", pl.Utf8()),
+        ("signature_id", "alert_signature_id", pl.Int64()),
+        ("category", "alert_category", pl.Utf8()),
+        ("action", "alert_action", pl.Utf8()),
+    ]
+
+    alert_dtype = df.schema.get("alert") if "alert" in df.columns else None
+    struct_field_names: set[str] = set()
+    if isinstance(alert_dtype, pl.Struct):
+        struct_field_names = {field.name for field in alert_dtype.fields}
+
+    new_columns: list[pl.Expr] = []
+    for sub, flat_name, dtype in flat_targets:
+        if flat_name in df.columns:
+            continue
+        if sub in struct_field_names:
+            new_columns.append(pl.col("alert").struct.field(sub).alias(flat_name))
+        else:
+            new_columns.append(pl.lit(None, dtype=dtype).alias(flat_name))
+
+    if new_columns:
+        df = df.with_columns(new_columns)
+    return df
+
+
 def normalize_suricata(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize bronze Suricata events to OCSF columns.
 
@@ -282,6 +317,8 @@ def normalize_suricata(df: pl.DataFrame) -> pl.DataFrame:
     """
     if df.is_empty():
         return df
+
+    df = _flatten_suricata_alert_struct(df)
 
     is_alert = pl.col("event_type") == "alert"
 
