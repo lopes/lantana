@@ -96,7 +96,17 @@ def read_silver_partition(
     dataset: str | None = None,
     silver_root: Path = SILVER_ROOT,
 ) -> pl.LazyFrame:
-    """Read silver-layer Parquet files for a given date and optional dataset."""
+    """Read silver-layer Parquet files for a given date and optional dataset.
+
+    Silver schemas differ across datasets (cowrie carries `sensor` / `shasum` /
+    `file_url`; suricata carries `alert.*` / `dns` / `tls`; nftables has its
+    own `chain` / `action` columns; dionaea its own credentials columns). A
+    bulk `scan_parquet(files)` would assume a unified schema and raise
+    `SchemaError: extra column ...` whenever a later file has a column the
+    first didn't. Scan each file individually and union diagonally — missing
+    columns become null, which is the correct semantic for cross-dataset gold
+    aggregation.
+    """
     date_str = target_date.isoformat()
     pattern = f"dataset={dataset}" if dataset else "dataset=*"
 
@@ -107,10 +117,11 @@ def read_silver_partition(
     if not matching_files:
         return pl.LazyFrame()
 
-    return pl.scan_parquet(
-        matching_files,
-        hive_partitioning=False,  # We handle partition columns explicitly
-    )
+    frames = [
+        pl.scan_parquet(f, hive_partitioning=False)
+        for f in matching_files
+    ]
+    return pl.concat(frames, how="diagonal")
 
 
 def write_silver_partition(

@@ -84,6 +84,38 @@ def test_write_gold_table_creates_parquet(tmp_path: Path) -> None:
     assert "date=2026-04-25" in str(path)
 
 
+def test_read_silver_partition_handles_heterogeneous_schemas(tmp_path: Path) -> None:
+    """Silver across datasets has different columns — cowrie has shasum/sensor,
+    suricata has alert.*, etc. Reading them together must NOT raise SchemaError
+    (Polars' default is to require a unified schema across all files in a scan).
+    """
+    target = date(2026, 5, 19)
+
+    cowrie_df = pl.DataFrame({
+        "src_ip": ["203.0.113.50"],
+        "shasum": ["abc"],
+        "sensor": ["container-123"],
+    })
+    write_silver_partition(cowrie_df, target, "cowrie", "sn-01", silver_root=tmp_path)
+
+    suricata_df = pl.DataFrame({
+        "src_ip": ["198.51.100.22"],
+        "alert_signature": ["ET SCAN ..."],
+        "alert_severity": [2],
+    })
+    write_silver_partition(suricata_df, target, "suricata", "sn-01", silver_root=tmp_path)
+
+    combined = read_silver_partition(target, silver_root=tmp_path).collect()
+
+    assert combined.height == 2
+    # Each row carries the union of columns; cells absent in the source
+    # parquet are null after diagonal concat.
+    cols = set(combined.columns)
+    assert {"src_ip", "shasum", "sensor", "alert_signature", "alert_severity"} <= cols
+    nulls = combined.filter(pl.col("src_ip") == "198.51.100.22").get_column("shasum").to_list()
+    assert nulls == [None]
+
+
 def test_read_gold_table_roundtrip(tmp_path: Path) -> None:
     """Write gold, read back, verify data matches."""
     df = pl.DataFrame({"total_events": [100], "unique_ips": [42]})
