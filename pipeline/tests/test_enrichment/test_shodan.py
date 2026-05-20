@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-import tenacity
 
 from lantana.enrichment.providers.shodan import ShodanProvider
 
@@ -74,15 +73,17 @@ class TestShodanProvider:
 
     @pytest.mark.asyncio()
     async def test_500_is_retried_then_raises(self, provider: ShodanProvider) -> None:
-        """5xx server errors are retried; tenacity wraps the final exception."""
+        """5xx server errors are retried; with reraise=True the original
+        HTTPStatusError surfaces after the retry budget is exhausted."""
         bad_gateway = httpx.Response(
             502, text="bad gateway",
             request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
         )
         mock_get = AsyncMock(return_value=bad_gateway)
         with patch.object(provider._client, "get", mock_get), \
-             pytest.raises(tenacity.RetryError):
+             pytest.raises(httpx.HTTPStatusError) as exc_info:
             await provider.enrich_ip("1.2.3.4")
+        assert exc_info.value.response.status_code == 502
         # Confirm retried at least twice (tenacity stop_after_attempt(3))
         assert mock_get.await_count >= 2
 

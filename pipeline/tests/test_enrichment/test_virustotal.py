@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-import tenacity
 
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
 
@@ -125,9 +124,10 @@ class TestVirusTotalRetry:
     async def test_429_is_retried(self, provider: VirusTotalProvider) -> None:
         """Rate-limit 429 must be retried — that's the only reason for the retry budget.
 
-        After tenacity exhausts its 3 attempts, it wraps the final
-        HTTPStatusError in a RetryError. The wrapping itself is the proof
-        that retry actually happened.
+        With ``reraise=True`` on the @retry decorator (Phase 2), tenacity
+        propagates the original HTTPStatusError after exhausting attempts
+        instead of wrapping it in RetryError. We verify retry happened via
+        the mock's await count.
         """
         rate_limited = httpx.Response(
             429, json={"error": "Rate limit"},
@@ -137,8 +137,9 @@ class TestVirusTotalRetry:
         )
         mock_get = AsyncMock(return_value=rate_limited)
         with patch.object(provider._client, "get", mock_get), \
-             pytest.raises(tenacity.RetryError):
+             pytest.raises(httpx.HTTPStatusError) as exc_info:
             await provider.enrich_ip("1.2.3.4")
+        assert exc_info.value.response.status_code == 429
         assert mock_get.await_count >= 2
 
     @pytest.mark.asyncio()

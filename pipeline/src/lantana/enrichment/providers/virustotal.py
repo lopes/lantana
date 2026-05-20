@@ -62,6 +62,7 @@ class VirusTotalProvider:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception(is_retryable_http_error),
+        reraise=True,
     )
     async def enrich_ip(self, ip: str) -> EnrichmentResult:
         """Query VirusTotal for reputation data on an IP address."""
@@ -95,6 +96,7 @@ class VirusTotalProvider:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception(is_retryable_http_error),
+        reraise=True,
     )
     async def enrich_hash(self, sha256: str) -> EnrichmentResult:
         """Query VirusTotal for analysis of a file hash."""

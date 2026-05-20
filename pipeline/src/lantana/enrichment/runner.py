@@ -188,14 +188,32 @@ ErrorAccumulator = dict[tuple[str, str], EnrichmentError]
 
 
 def _classify_http_error(status_code: int) -> str:
-    """Map HTTP status code to an error type label."""
+    """Map HTTP status code to a structured error type label.
+
+    `auth_failed` (401/403) is the only one operators must act on — it
+    means a vault key is broken. `not_found` is normal for IP lookups
+    and is logged at debug level. `rate_limit` and `server_error` are
+    expected throttling/transient signals.
+    """
     if status_code == 429:
         return "rate_limit"
     if status_code in (401, 403):
-        return "auth"
+        return "auth_failed"
+    if status_code == 404:
+        return "not_found"
     if 400 <= status_code < 500:
         return "http_4xx"
-    return "http_5xx"
+    return "server_error"
+
+
+def _log_failure(error_type: str, **fields: object) -> None:
+    """Route enrichment failures to the right log level by category."""
+    if error_type == "auth_failed":
+        logger.error("enrichment_failed", error_type=error_type, **fields)
+    elif error_type == "not_found":
+        logger.debug("enrichment_failed", error_type=error_type, **fields)
+    else:
+        logger.warning("enrichment_failed", error_type=error_type, **fields)
 
 
 def _record_error(
@@ -272,13 +290,16 @@ async def _enrich_ips_with_provider(
         except httpx.HTTPStatusError as exc:
             etype = _classify_http_error(exc.response.status_code)
             _record_error(errors, provider_name, etype, str(exc))
-            logger.warning("enrichment_failed", provider=provider_name, ip=ip, error_type=etype)
+            _log_failure(etype, provider=provider_name, ip=ip)
         except httpx.TimeoutException:
             _record_error(errors, provider_name, "timeout", "request timed out")
-            logger.warning("enrichment_failed", provider=provider_name, ip=ip, error_type="timeout")
+            _log_failure("timeout", provider=provider_name, ip=ip)
+        except httpx.ConnectError as exc:
+            _record_error(errors, provider_name, "network_error", str(exc))
+            _log_failure("network_error", provider=provider_name, ip=ip)
         except Exception as exc:
-            _record_error(errors, provider_name, "unknown", str(exc))
-            logger.warning("enrichment_failed", provider=provider_name, ip=ip, error_type="unknown")
+            _record_error(errors, provider_name, "unknown", repr(exc))
+            _log_failure("unknown", provider=provider_name, ip=ip, exc_repr=repr(exc))
     return results, cache_hits
 
 
@@ -357,26 +378,26 @@ async def run_enrichment(
                 assert isinstance(vt, VirusTotalProvider)
                 for sha256 in hashes:
                     cache_key = f"virustotal:{sha256}"
-                    if not _get_cached(cache, cache_key):
-                        try:
-                            result = await vt.enrich_hash(sha256)
-                            _set_cached(cache, result)
-                        except httpx.HTTPStatusError as exc:
-                            etype = _classify_http_error(exc.response.status_code)
-                            _record_error(errors, "virustotal", etype, str(exc))
-                            logger.warning(
-                                "hash_enrichment_failed", sha256=sha256, error_type=etype,
-                            )
-                        except httpx.TimeoutException:
-                            _record_error(errors, "virustotal", "timeout", "request timed out")
-                            logger.warning(
-                                "hash_enrichment_failed", sha256=sha256, error_type="timeout",
-                            )
-                        except Exception as exc:
-                            _record_error(errors, "virustotal", "unknown", str(exc))
-                            logger.warning(
-                                "hash_enrichment_failed", sha256=sha256, error_type="unknown",
-                            )
+                    if _get_cached(cache, cache_key) is not None:
+                        continue
+                    try:
+                        result = await vt.enrich_hash(sha256)
+                        _set_cached(cache, result)
+                    except httpx.HTTPStatusError as exc:
+                        etype = _classify_http_error(exc.response.status_code)
+                        _record_error(errors, "virustotal", etype, str(exc))
+                        _log_failure(etype, provider="virustotal", sha256=sha256)
+                    except httpx.TimeoutException:
+                        _record_error(errors, "virustotal", "timeout", "request timed out")
+                        _log_failure("timeout", provider="virustotal", sha256=sha256)
+                    except httpx.ConnectError as exc:
+                        _record_error(errors, "virustotal", "network_error", str(exc))
+                        _log_failure("network_error", provider="virustotal", sha256=sha256)
+                    except Exception as exc:
+                        _record_error(errors, "virustotal", "unknown", repr(exc))
+                        _log_failure(
+                            "unknown", provider="virustotal", sha256=sha256, exc_repr=repr(exc),
+                        )
 
             # Merge enrichment data into events
             enriched_df = _merge_enrichments(df, enrichments)

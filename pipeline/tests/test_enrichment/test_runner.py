@@ -6,12 +6,13 @@ import json
 import sqlite3
 from datetime import UTC, date, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
 from lantana.common.redact import RedactionConfig
+from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.base import EnrichmentResult
 from lantana.enrichment.runner import (
     ErrorAccumulator,
@@ -32,20 +33,22 @@ class TestClassifyHttpError:
         assert _classify_http_error(429) == "rate_limit"
 
     def test_auth_401(self) -> None:
-        assert _classify_http_error(401) == "auth"
+        assert _classify_http_error(401) == "auth_failed"
 
     def test_auth_403(self) -> None:
-        assert _classify_http_error(403) == "auth"
+        assert _classify_http_error(403) == "auth_failed"
 
-    def test_client_error(self) -> None:
+    def test_not_found(self) -> None:
+        assert _classify_http_error(404) == "not_found"
+
+    def test_other_client_errors(self) -> None:
         assert _classify_http_error(400) == "http_4xx"
-        assert _classify_http_error(404) == "http_4xx"
         assert _classify_http_error(422) == "http_4xx"
 
     def test_server_error(self) -> None:
-        assert _classify_http_error(500) == "http_5xx"
-        assert _classify_http_error(502) == "http_5xx"
-        assert _classify_http_error(503) == "http_5xx"
+        assert _classify_http_error(500) == "server_error"
+        assert _classify_http_error(502) == "server_error"
+        assert _classify_http_error(503) == "server_error"
 
 
 # --- _record_error ---
@@ -380,3 +383,93 @@ class TestFilterInternalIps:
         """Hostnames or junk pass through unchanged — runner filters later."""
         kept = _filter_internal_ips(["not.an.ip", "203.0.113.50"], self._config())
         assert kept == ["not.an.ip", "203.0.113.50"]
+
+
+# --- Phase 2: error classification end-to-end through the provider retry path ---
+
+
+class TestErrorClassificationEndToEnd:
+    """Exercise the full path: provider.enrich_ip → tenacity retry →
+    reraise=True → runner exception branch → _classify_http_error → errors.
+
+    Before Phase 2's `reraise=True`, tenacity wrapped the final exception
+    in a RetryError, which fell through the runner's catch-all and got
+    labelled `unknown`. These tests prove that's no longer the case.
+    """
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize(("status", "expected"), [
+        (401, "auth_failed"),
+        (403, "auth_failed"),
+        (404, "not_found"),
+        (429, "rate_limit"),
+        (500, "server_error"),
+        (502, "server_error"),
+    ])
+    async def test_status_to_error_type(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        status: int,
+        expected: str,
+    ) -> None:
+        async def _noop_sleep(_: float) -> None:
+            return None
+        monkeypatch.setattr("asyncio.sleep", _noop_sleep)
+
+        provider = AbuseIPDBProvider(api_key="test")
+        request = httpx.Request("GET", "https://api.abuseipdb.com/api/v2/check")
+        response = httpx.Response(status_code=status, request=request)
+
+        with patch.object(
+            provider._client, "get", new=AsyncMock(return_value=response),
+        ):
+            cache = _make_cache(tmp_path)
+            errors: ErrorAccumulator = {}
+            results, hits = await _enrich_ips_with_provider(
+                "abuseipdb", provider, ["1.2.3.4"], cache, errors,
+            )
+            cache.close()
+        await provider.close()
+
+        assert results == []
+        assert hits == 0
+        assert ("abuseipdb", expected) in errors, (
+            f"Expected error_type={expected}, got {list(errors.keys())}"
+        )
+        assert ("abuseipdb", "unknown") not in errors
+
+    @pytest.mark.asyncio()
+    async def test_connect_error_classified(self, tmp_path: Path) -> None:
+        provider = AsyncMock()
+        provider.enrich_ip.side_effect = httpx.ConnectError("DNS lookup failed")
+
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        results, hits = await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
+        cache.close()
+
+        assert results == []
+        assert hits == 0
+        assert ("test_provider", "network_error") in errors
+        assert "DNS lookup failed" in errors[("test_provider", "network_error")].error_message
+
+    @pytest.mark.asyncio()
+    async def test_unknown_records_repr(self, tmp_path: Path) -> None:
+        """A genuinely-unknown exception still gets recorded, with repr for debugging."""
+        provider = AsyncMock()
+        provider.enrich_ip.side_effect = RuntimeError("something obscure")
+
+        cache = _make_cache(tmp_path)
+        errors: ErrorAccumulator = {}
+        await _enrich_ips_with_provider(
+            "test_provider", provider, ["1.2.3.4"], cache, errors,
+        )
+        cache.close()
+
+        assert ("test_provider", "unknown") in errors
+        msg = errors[("test_provider", "unknown")].error_message
+        assert "RuntimeError" in msg
+        assert "something obscure" in msg

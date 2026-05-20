@@ -50,6 +50,7 @@ class GreyNoiseProvider:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception(is_retryable_http_error),
+        reraise=True,
     )
     async def enrich_ip(self, ip: str) -> EnrichmentResult:
         """Query GreyNoise Community for context on an IP address."""
