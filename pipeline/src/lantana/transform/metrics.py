@@ -546,8 +546,11 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
             "top_asns": [top_asns],
         })
 
+    # geo.asn is Int64 in production (MaxMind ASN MMDB returns int); is_not_null
+    # is the only validity check needed. The previous `!= ""` comparison worked
+    # only against string-typed test fixtures.
     asns = (
-        silver.filter(pl.col("geo.asn").is_not_null() & (pl.col("geo.asn") != ""))
+        silver.filter(pl.col("geo.asn").is_not_null())
         .group_by("geo.asn", "geo.isp")
         .agg(
             pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
@@ -559,7 +562,7 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
     top_asns = asns.select(
         pl.concat_str(
             [
-                pl.col("geo.asn"), pl.lit("|"),
+                pl.col("geo.asn").cast(pl.Utf8), pl.lit("|"),
                 pl.col("geo.isp").fill_null(""), pl.lit(":"),
                 pl.col("unique_ips").cast(pl.Utf8),
             ],

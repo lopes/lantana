@@ -689,6 +689,32 @@ class TestGeographicSummary:
         df = pl.DataFrame({"src_endpoint_ip": ["1.2.3.4"]})
         assert compute_geographic_summary(df).is_empty()
 
+    def test_int64_asn_column(self) -> None:
+        """Production geo.asn is Int64 (MaxMind ASN MMDB returns int).
+
+        Previously the function did `pl.col("geo.asn") != ""` which only
+        worked with string-typed test fixtures and crashed in production
+        with ComputeError: cannot compare string with numeric type (i64).
+        """
+        df = pl.DataFrame({
+            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
+            "geo.country_code": ["BR", "US"],
+            "geo.city": ["São Paulo", "New York"],
+            "geo.latitude": [-23.5, 40.7],
+            "geo.longitude": [-46.6, -74.0],
+            "geo.asn": pl.Series([262691, 15169], dtype=pl.Int64),
+            "geo.isp": ["CONECTA LTDA.", "Google"],
+        })
+        result = compute_geographic_summary(df)
+        assert not result.is_empty()
+        asns = result.row(0, named=True)["top_asns"]
+        assert isinstance(asns, list)
+        assert len(asns) == 2
+        # ASN values are stringified in the output entries
+        joined = " ".join(asns)
+        assert "262691" in joined
+        assert "15169" in joined
+
 
 # ---------------------------------------------------------------------------
 # detection_findings
