@@ -2,7 +2,7 @@
 
 **Status:** op_alpha pipeline is healthy and producing complete data daily. All Layer 0-3 OPSEC controls verified. No SEV-class issues open.
 
-**Last update:** 2026-05-21 evening (UTC), after a full day of incident response + hardening that closed out the original PLAN.md scope (Phases 1-3) and surfaced three further defects (#9-#11), one SEV1 (Vector crashloop), and added a new component (Phase 3.5 alerter).
+**Last update:** end of 2026-05-21 (UTC), after a full day of incident response + hardening that closed out the original PLAN.md scope (Phases 1-3), surfaced three further defects (#9-#11), one SEV1 (Vector crashloop), added a new component (Phase 3.5 alerter — verified live via Discord), and shipped three optional follow-ups (#3 cosmetic interface_out, #4 validate-handler centralisation, #5 run_summary log line).
 
 **This file replaces the prior PLAN.md** (which covered the bronze/silver hardening goals from 2026-05-20). Every issue tracked there is now shipped — see "What was done" below.
 
@@ -29,7 +29,7 @@
 
 ## What was done since 2026-05-20 evening
 
-Eleven commits, in chronological order. Read with `git log --oneline --since="2026-05-21 00:00"` for the full sequence.
+Thirteen commits, in chronological order. Read with `git log --oneline --since="2026-05-21 00:00"` for the full sequence.
 
 1. **`08f6edf` test(pipeline): production-shape integration test + flatten JSON-string path** — Phase 1. Built `tests/fixtures/production_shape/bronze/dataset=*/...` mirroring Vector's actual NDJSON (nested `geo`, nested suricata `alert`, raw-message nftables, IPv4-mapped IPv6 dst). Writing the test surfaced that `read_bronze_ndjson` JSON-stringifies nested dicts to stabilise schema inference, but `_flatten_geo_struct` / `_flatten_suricata_alert_struct` only handled `pl.Struct` — they silently filled silver geo/finding columns with null literals across every event since op_alpha went live. Helpers now decode the `pl.Utf8` JSON case via `str.json_decode(<schema>)`.
 
@@ -53,36 +53,51 @@ Eleven commits, in chronological order. Read with `git log --oneline --since="20
 
 11. **`a759e2b` fix(vector): use Vector's flat City-MMDB schema in geo enrichment VRL** — Phase 3. Vector's `geoip` enrichment_table type **flattens** GeoLite2-City records into top-level columns (`city_name / country_code / region_code / latitude / longitude / timezone / postal_code / metro_code`) — NOT the MaxMind-native nested shape the `maxminddb` Python library returns. Our VRL queried the nested paths and got null on every event since op_alpha went live. PLAN.md's earlier "Issue B" attributed this to a broken MMDB file; the file was always fine — the bug was schema mismatch in the VRL. ASN was working because Vector passes ASN records through unchanged and our VRL already used the flat `autonomous_system_*` keys.
 
+12. **`bc78202` docs: end-of-2026-05-21 hand-off — CLAUDE.md principles + PLAN.md rewrite** — distilled today's lessons into CLAUDE.md (two-pass redaction, `_ensure_gold_columns`, rate-limit dual circuit-breaker, Vector deploy discipline, alerter sketch) and rewrote PLAN.md as a cold-resumption hand-off.
+
+13. **`56fd123` chore: centralise Vector validate handler + run_summary log + interface_out fix** — three follow-ups that were "remaining work" in `bc78202` and got knocked out the same evening:
+    - **#4 validate handler centralisation.** Removed the duplicated `Validate full Vector config tree` tasks from `firewall/` and `profile_collector/` and added a single handler in `base/handlers/main.yml`, defined immediately before `Restart Vector`. Every Vector-template task now uses `notify: ["Validate Vector config tree", "Restart Vector"]`. Side benefit: cowrie, dionaea, suricata Vector configs (which previously had inline restart and no validation) are now crashloop-safe too.
+    - **#5 run_summary** — one structured log event at the end of `run_enrichment` and `run_transform` aggregating silver/gold row counts + per-provider counters. Operators get the day's outcome in one event instead of grepping ~15 lines.
+    - **#3 interface_out cosmetic** — VRL detect-and-reset for `parse_key_value`'s mishandling of the empty-`OUT=` pattern in nftables logs.
+
+**Alerter verification:** `lantana-alert --date 2026-05-20 --force` posted a red critical embed to Discord successfully during today's session. Wiring confirmed end-to-end; tomorrow's 05:00 UTC cron will run automatically.
+
 ---
 
-## Remaining work
+## What's still on the table
 
-Ordered by priority. Nothing is SEV; the pipeline is healthy and self-healing.
+Pipeline is healthy and self-healing. Nothing SEV; nothing that needs a fix today.
 
-### 1. Cosmetic — nftables `interface_out` captures `MAC=` (low)
+### Historical geo gap (not recoverable, just a fact)
 
-`parse_key_value` with space delimiter doesn't handle the `OUT= MAC=...` empty-value-then-key edge case cleanly. Recent bronze samples show `interface_out: "MAC=fa:16:3e:..."` instead of empty. Doesn't affect silver (`normalize_nftables` doesn't reference `interface_out`) or gold. Single-line VRL fix when convenient — either explicit handling of the empty `OUT=` case, or post-process drop of any `interface_out` value containing `=`.
+5-19 and 5-20 silver have null `geo.country_code / city / region_code / latitude / longitude / timezone` because the bronze on disk for those dates was ingested under the broken VRL. Re-running silver against that bronze cannot recover the data — Vector itself never wrote it. The fix only takes effect for events ingested after 2026-05-21 15:06 UTC. 5-21 silver will be mixed (events before 15:06 → null City, after → populated). 5-22 onward: cleanly populated.
 
-### 2. Refactor — centralise merged-tree validate (low)
+### Verification owed tomorrow morning (2026-05-22)
 
-The same `vector validate` task currently lives in `firewall/tasks/main.yml` AND `profile_collector/tasks/main.yml`. Move it to the base role (or a single dedicated handler/task) so every Vector-config-touching role automatically gets validation without copy-paste. Touchpoint: `roles/base/tasks/vector.yml`.
+The first end-to-end run with EVERYTHING fixed is the 2026-05-22 01:00 UTC cron processing 5-21 bronze. Things to spot-check:
 
-### 3. PLAN.md Phase 4 — `run_summary` log line (optional, ~5 lines)
+1. Silver written for all three active datasets (cowrie + suricata + **nftables for the first time**):
+   ```
+   sudo find /var/lib/lantana/datalake/silver/ -name '*.parquet' | grep "date=2026-05-21" | sort
+   ```
+2. Gold partitions present for all 7 tables:
+   ```
+   sudo find /var/lib/lantana/datalake/gold/ -name '*.parquet' | grep "date=2026-05-21" | sort
+   ```
+3. Geographic data populating in gold (read the `geographic_summary` parquet — should have real countries / cities / ASNs):
+   ```
+   sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c "
+   import polars as pl
+   df = pl.read_parquet('/var/lib/lantana/datalake/gold/geographic_summary/date=2026-05-21/summary.parquet')
+   print('top_countries:', df.get_column('top_countries').to_list()[0][:5])
+   print('top_cities:', df.get_column('top_cities').to_list()[0][:5])
+   "
+   ```
+4. `enrichment_errors.json` for 5-21 — any new error types are worth investigating; persistent rate_limit is expected.
+5. The 05:00 UTC alerter — silent means clean. If a Discord embed arrives, follow the link/details to root-cause.
+6. New `run_summary` events visible in journalctl for both `lantana-enrich` and `lantana-transform`.
 
-At the end of `run_enrichment`, emit one `logger.info("run_summary", ...)` aggregating per-dataset row counts + per-provider counters (enriched / cache_hits / rate_limits). Today the operator has to grep multiple events to reconstruct a run's outcome. The same for `run_transform`.
-
-### 4. Historical geo gap (not recoverable)
-
-5-19 and 5-20 silver have null `geo.country_code / city / region_code / latitude / longitude / timezone` because the bronze on disk for those dates was ingested under the broken VRL. Re-running silver against that bronze cannot recover the data — Vector itself never wrote it. The fix only takes effect for events ingested after 2026-05-21 15:06 UTC. 5-21 silver will be mixed (events before 15:06 → null City, after → populated). 5-22 onward: cleanly populated. Acceptable — gold's `geographic_summary` will catch up tomorrow.
-
-### 5. Tomorrow morning verification
-
-The first end-to-end run with everything fixed will be the 2026-05-22 01:00 UTC cron processing 5-21 bronze:
-- Phase 2 nftables parser should produce its first non-empty silver partition.
-- City fields will start populating in gold's `geographic_summary` (mixed for 5-21, full for 5-22+).
-- Alerter at 05:00 UTC will read 5-21's errors. If any critical row landed, it'll page Discord. Otherwise silent.
-
-If something new breaks, the alerter is the right starting point to find out.
+If anything is unexpected: ssh to the VPS, check `journalctl -u vector --since '2026-05-22 00:00'` for ingestion health, and `enrichment_errors.json` for pipeline-side issues.
 
 ---
 
@@ -120,9 +135,29 @@ config/ansible/roles/
 **Deploy patterns:**
 
 - `--tags pipeline` → Python code (clone + uv sync + cron file).
-- `--tags nftables` → firewall.vector.yaml + nft rules + Vector restart (with validate).
-- `--tags collector` → receive.vector.yaml + Vector restart (with validate).
+- `--tags nftables` → firewall.vector.yaml + nft rules. Vector restart now via the centralised handler (`base/handlers/main.yml`), which runs `Validate Vector config tree` first.
+- `--tags collector` → receive.vector.yaml. Same handler chain.
+- `--tags cowrie / dionaea / suricata / honeypots` → respective Vector pipelines, same handler chain.
 - After any pipeline-code redeploy, targeted re-runs via `lantana-enrich --date YYYY-MM-DD` and `lantana-transform --date YYYY-MM-DD` work cleanly; both overwrite their date partitions.
+
+**One-off ops commands worth remembering:**
+
+```bash
+# Trigger the alerter manually (e.g. to re-page after dismissing a Discord alert)
+sudo -u nectar /opt/lantana/pipeline/venv/bin/lantana-alert --date YYYY-MM-DD --force
+
+# Inspect cache state per provider before deciding whether to re-run enrich
+sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c "
+import sqlite3
+conn = sqlite3.connect('/var/lib/lantana/datalake/.enrichment_cache.db')
+for p, t, c in conn.execute('SELECT provider, ioc_type, COUNT(*) FROM cache GROUP BY provider, ioc_type ORDER BY provider, ioc_type'):
+    print(f'{p:12} {t:6} {c}')
+"
+
+# Check Vector ingestion health
+sudo systemctl is-active vector
+sudo journalctl -u vector --since '2 hours ago' | grep -iE 'error|warn|enrichment|geoip' | head
+```
 
 **Things I would have done differently today:**
 
