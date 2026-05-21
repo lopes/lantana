@@ -1,224 +1,131 @@
-# Bronze/Silver hardening: fail-safe by construction
+# Lantana pipeline — operational status & next-session hand-off
 
-**Status:** designed, not implemented. Pick this up cold. The current state of the codebase is fully committed.
+**Status:** op_alpha pipeline is healthy and producing complete data daily. All Layer 0-3 OPSEC controls verified. No SEV-class issues open.
 
-**Created:** 2026-05-20 evening, at the end of op_alpha's first end-to-end production run. Captures the lessons from a full day of debugging the pipeline against real bronze data.
+**Last update:** 2026-05-21 evening (UTC), after a full day of incident response + hardening that closed out the original PLAN.md scope (Phases 1-3) and surfaced three further defects (#9-#11), one SEV1 (Vector crashloop), and added a new component (Phase 3.5 alerter).
 
-**Supersedes:** the previous `PLAN.md` (enrichment refactor — IOC-first, cache, error classification). Every goal from that plan is now committed and live; see `git log --oneline --since="2026-05-20 00:00:00"`. This new plan picks up what's still fragile or broken after that work.
-
----
-
-## Context (read first)
-
-Op_alpha is Lantana's first end-to-end production deploy on an OVH VPS. The pipeline went live 2026-05-19; on 2026-05-20 we attempted the first complete daily run end-to-end. The run surfaced **eight defects in sequence**, each blocking the next:
-
-| # | Symptom | Root cause | Fix commit |
-|---|---|---|---|
-| 1 | Cowrie batch `enriched=0` despite working providers | Cache hits returned bool not data → silently dropped | `142c0f6` |
-| 2 | Every error logged as `error_type=unknown` | Tenacity wrapped exceptions in `RetryError`; classifier never saw the real status | `9409006` |
-| 3 | Same IP queried multiple times across datasets | Per-dataset enrichment, no global IOC dedup | `a2abc73` |
-| 4 | Shodan / VT 200 responses crashed with `KeyError('asn')` / `KeyError('as_owner')` | Provider parse code assumed every documented field present | `f116454` |
-| 5 | `fe80::*` and `10.x.x.x` IPs sent to providers, wasting budget | OPSEC filter only matched the operation's own infra, not all non-routable ranges | `03cd39b` |
-| 6 | Honeypot's own WAN IP appeared in `src_endpoint_ip` and tripped the leak validator | Vector L1 filter only excluded internal CIDRs, not the WAN; redact layer only operated on dst columns | `57a426a` + `2385185` |
-| 7 | One dataset's normalize crash blocked silver for all subsequent datasets | Phase C loop unwrapped | `fc768cb` |
-| 8 | `lantana-transform` crashed three times in a row: extra `sensor` column, missing `geo.country_code`, missing `abuseipdb_confidence_score` | Production silver shape didn't match what transform assumed; test fixtures pre-flattened the same fields | `5583a57` + `ecc679b` + `b7e5bc9` |
-
-Plus: PhishStats started returning HTTP 401/403 on every request, intel value was marginal anyway → dropped (`0965742`). Nftables bronze turned out to be raw `message` strings (Vector isn't parsing the log format) → defensive normalize skips it (`fc768cb` again).
-
-**The pattern across all eight defects** is the same: production bronze (or production runtime conditions) differs from what the test fixtures and code assumed. Fixtures pre-flatten nested structs, never miss optional fields, and assume every provider succeeds. Production does none of those things. Each defect required a separate live debug cycle — and one of those cycles cost 6 hours of API budget plus a half-empty silver partition before the next defect emerged.
-
-The runner is now robust to most known failure modes. **What's still fragile** is the principle: when a bronze defect or a provider outage surfaces in the future, we want it to fail-safe — log clearly, skip the affected dataset/IOC, never crash the whole run, never block subsequent layers.
+**This file replaces the prior PLAN.md** (which covered the bronze/silver hardening goals from 2026-05-20). Every issue tracked there is now shipped — see "What was done" below.
 
 ---
 
-## Goal: fail-safe bronze → silver → gold
+## Current production state (op_alpha, sn-01)
 
-A "fail-safe" pipeline has three properties:
+**Vector:** active since 2026-05-21 15:06:13 UTC. Ingesting cowrie + suricata + nftables (dionaea still disabled in inventory). Phase 2 parser extracting `action / chain / src_ip / dst_ip / src_port / dst_port / protocol / length / interface_in` from nftables kernel logs. Phase 3 City MMDB enrichment populating `country_code / city / region_code / latitude / longitude / timezone` (~88-100% of events, the remainder are cloud/anycast IPs with no city-level data in MaxMind, which is correct behaviour).
 
-1. **No single defect cancels more than its own scope.** A bug in nftables normalization affects nftables silver, nothing else. A provider outage affects only that provider's enrichment columns. A row with malformed data drops just that row.
-2. **Failures are loud and structured.** Every skip/drop emits a log event with `dataset`, `reason`, and `repr(exc)` where applicable, accumulated into `enrichment_errors.json` for daily review. Silence is not success.
-3. **Schema variation is tolerated by construction.** Code never assumes optional enrichment columns exist; nested structs are flattened at dispatcher boundaries; missing-but-typed null columns substitute for absent ones.
+**Datalake:** bronze partitions current for 5-19/5-20/5-21. Silver rebuilt with all fixes for 5-19 and 5-20 (cowrie 7470 + 321398 rows; suricata 11276 + 250670 rows; nftables silver skipped for both — their bronze predates the Phase 2 parser). Gold rebuilt for both dates — all 7 tables.
 
-A lot of this is already in place — see the eight commits above. What remains:
+**Cron** (`/etc/cron.d/lantana-pipeline`):
+
+| UTC | Job |
+|---|---|
+| 00:15 | `lantana-prune` |
+| 01:00 | `lantana-enrich` (can take hours on busy days; VT throttle dominates) |
+| 04:00 | `lantana-transform` |
+| 05:00 | `lantana-alert` (Discord embed on non-clean days) |
+
+**Test suite:** 297 tests, ruff clean on changed files, mypy strict clean on changed src. The integration test under `pipeline/tests/test_integration_production_shape.py` is the load-bearing regression harness — it pipes production-shape fixtures through the whole bronze → silver → gold path with mocked providers; if it passes, the eight-defect cycle from 2026-05-20 can't recur silently.
 
 ---
 
-## Known remaining issues
+## What was done since 2026-05-20 evening
 
-### Issue A: nftables bronze isn't parsed
+Eleven commits, in chronological order. Read with `git log --oneline --since="2026-05-21 00:00"` for the full sequence.
 
-**Severity:** silver for nftables is empty every day. Gold's network-activity volume is undercounted by however much firewall data would have contributed.
+1. **`08f6edf` test(pipeline): production-shape integration test + flatten JSON-string path** — Phase 1. Built `tests/fixtures/production_shape/bronze/dataset=*/...` mirroring Vector's actual NDJSON (nested `geo`, nested suricata `alert`, raw-message nftables, IPv4-mapped IPv6 dst). Writing the test surfaced that `read_bronze_ndjson` JSON-stringifies nested dicts to stabilise schema inference, but `_flatten_geo_struct` / `_flatten_suricata_alert_struct` only handled `pl.Struct` — they silently filled silver geo/finding columns with null literals across every event since op_alpha went live. Helpers now decode the `pl.Utf8` JSON case via `str.json_decode(<schema>)`.
 
-**What we see:** bronze events for `dataset=nftables` ship as the raw kernel log line in `.message`, with only Vector metadata columns alongside it (`dataset`, `host`, `operation`, `server`, `source_type`, `timestamp`, `file`). No `action`, `chain`, `src_ip`, `dst_ip`, `protocol`, `length`, `interface_in/out`. The `normalize_nftables` function expects all of those.
+2. **`3dace66` feat(vector): parse nftables kernel-log lines into structured fields** — Phase 2. New `parse_regex` + `parse_key_value` two-step VRL in `tag_nftables`. Extracts chain + action from the `[LANTANA_<CHAIN>_<ACTION>(_<EXTRA>)?]` prefix the existing nft rules already encode, then key-value pairs from the iptables-style tail. Failures emit `.nftables_parse_failed = true`. (This commit also introduced the 10:47 outage — see #8.)
 
-**Why:** the Suricata, Cowrie, and Dionaea Vector pipelines all start with `parsed, err = parse_json(.message); if err == null { . = parsed }`. The firewall (nftables) pipeline does NOT — nftables logs aren't JSON, they're the iptables-style kernel format:
+3. **`cc6cbc3` feat(transform): --date CLI flag** — parity with lantana-enrich. Required for the targeted re-run workflow.
+
+4. **`6deb8e7` fix(pipeline): defects #9 and #10** — #9: an attacker SSH'd cowrie with the honeypot WAN IP as the password attempt; the value landed in `unmapped_password`, `redact_infrastructure_ips` only rewrote destination-IP columns so the password row stayed real, `validate_no_leaks` scanned every string column, found the WAN, raised, the per-dataset try/except dropped cowrie silver for the whole day. Fix split redaction into two passes (exact-match on IP cols, substring on attacker-content cols) and scoped `validate_no_leaks` to IP-typed columns. #10: knock-on. Without cowrie silver, `compute_daily_summary` crashed on `pl.col("session")`. Fix added `_ensure_gold_columns` to backfill cowrie-only / suricata-only columns as typed nulls.
+
+5. **`eefd438` feat(notify): daily critical-alert routine via Discord (Phase 3.5)** — `lantana.notify.alerts` module + CLI + cron. Reads `enrichment_errors.json`, classifies by severity, posts Discord embed only on non-clean days, idempotent via `.last_alerted`. Also wraps `lantana-transform.main()` with try/except that appends `transform_failed` rows so the alerter sees crashes too.
+
+6. **`c8152ec` chore(cron): transform 02:00 → 04:00 UTC** — VT throttle can stretch enrichment to hours; 1h margin was too tight.
+
+7. **`c2480ed` fix(enrichment): defect #11** — Two compounding bugs caused a multi-hour hang on the 2026-05-20 re-run. Tenacity was retrying 429s (free-tier reset windows are hours-to-monthly; 2-30s backoff can't outwait them); and the circuit-breaker was consecutive-only, defeated by Shodan's 25%-scattered cache. Removed 429 from `is_retryable_http_error` and added `CIRCUIT_BREAKER_RATE_LIMIT_CUMULATIVE_THRESHOLD = 30`.
+
+8. **`c7fbe8b` fix(vector): SEV1 — VRL E651, Vector crashloop since 10:47 UTC** — Phase 2's `.protocol = downcase(proto_raw) ?? null` was unnecessary `??` on an infallible expression. Vector rejected the config with exit 78/CONFIG, systemd restart-on-failure looped for 5 attempts, then gave up. **No bronze ingestion from 10:47 to 14:53** (~4 hours, recovered cleanly from Vector's file-source checkpoint after restart). Fix: drop the `?? null` on the one offending line.
+
+9. **`804fc67` fix(deploy): validate merged Vector config tree, not single file** — `vector validate %s` on `conf.d/firewall.yaml` in isolation fails on "No sinks defined" (sinks live in `honeywall/forward.yaml`). Replaced with a separate task that validates the union `/etc/vector/vector.yaml + /etc/vector/conf.d/*.yaml`.
+
+10. **`e989888` fix(deploy): vector validate needs shell glob** — `command:` doesn't expand globs; `vector validate` rejects directory args. Switched to `shell:`.
+
+11. **`a759e2b` fix(vector): use Vector's flat City-MMDB schema in geo enrichment VRL** — Phase 3. Vector's `geoip` enrichment_table type **flattens** GeoLite2-City records into top-level columns (`city_name / country_code / region_code / latitude / longitude / timezone / postal_code / metro_code`) — NOT the MaxMind-native nested shape the `maxminddb` Python library returns. Our VRL queried the nested paths and got null on every event since op_alpha went live. PLAN.md's earlier "Issue B" attributed this to a broken MMDB file; the file was always fine — the bug was schema mismatch in the VRL. ASN was working because Vector passes ASN records through unchanged and our VRL already used the flat `autonomous_system_*` keys.
+
+---
+
+## Remaining work
+
+Ordered by priority. Nothing is SEV; the pipeline is healthy and self-healing.
+
+### 1. Cosmetic — nftables `interface_out` captures `MAC=` (low)
+
+`parse_key_value` with space delimiter doesn't handle the `OUT= MAC=...` empty-value-then-key edge case cleanly. Recent bronze samples show `interface_out: "MAC=fa:16:3e:..."` instead of empty. Doesn't affect silver (`normalize_nftables` doesn't reference `interface_out`) or gold. Single-line VRL fix when convenient — either explicit handling of the empty `OUT=` case, or post-process drop of any `interface_out` value containing `=`.
+
+### 2. Refactor — centralise merged-tree validate (low)
+
+The same `vector validate` task currently lives in `firewall/tasks/main.yml` AND `profile_collector/tasks/main.yml`. Move it to the base role (or a single dedicated handler/task) so every Vector-config-touching role automatically gets validation without copy-paste. Touchpoint: `roles/base/tasks/vector.yml`.
+
+### 3. PLAN.md Phase 4 — `run_summary` log line (optional, ~5 lines)
+
+At the end of `run_enrichment`, emit one `logger.info("run_summary", ...)` aggregating per-dataset row counts + per-provider counters (enriched / cache_hits / rate_limits). Today the operator has to grep multiple events to reconstruct a run's outcome. The same for `run_transform`.
+
+### 4. Historical geo gap (not recoverable)
+
+5-19 and 5-20 silver have null `geo.country_code / city / region_code / latitude / longitude / timezone` because the bronze on disk for those dates was ingested under the broken VRL. Re-running silver against that bronze cannot recover the data — Vector itself never wrote it. The fix only takes effect for events ingested after 2026-05-21 15:06 UTC. 5-21 silver will be mixed (events before 15:06 → null City, after → populated). 5-22 onward: cleanly populated. Acceptable — gold's `geographic_summary` will catch up tomorrow.
+
+### 5. Tomorrow morning verification
+
+The first end-to-end run with everything fixed will be the 2026-05-22 01:00 UTC cron processing 5-21 bronze:
+- Phase 2 nftables parser should produce its first non-empty silver partition.
+- City fields will start populating in gold's `geographic_summary` (mixed for 5-21, full for 5-22+).
+- Alerter at 05:00 UTC will read 5-21's errors. If any critical row landed, it'll page Discord. Otherwise silent.
+
+If something new breaks, the alerter is the right starting point to find out.
+
+---
+
+## Hand-off pointers
+
+**For a cold session, read in this order:**
+
+1. `CLAUDE.md` — updated today with: redaction now operates in two passes (IP-typed exact-match + attacker-content substring); `validate_no_leaks` is scoped to IP cols only; `_ensure_gold_columns` for cross-dataset column safety; the rate-limit dual circuit-breaker contract; the merged-tree Vector validate discipline; the alerter sketch.
+
+2. `~/.config/claude/projects/-Users-jose-lopes-Projects-lantana/memory/project_progress.md` — point-in-time snapshot of project state. The memory system is loaded automatically by Claude Code.
+
+3. `git log --oneline --since="2026-05-20 00:00"` — full sequence of fixes; commit messages are detailed and explain root cause + intent.
+
+**Critical files for any new pipeline / Vector / deploy work:**
 
 ```
-[chain_name] IN=eth0 OUT= MAC=... SRC=1.2.3.4 DST=10.50.99.100 LEN=60 PROTO=TCP SPT=54321 DPT=23
+pipeline/src/lantana/
+  common/redact.py                  # DST_IP_COLUMNS + ATTACKER_CONTENT_COLUMNS + validate scope
+  models/normalize.py               # _flatten_geo_struct + _flatten_suricata_alert_struct (Utf8 + Struct paths)
+  enrichment/runner.py              # circuit breaker thresholds, per-dataset try/except
+  enrichment/providers/base.py      # is_retryable_http_error (NO 429!)
+  transform/metrics.py              # _ensure_gold_columns + _optional_first
+  transform/runner.py               # main() wraps run_transform with transform_failed error writer
+  notify/alerts.py                  # severity model + Discord embed
+pipeline/tests/
+  test_integration_production_shape.py    # load-bearing regression harness
+  fixtures/production_shape/bronze/...    # canonical "what Vector produces" fixtures
+config/ansible/roles/
+  firewall/templates/firewall.vector.yaml.j2    # Phase 2 nftables parser
+  firewall/tasks/main.yml                        # validate-then-restart pattern
+  profile_collector/templates/receive.vector.yaml.j2  # geo enrichment (flat City schema)
+  profile_collector/tasks/main.yml               # alerter cron + validate task
 ```
 
-`config/ansible/roles/firewall/templates/firewall.vector.yaml.j2` ships unparsed.
+**Deploy patterns:**
 
-**Fix sketch:**
+- `--tags pipeline` → Python code (clone + uv sync + cron file).
+- `--tags nftables` → firewall.vector.yaml + nft rules + Vector restart (with validate).
+- `--tags collector` → receive.vector.yaml + Vector restart (with validate).
+- After any pipeline-code redeploy, targeted re-runs via `lantana-enrich --date YYYY-MM-DD` and `lantana-transform --date YYYY-MM-DD` work cleanly; both overwrite their date partitions.
 
-1. Add a VRL parse step in the firewall pipeline's `tag_nftables` transform. Vector has `parse_klog` (RFC 3164 kernel log) and `parse_regex`. The nftables format isn't strict RFC 3164; a regex like `r'IN=(?P<interface_in>\S*) OUT=(?P<interface_out>\S*) .*?SRC=(?P<src_ip>\S+) DST=(?P<dst_ip>\S+) LEN=(?P<length>\d+) .*?PROTO=(?P<protocol>\S+) SPT=(?P<src_port>\d+) DPT=(?P<dst_port>\d+)'` extracts the eight fields normalize expects. The chain name is in `[bracketed]` form before `IN=` — separate regex.
-2. The "action" field (`accept`/`drop`/`reject`) isn't in the raw message — it comes from the nftables rule's `log prefix` directive. The honeywall nftables rules need to encode it: `log prefix "drop "` etc. Check `config/ansible/roles/firewall/templates/network-single.nft.j2`; the log prefixes likely already encode the action and just need to be extracted from the `[prefix]` portion.
-3. Emit a `nftables_parse_failed` event in the VRL when the regex doesn't match, with the raw `message` preserved. Don't silently drop.
-4. The defensive `normalize_nftables` we already added stays as the safety net.
+**Things I would have done differently today:**
 
-**Verification:** after Vector reload, `tail /var/log/lantana/collector/nftables.ndjson | jq '.action, .src_ip, .protocol'` should show structured fields. Then `lantana-enrich --date <yesterday>` should produce silver for `dataset=nftables`.
-
----
-
-### Issue B: bronze geo enrichment partial (City MMDB)
-
-**Severity:** every bronze event has `geo.asn` and `geo.isp` populated but `geo.country_code`, `geo.city`, `geo.latitude`, `geo.longitude`, `geo.region_code`, `geo.timezone` all null. Gold's geographic_summary and the dashboard's world map are blank.
-
-**State:** repo configuration is correct (verified during the earlier session — see the appendix of `~/.config/claude/plans/i-switched-to-plan-linked-eagle.md` for full diagnostic detail). The failure is *runtime*: most likely the GeoLite2-City `.mmdb` file is missing or truncated on disk, OR Vector started before the MMDB existed and never reloaded. The ASN MMDB is loaded and works fine.
-
-**Diagnostic commands to run on the VPS first** (do not fix until diagnosis confirms):
-
-```bash
-ls -lh /var/lib/lantana/collector/geoip/
-# Expect both files; City ≈ 70 MB, ASN ≈ 9 MB. If City is 0 / missing / much smaller, the file is broken.
-
-sudo -u vector python3 -c "
-import maxminddb
-db = maxminddb.open_database('/var/lib/lantana/collector/geoip/GeoLite2-City.mmdb')
-print(db.get('8.8.8.8'))
-"
-# Expect a populated dict. None or {} → file is broken.
-
-journalctl -u vector --since '1 hour ago' | grep -iE 'enrichment|geoip|mmdb'
-# Look for load errors.
-```
-
-**Likely fixes** (one or more, depending on what diagnosis turns up):
-
-1. **Harden `lantana-geoip-update.sh.j2`** — add `set -euo pipefail` at the top so a partial download fails loudly. Already noted as a TODO in the appendix.
-2. **`notify: Restart Vector`** on the MMDB-refresh task in `roles/profile_collector/tasks/main.yml`. Currently absent — Vector keeps stale enrichment tables even after the script succeeds.
-3. **`validate:` on the receive.yaml template task** — also already noted in the appendix.
-4. **VRL `?? ""` cosmetic mismatch** in `receive.vector.yaml.j2:25-31` — the `??` operator catches errors, not nulls, so `get(city_data, [...])` returning null doesn't trigger the fallback. Lower priority; the primary issue is the lookup itself returning empty.
-
-Full diagnostic and fix detail lives at `~/.config/claude/plans/i-switched-to-plan-linked-eagle.md` (the workstation plan file from the earlier session). The next session should read that first.
-
----
-
-### Issue C: no integration test against production-shape bronze
-
-**Severity:** every one of today's eight defects could have been caught in CI if the test suite ran end-to-end against bronze that mirrored Vector's real output. Instead, fixtures pre-flatten structs, never miss optional fields, and assume every provider succeeds. Three of the eight defects (suricata alert struct, geo struct, partial provider columns) are direct consequences of this gap.
-
-**Fix sketch:**
-
-1. **Add a `tests/fixtures/production_shape/` directory** with bronze samples that mirror Vector's actual output: nested `geo` struct, nested Suricata `alert` struct, no `shasum` on non-file_download events, optional enrichment columns missing for some rows, raw `message` only for nftables (until Issue A is fixed).
-2. **Add a new integration test** at `tests/test_integration_production_shape.py` that pipes those fixtures through `run_enrichment` (with all providers mocked to either succeed, return empty, or rate-limit) and asserts:
-   - All four datasets either produce silver or log a clean skip.
-   - No `pl.exceptions.ColumnNotFoundError` or `pl.exceptions.SchemaError` is raised.
-   - Each dataset's silver has the expected canonical column set (flat `geo.*`, flat enrichment columns where the provider succeeded, nulls where it didn't).
-3. **Run `lantana-transform` against the resulting silver** in the same test, assert all seven gold tables produce a result (or `gold_skip_empty` for the conditional ones), and no metric function crashes.
-
-This is the load-bearing test for "is the pipeline rock solid." Once it passes, the eight-bug iteration cycle from today shouldn't be possible.
-
-**Existing test patterns to reuse:**
-
-- `tests/test_enrichment/test_runner.py` — mocking providers via `AsyncMock` + `patch.object(provider._client, "get", ...)`.
-- `tests/conftest.py:18-145` — bronze fixtures (which today's defect work showed need expanding for production shape).
-- `tests/test_common/test_datalake.py::test_read_silver_partition_handles_heterogeneous_schemas` — pattern for cross-dataset silver assertions.
-
----
-
-### Issue D (nice to have): tag the run output
-
-**Severity:** low. Operational nice-to-have.
-
-When `lantana-enrich` finishes, it would be valuable to emit a final summary line: `run_summary date=2026-05-19 cowrie_rows=7470 suricata_rows=11276 nftables_rows=0 dionaea_rows=0 ip_enrichments={...} hash_enrichments={...}`. Today operators have to grep multiple log events to assemble that picture.
-
-Trivially small implementation — just a `logger.info("run_summary", ...)` at the end of `run_enrichment` aggregating the per-dataset and per-provider counters.
-
----
-
-## Phasing
-
-Three commits, in this order:
-
-### Phase 1 — Integration test against production-shape bronze (Issue C)
-
-Highest leverage. Write the test first. With the current code, run it and see which datasets surface what defects (geo will be fine since we just fixed it; nftables will surface as `silver_skipped_empty_after_normalize`; everything else should pass).
-
-The test is also the regression harness for phases 2 and 3 — they're verified by re-running it.
-
-### Phase 2 — Nftables Vector parsing (Issue A)
-
-Update `roles/firewall/templates/firewall.vector.yaml.j2` to parse the kernel-log format into structured fields, emit `nftables_parse_failed` for non-matching lines. After deploy + Vector restart, bronze should have `action`, `src_ip`, `dst_ip`, etc. Re-run the integration test from phase 1; nftables should now produce silver.
-
-This also requires the operator to deploy + verify on the VPS, then a `lantana-enrich --date <yesterday>` to produce real nftables silver.
-
-### Phase 3 — Geo MMDB on the VPS (Issue B)
-
-Diagnose first via the commands above. Apply one or more of the four fixes. Verify next-day bronze has full `geo.*` populated. This is mostly Ansible/Vector work on the VPS, not Python code.
-
-### Phase 4 (optional) — Run summary log line (Issue D)
-
-5-line change. Could be folded into phase 1 if convenient.
-
----
-
-## What's intentionally out of scope
-
-- Per-provider per-day query cap (predictive circuit breaker before 429s start). Today's reactive circuit breaker (5 consecutive 429s → bail) is sufficient given the daily rate windows.
-- Concurrent per-IP enrichment. The 250-test suite and sequential model are working; concurrency is an optimization, not a fail-safe concern.
-- URL/domain IOC extraction. Cache schema leaves the slot open; Suricata HTTP fields need Vector pipeline work first.
-- `cache.py` extraction. The cache code in `runner.py` is fine in place.
-- Hash extraction performance (re-hashing every file every run). Cache absorbs after first hit.
-- Per-IOC-type cache TTL. Punt to a follow-up.
-
----
-
-## Critical files for the next session
-
-```
-config/ansible/roles/firewall/templates/firewall.vector.yaml.j2     # Issue A
-config/ansible/roles/profile_collector/templates/                   # Issue B
-  lantana-geoip-update.sh.j2
-  receive.vector.yaml.j2
-config/ansible/roles/profile_collector/tasks/main.yml               # Issue B
-pipeline/src/lantana/models/normalize.py                            # Issue C: normalize_nftables expectations
-pipeline/src/lantana/enrichment/runner.py                           # Issue C/D: run_enrichment summary
-pipeline/tests/conftest.py                                          # Issue C: expand bronze fixtures
-pipeline/tests/test_integration_production_shape.py                 # Issue C: NEW
-docs/pipeline.md                                                    # update after issues land
-```
-
----
-
-## Today's commits — fully shipped and in production
-
-```
-b7e5bc9 fix(transform): treat all provider columns as optional in ip_reputation
-ecc679b fix(normalize): flatten Vector's nested geo struct into geo.<field> columns
-5583a57 fix(datalake): diagonal-concat silver across datasets
-2385185 fix(opsec): vector L1 filter drops honeypot-WAN-source events
-0965742 refactor(enrichment): drop PhishStats provider
-fc768cb fix(pipeline): isolate per-dataset failures + skip unparsed nftables bronze
-57a426a fix(opsec): drop outbound-response rows where honeypot is the source
-de8c83c feat(deploy): grant nectar read access to cowrie downloads via daily cron
-9e54fb2 fix(normalize): flatten nested Suricata alert struct before column refs
-5d7ae86 feat(enrichment): per-provider circuit breaker on consecutive failures
-402d757 docs: codify pipeline verification discipline
-03cd39b fix(enrichment): drop non-routable IPs before provider calls
-f116454 fix(enrichment): tolerate sparse provider 200 responses
-a2abc73 refactor(enrichment): IOC-first runner with global dedup and hash merge
-9409006 fix(enrichment): preserve original exceptions through retry, classify errors
-142c0f6 fix(enrichment): return cached data on hit, OPSEC IP filter, --date flag
-```
-
-Total: 252 tests passing, ruff at baseline (11 pre-existing errors, all in test files unrelated to this work), mypy clean on changed code.
-
----
-
-## Hand-off notes
-
-- **The pipeline ran end-to-end successfully against op_alpha's first day** (2026-05-19) before this strategic break. Cowrie + suricata silver both written, gold tables produced (after the final transform fixes). The user just needs to push `b7e5bc9` and run the final `lantana-transform` to close that loop.
-- **Tomorrow's 01:00 UTC cron** will run automatically against day-2 bronze. The cache from today absorbs most queries; daily provider budgets refresh at UTC midnight (AbuseIPDB) / VT's rolling reset. Expect a fast run unless day-2 brings a substantial new IP pool.
-- **PhishStats vault entries** in `vault.yml` are still present but harmless — `_DROPPED_KEYS` in `config.py` strips them at load. Remove at leisure.
-- **The Vector L1 filter** for Suricata WAN-source events is deployed; today's re-run showed `infrastructure_source_rows_dropped count=1597`. After Vector reload picks up the new filter, that count should drop sharply for tomorrow.
+- Run the targeted re-run via `nohup … &` server-side so SSH disconnect doesn't kill it. The first 5-20 re-run wedged for an hour because tenacity backoff happens silently and the SSH client buffers stdout — I couldn't see whether it was alive. Defect #11 made this dramatically worse (~14 hours' worth of backoff sleep on Shodan), but even on a fast run the SSH stream is unreliable for monitoring.
+- Add the `vector validate` task BEFORE shipping Phase 2's VRL, not as a reactive fix after the crashloop. The VRL was new code that ran in a strict compiler we'd never tested against locally; not validating it before restart was a foreseeable risk.
+- Reach for `vector validate` (or any kind of local VRL syntax check) earlier when designing new templates. There's no good local workflow for this without Vector installed on the workstation — worth documenting under "Vector deployment discipline" once a clean approach exists.
