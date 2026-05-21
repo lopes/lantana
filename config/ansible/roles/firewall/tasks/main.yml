@@ -29,6 +29,12 @@
     owner: "root"
     group: "root"
     mode: "0644"
+    # `vector validate` runs the same VRL compiler check Vector does at
+    # startup; catches E651 ("unnecessary error coalescing"), undefined
+    # functions, etc. before we render a broken config and restart Vector
+    # into a crashloop. The 2026-05-21 10:47 outage was an unvalidated
+    # deploy that took ingestion down for hours.
+    validate: "vector validate --config-yaml %s"
   tags: [nftables, vector]
 
 - name: "Restart Vector"

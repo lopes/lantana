@@ -50,7 +50,9 @@ transforms:
               .dst_port = to_int(kv.DPT) ?? null
               proto_raw = to_string(kv.PROTO) ?? ""
               if proto_raw != "" {
-                  .protocol = downcase(proto_raw) ?? null
+                  # proto_raw is already coalesced to a string above;
+                  # downcase() on a string is infallible (Vector E651).
+                  .protocol = downcase(proto_raw)
               }
               .length = to_int(kv.LEN) ?? null
               .interface_in = kv.IN
