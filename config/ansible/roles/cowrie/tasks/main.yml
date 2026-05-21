@@ -135,14 +135,9 @@
     owner: "root"
     group: "root"
     mode: "0644"
-  tags: [cowrie, vector]
-
-- name: "Restart Vector"
-  become: true
-  ansible.builtin.service:
-    name: vector
-    state: restarted
-    enabled: true
+  notify:
+    - "Validate Vector config tree"
+    - "Restart Vector"
   tags: [cowrie, vector]
 
 # --- PIPELINE BRIDGE ---

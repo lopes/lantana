@@ -400,6 +400,13 @@ async def run_enrichment(
     cache = _init_cache(cache_db_path)
     errors: ErrorAccumulator = {}
 
+    # Aggregated counters for the end-of-run summary. Filled in as Phases
+    # B and C progress so operators get one structlog line per run with
+    # the full picture instead of having to grep for every dataset and
+    # provider event.
+    silver_rows: dict[str, int] = {}
+    provider_stats: dict[str, dict[str, int]] = {}
+
     # GreyNoise is skipped when the vault key is absent (None); an empty
     # string keeps it enabled in its unauthenticated Community-API mode.
     providers: dict[str, _ProviderType] = {
@@ -452,6 +459,11 @@ async def run_enrichment(
                 name, provider, IOC_TYPE_IP, ip_list, cache, errors,
             )
             ip_results.extend(results)
+            provider_stats[f"{name}:{IOC_TYPE_IP}"] = {
+                "enriched": len(results),
+                "fresh": len(results) - hits,
+                "cache_hits": hits,
+            }
             logger.info(
                 "provider_done",
                 provider=name,
@@ -467,6 +479,11 @@ async def run_enrichment(
             hash_results, hash_hits = await _enrich_iocs_with_provider(
                 "virustotal", vt_provider, IOC_TYPE_HASH, sorted(unique_hashes), cache, errors,
             )
+            provider_stats[f"virustotal:{IOC_TYPE_HASH}"] = {
+                "enriched": len(hash_results),
+                "fresh": len(hash_results) - hash_hits,
+                "cache_hits": hash_hits,
+            }
             logger.info(
                 "provider_done",
                 provider="virustotal",
@@ -529,6 +546,7 @@ async def run_enrichment(
                     )
                     write_silver_partition(server_df, target_date, dataset, str(server))
 
+                silver_rows[dataset] = len(redacted_df)
                 logger.info("enrichment_done", dataset=dataset, rows=len(redacted_df))
             except Exception as exc:
                 logger.error(
@@ -538,6 +556,15 @@ async def run_enrichment(
                 )
                 _record_error(errors, "pipeline", "dataset_processing_failed", repr(exc))
 
+        logger.info(
+            "run_summary",
+            date=target_date.isoformat(),
+            silver_rows=silver_rows,
+            unique_ips=len(unique_ips),
+            unique_hashes=len(unique_hashes),
+            providers=provider_stats,
+            error_count=sum(e.count for e in errors.values()),
+        )
         _write_error_summary(errors, target_date, errors_path)
 
     finally:

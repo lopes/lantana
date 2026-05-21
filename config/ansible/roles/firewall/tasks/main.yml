@@ -29,28 +29,9 @@
     owner: "root"
     group: "root"
     mode: "0644"
-  tags: [nftables, vector]
-
-# `vector validate %s` on a single conf.d file fails on "No sinks defined" —
-# the sinks live in honeywall/forward.yaml. Validate the merged tree (main
-# config + every conf.d/*.yaml) BEFORE restarting Vector, so a syntactically
-# broken VRL fails the play instead of restarting Vector into a crashloop
-# (root cause of the 2026-05-21 10:47 outage). `vector validate` doesn't
-# accept directory arguments, hence `shell:` for glob expansion.
-- name: "Validate full Vector config tree"
-  become: true
-  ansible.builtin.shell: >-
-    vector validate --no-environment
-    /etc/vector/vector.yaml /etc/vector/conf.d/*.yaml
-  changed_when: false
-  tags: [nftables, vector]
-
-- name: "Restart Vector"
-  become: true
-  ansible.builtin.service:
-    name: vector
-    state: restarted
-    enabled: true
+  notify:
+    - "Validate Vector config tree"
+    - "Restart Vector"
   tags: [nftables, vector]
 
 # --- MODE SPECIFIC CONFIGURATION ---

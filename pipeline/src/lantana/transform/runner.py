@@ -88,6 +88,11 @@ def run_transform(
 
     logger.info("silver_loaded", rows=len(silver), columns=len(silver.columns))
 
+    # Per-table row counts feed the final `run_summary` log line so
+    # operators can read the day's gold output in one event instead of
+    # grepping for seven separate `gold_written` lines.
+    gold_rows: dict[str, int] = {}
+
     # Compute and write each gold table
     tables = [
         ("daily_summary", compute_daily_summary),
@@ -102,8 +107,10 @@ def run_transform(
         result = compute_fn(silver)
         if not result.is_empty():
             write_gold_table(result, table_name, target_date, gold_root=gold_root)
+            gold_rows[table_name] = len(result)
             logger.info("gold_written", table=table_name, rows=len(result))
         else:
+            gold_rows[table_name] = 0
             logger.info("gold_skip_empty", table=table_name)
 
     # Multi-day behavioral progression (lookback window)
@@ -124,8 +131,17 @@ def run_transform(
                 target_date,
                 gold_root=gold_root,
             )
+            gold_rows["behavioral_progression_multiday"] = len(multiday)
             logger.info("gold_written", table="behavioral_progression_multiday", rows=len(multiday))
 
+    logger.info(
+        "run_summary",
+        date=target_date.isoformat(),
+        silver_rows=len(silver),
+        silver_columns=len(silver.columns),
+        gold_rows=gold_rows,
+        lookback_days_with_data=len(lookback_frames),
+    )
     logger.info("transform_done", date=target_date.isoformat())
 
 

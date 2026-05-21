@@ -89,5 +89,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
-  notify: "Restart Vector"
+  notify:
+    - "Validate Vector config tree"
+    - "Restart Vector"
   tags: [honeypots, vector]

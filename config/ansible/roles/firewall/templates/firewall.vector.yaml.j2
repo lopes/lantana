@@ -56,7 +56,18 @@ transforms:
               }
               .length = to_int(kv.LEN) ?? null
               .interface_in = kv.IN
-              .interface_out = kv.OUT
+              # parse_key_value's space delimiter doesn't handle the empty
+              # value in `OUT= MAC=...` cleanly — when OUT has no value, it
+              # swallows the next K=V pair as the "value". Detect that
+              # malformed case (the captured value contains '=') and reset
+              # to empty string. Real values are interface names like
+              # `ens3` and never contain `=`.
+              if_out_raw = to_string(kv.OUT) ?? ""
+              .interface_out = if contains(if_out_raw, "=") {
+                  ""
+              } else {
+                  if_out_raw
+              }
           } else {
               .nftables_parse_failed = true
               .nftables_parse_reason = "kv_parse_failed"

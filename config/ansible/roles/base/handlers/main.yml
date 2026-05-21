@@ -53,6 +53,21 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+- name: "Validate Vector config tree"
+  # Validate the FULL merged config tree (main vector.yaml + every
+  # conf.d/*.yaml) before restarting Vector. `vector validate` on a
+  # single conf.d file fails on "No sinks defined" because sinks live
+  # in honeywall/forward.yaml. Handler runs once per play in the order
+  # defined in this file — must be BEFORE "Restart Vector" so a broken
+  # VRL fails the play instead of crashlooping Vector. `shell:` (not
+  # `command:`) is required for glob expansion. See CLAUDE.md
+  # "Vector deployment discipline".
+  become: true
+  ansible.builtin.shell: >-
+    vector validate --no-environment
+    /etc/vector/vector.yaml /etc/vector/conf.d/*.yaml
+  changed_when: false
+
 - name: "Restart Vector"
   become: true
   ansible.builtin.service:

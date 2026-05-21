@@ -105,6 +105,13 @@
     owner: root
     group: root
     mode: "0644"
+    # Per-file validate works HERE because vector.yaml.j2 is the main
+    # config and self-contains a blackhole sink for the keepalive
+    # metrics path. The cross-file "Validate Vector config tree"
+    # handler still fires at end-of-play to catch any conf.d/*.yaml
+    # bugs that this in-isolation check can't see.
     validate: "vector validate --config-yaml %s"
-  notify: "Restart Vector"
+  notify:
+    - "Validate Vector config tree"
+    - "Restart Vector"
   tags: [vector]
