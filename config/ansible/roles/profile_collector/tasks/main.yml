@@ -177,6 +177,8 @@
       0 1 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-enrich
       # Transform: daily at 02:00 UTC (yesterday's silver -> gold)
       0 2 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-transform
+      # Alert: daily at 05:00 UTC — scan errors log, post Discord on non-clean days
+      0 5 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-alert
     mode: "0644"
   tags: [collector, pipeline]
 

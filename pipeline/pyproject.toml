@@ -29,6 +29,7 @@ lantana-transform = "lantana.transform.runner:main"
 lantana-prune = "lantana.prune:main"
 lantana-notify = "lantana.notify.cli:main"
 lantana-report = "lantana.notify.discord:generate_and_send"
+lantana-alert = "lantana.notify.alerts:main"
 lantana-dashboard = "lantana.dashboard.app:main"
 
 [tool.ruff]

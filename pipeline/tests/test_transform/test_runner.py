@@ -117,3 +117,46 @@ def test_run_transform_empty_silver(tmp_datalake: Path) -> None:
 
     # Gold directory should be empty
     assert not list(gold_root.iterdir())
+
+
+def test_main_appends_transform_failed_on_crash(
+    tmp_path: Path, monkeypatch: object,
+) -> None:
+    """A transform crash must surface as a ``transform_failed`` row in the errors NDJSON.
+
+    Without this, the cron exits silently (cron doesn't capture stderr by
+    default) — the 2026-05-21 02:00 UTC failure mode — and the alerter has
+    nothing to page on.
+    """
+    import json
+
+    from lantana.transform import runner as transform_runner
+
+    errors_path = tmp_path / "enrichment_errors.json"
+
+    def _boom(target_date: date, **_: object) -> None:  # type: ignore[no-untyped-def]
+        raise RuntimeError("simulated transform crash")
+
+    # type: ignore[attr-defined]  monkeypatch is pytest.MonkeyPatch
+    monkeypatch.setattr(transform_runner, "run_transform", _boom)  # type: ignore[attr-defined]
+    monkeypatch.setattr(transform_runner, "ERRORS_PATH", errors_path)  # type: ignore[attr-defined]
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "sys.argv",
+        ["lantana-transform", "--date", "2026-05-20"],
+    )
+
+    try:
+        transform_runner.main()
+    except RuntimeError:
+        pass  # Expected — main() re-raises so cron exit status is non-zero
+    else:
+        msg = "main() should re-raise after recording the error"
+        raise AssertionError(msg)
+
+    assert errors_path.exists()
+    rows = [json.loads(line) for line in errors_path.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["error_type"] == "transform_failed"
+    assert rows[0]["provider"] == "transform"
+    assert rows[0]["date"] == "2026-05-20"
+    assert "simulated transform crash" in rows[0]["message"]

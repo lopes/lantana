@@ -10,8 +10,10 @@ Daily workflow:
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
-from pathlib import Path  # noqa: TC003 — used in function defaults
+import json
+import os
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -37,7 +39,36 @@ from lantana.transform.metrics import (
 
 LOOKBACK_DAYS: int = 7
 
+ERRORS_PATH = Path(
+    os.environ.get("LANTANA_ENRICHMENT_ERRORS", "/var/lib/lantana/datalake/enrichment_errors.json")
+)
+
 logger = structlog.get_logger()
+
+
+def _append_transform_failed_row(target_date: date, exc: BaseException, errors_path: Path) -> None:
+    """Append a ``transform_failed`` row to the shared errors NDJSON.
+
+    Mirrors the schema used by ``_write_error_summary`` in
+    ``enrichment.runner`` so ``lantana-alert`` can read both error sources
+    out of one file. Same severity rules apply downstream: this row gets
+    classified as critical (gold for the date is missing).
+    """
+    try:
+        errors_path.parent.mkdir(parents=True, exist_ok=True)
+        with errors_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "date": target_date.isoformat(),
+                "provider": "transform",
+                "error_type": "transform_failed",
+                "count": 1,
+                "message": repr(exc),
+                "timestamp": datetime.now(tz=UTC).isoformat(),
+            }) + "\n")
+    except OSError as write_exc:
+        # If we can't even append the error row, log it — but don't mask the
+        # original transform failure by raising a different exception.
+        logger.error("transform_error_log_write_failed", exc_repr=repr(write_exc))
 
 
 def run_transform(
@@ -99,7 +130,15 @@ def run_transform(
 
 
 def main() -> None:
-    """CLI entry point for lantana-transform."""
+    """CLI entry point for lantana-transform.
+
+    Wraps ``run_transform`` so any uncaught exception is recorded as a
+    ``transform_failed`` row in the shared errors NDJSON before being
+    re-raised. Without this, a transform crash exits silently (cron doesn't
+    capture stderr by default), gold for the date never appears, and the
+    operator only notices via a quiet dashboard — exactly the 2026-05-21
+    02:00 UTC failure mode.
+    """
     parser = argparse.ArgumentParser(
         prog="lantana-transform",
         description="Aggregate silver Parquet into gold tables for a given date.",
@@ -113,4 +152,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     target = args.date if args.date is not None else date.today() - timedelta(days=1)
-    run_transform(target)
+    try:
+        run_transform(target)
+    except Exception as exc:
+        logger.error("transform_failed", date=target.isoformat(), exc_repr=repr(exc))
+        _append_transform_failed_row(target, exc, ERRORS_PATH)
+        raise
