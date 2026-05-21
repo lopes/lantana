@@ -29,12 +29,18 @@
     owner: "root"
     group: "root"
     mode: "0644"
-    # `vector validate` runs the same VRL compiler check Vector does at
-    # startup; catches E651 ("unnecessary error coalescing"), undefined
-    # functions, etc. before we render a broken config and restart Vector
-    # into a crashloop. The 2026-05-21 10:47 outage was an unvalidated
-    # deploy that took ingestion down for hours.
-    validate: "vector validate --config-yaml %s"
+  tags: [nftables, vector]
+
+# `vector validate %s` on a single conf.d file fails on "No sinks defined" —
+# the sinks live in honeywall/forward.yaml. Validate the merged tree (main
+# config + every conf.d/*.yaml) BEFORE restarting Vector, so a syntactically
+# broken VRL fails the play instead of restarting Vector into a crashloop
+# (root cause of the 2026-05-21 10:47 outage).
+- name: "Validate full Vector config tree"
+  become: true
+  ansible.builtin.command:
+    cmd: "vector validate --no-environment /etc/vector/vector.yaml /etc/vector/conf.d/"
+  changed_when: false
   tags: [nftables, vector]
 
 - name: "Restart Vector"
