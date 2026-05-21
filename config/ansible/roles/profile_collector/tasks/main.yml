@@ -173,10 +173,12 @@
       # Lantana data pipeline — managed by Ansible
       # Prune: daily at 00:15 UTC (180-day retention + disk monitoring)
       15 0 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-prune
-      # Enrich: daily at 01:00 UTC (yesterday's bronze -> silver)
+      # Enrich: daily at 01:00 UTC (yesterday's bronze -> silver).
+      # Can take hours when there are many IOCs — VirusTotal's 4/min throttle
+      # dominates wall-clock time. Transform runs at 04:00 to leave a 3h margin.
       0 1 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-enrich
-      # Transform: daily at 02:00 UTC (yesterday's silver -> gold)
-      0 2 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-transform
+      # Transform: daily at 04:00 UTC (yesterday's silver -> gold)
+      0 4 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-transform
       # Alert: daily at 05:00 UTC — scan errors log, post Discord on non-clean days
       0 5 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-alert
     mode: "0644"
