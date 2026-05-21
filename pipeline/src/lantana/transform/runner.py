@@ -9,6 +9,7 @@ Daily workflow:
 
 from __future__ import annotations
 
+import argparse
 from datetime import date, timedelta
 from pathlib import Path  # noqa: TC003 — used in function defaults
 from typing import TYPE_CHECKING
@@ -99,5 +100,17 @@ def run_transform(
 
 def main() -> None:
     """CLI entry point for lantana-transform."""
-    yesterday = date.today() - timedelta(days=1)
-    run_transform(yesterday)
+    parser = argparse.ArgumentParser(
+        prog="lantana-transform",
+        description="Aggregate silver Parquet into gold tables for a given date.",
+    )
+    parser.add_argument(
+        "--date",
+        type=date.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Date to transform (UTC). Defaults to yesterday.",
+    )
+    args = parser.parse_args()
+    target = args.date if args.date is not None else date.today() - timedelta(days=1)
+    run_transform(target)
