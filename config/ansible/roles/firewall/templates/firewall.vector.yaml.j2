@@ -13,10 +13,56 @@ transforms:
     type: remap
     inputs:
       - in_nftables
+    # Parse the iptables-style kernel-log line:
+    #   <syslog-header> [LANTANA_<CHAIN>_<ACTION>(_<EXTRA>)?] IN=eth0 OUT= SRC=...
+    # Two-step parse: locate the LANTANA prefix anywhere in the raw line
+    # (rsyslog prepends a "Mon DD HH:MM:SS host kernel:" header that we don't
+    # care about), then parse the iptables key=value tail (SRC=, DST=, etc.).
+    # Any line that doesn't match either step gets tagged with
+    # `.nftables_parse_failed = true` so failures stay visible — silence is
+    # not success, and an unparsed line would otherwise look identical to a
+    # parsed-but-null one at the silver layer.
     source: |-
       .dataset = "nftables"
       .server = "{{ inventory_hostname }}"
       .operation = "{{ narrative.operation_name }}"
+
+      prefix_match, prefix_err = parse_regex(
+          .message,
+          r'\[LANTANA_(?P<chain>\w+?)_(?P<action>DROP|ACCEPT|REJECT)(?:_(?P<extra>\w+))?\]\s+(?P<payload>.+)$'
+      )
+      if prefix_err == null {
+          .chain = downcase(prefix_match.chain) ?? null
+          .action = downcase(prefix_match.action) ?? null
+          if prefix_match.extra != null {
+              .action_extra = downcase(prefix_match.extra) ?? null
+          }
+
+          kv, kv_err = parse_key_value(
+              prefix_match.payload,
+              key_value_delimiter: "=",
+              field_delimiter: " "
+          )
+          if kv_err == null {
+              .src_ip = kv.SRC
+              .dst_ip = kv.DST
+              .src_port = to_int(kv.SPT) ?? null
+              .dst_port = to_int(kv.DPT) ?? null
+              proto_raw = to_string(kv.PROTO) ?? ""
+              if proto_raw != "" {
+                  .protocol = downcase(proto_raw) ?? null
+              }
+              .length = to_int(kv.LEN) ?? null
+              .interface_in = kv.IN
+              .interface_out = kv.OUT
+          } else {
+              .nftables_parse_failed = true
+              .nftables_parse_reason = "kv_parse_failed"
+          }
+      } else {
+          .nftables_parse_failed = true
+          .nftables_parse_reason = "prefix_no_match"
+      }
 
   filter_nftables:
     type: filter
@@ -24,6 +70,11 @@ transforms:
       - tag_nftables
     condition:
       type: vrl
+      # OPSEC: drop loopback / internal-prefix / WAN-source events before they
+      # leave the honeywall. `.src_ip` is populated by the tag_nftables parser
+      # above; parse-failed events have a null src_ip and are filtered out
+      # here too (their `.nftables_parse_failed = true` marker still rides on
+      # the tag_nftables → forward path so the failure stays observable).
       source: |-
-        src = to_string(.SRC) ?? to_string(.src_ip) ?? ""
+        src = to_string(.src_ip) ?? ""
         src != "" && !starts_with(src, "127.") && src != "::1" && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}" && src != "{{ network.honeywall.wan.ipv6.split('/')[0] }}"

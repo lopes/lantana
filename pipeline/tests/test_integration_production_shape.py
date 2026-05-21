@@ -313,15 +313,13 @@ async def test_end_to_end_pipeline_against_production_shape(
     def _gold_parquet(table: str) -> Path:
         return prod_pipeline["gold"] / table / f"date={date_str}" / "summary.parquet"
 
-    # Silver written for cowrie / suricata / dionaea
-    for dataset in ("cowrie", "suricata", "dionaea"):
+    # Silver written for all four datasets — Phase 2 added the Vector parser
+    # that turns raw nftables kernel logs into structured action/src_ip/etc.
+    # The defensive `silver_skipped_empty_after_normalize` path is still
+    # exercised by tests/test_models/test_normalize.py for the legacy
+    # raw-message shape.
+    for dataset in ("cowrie", "suricata", "dionaea", "nftables"):
         assert _silver_parquet(dataset).exists(), f"silver missing for {dataset}"
-
-    # Nftables silver intentionally missing — raw `message` only, normalize returns empty
-    nftables_dir = silver_root / "dataset=nftables" / f"date={date_str}"
-    assert not list(nftables_dir.rglob("*.parquet")), (
-        "nftables silver should be skipped when bronze is raw-message only"
-    )
 
     # --- Silver schema invariants ---
     cowrie_silver = pl.read_parquet(_silver_parquet("cowrie"))
@@ -347,6 +345,16 @@ async def test_end_to_end_pipeline_against_production_shape(
     assert HONEYPOT_WAN not in src_ips_in_suricata, (
         "Layer-2 redact should have dropped the WAN-source row"
     )
+
+    # Nftables silver carries the Vector-parsed structured fields, OCSF-mapped:
+    # action=drop  → activity_id=5 (Refuse), connection_info_protocol_name set.
+    nftables_silver = pl.read_parquet(_silver_parquet("nftables"))
+    assert nftables_silver.height >= 3, "Phase 2 parser must produce nftables silver rows"
+    assert "src_endpoint_ip" in nftables_silver.columns
+    assert "connection_info_protocol_name" in nftables_silver.columns
+    assert set(nftables_silver.get_column("activity_id").to_list()) == {5}
+    nftables_src = set(nftables_silver.get_column("src_endpoint_ip").to_list())
+    assert {ATTACKER_FULL, ATTACKER_RATE_LIMITED, ATTACKER_SPARSE}.issubset(nftables_src)
 
     # Enrichment columns present for the full attacker; nulls for rate-limited / sparse.
     # ATTACKER_FULL got data from all four providers.
