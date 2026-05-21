@@ -209,3 +209,16 @@
     mode: "0644"
   notify: "Restart Vector"
   tags: [collector, vector]
+
+# Same merged-tree validation as the firewall role — `vector validate` on
+# a single conf.d file fails on "No sinks defined" or other in-isolation
+# checks; validating the union against the rest of /etc/vector/ catches
+# the VRL bugs that would otherwise crashloop Vector at restart time
+# (2026-05-21 10:47 outage was this class of bug).
+- name: "Validate full Vector config tree (post-receive)"
+  become: true
+  ansible.builtin.shell: >-
+    vector validate --no-environment
+    /etc/vector/vector.yaml /etc/vector/conf.d/*.yaml
+  changed_when: false
+  tags: [collector, vector]

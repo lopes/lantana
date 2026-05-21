@@ -25,12 +25,21 @@ transforms:
       if ip != "" {
         city_data = get_enrichment_table_record("geoip_city", {"ip": ip}) ?? {}
         asn_data = get_enrichment_table_record("geoip_asn", {"ip": ip}) ?? {}
-        .geo.country_code = get(city_data, ["country", "iso_code"]) ?? ""
-        .geo.region_code = get(city_data, ["subdivisions", 0, "iso_code"]) ?? ""
-        .geo.city = get(city_data, ["city", "names", "en"]) ?? ""
-        .geo.latitude = get(city_data, ["location", "latitude"]) ?? null
-        .geo.longitude = get(city_data, ["location", "longitude"]) ?? null
-        .geo.timezone = get(city_data, ["location", "time_zone"]) ?? ""
+        # Vector's `geoip` enrichment_table type flattens GeoLite2-City
+        # records into top-level columns (city_name / country_code /
+        # region_code / latitude / longitude / timezone / postal_code /
+        # metro_code) — NOT the MaxMind-native nested shape the
+        # `maxminddb` Python library returns. Querying the nested paths
+        # gave null on every event since op_alpha went live; the `?? ""`
+        # default doesn't fire because `??` catches errors, not nulls.
+        # For ASN, Vector passes the raw MaxMind record through (no
+        # flattening), so the native `autonomous_system_*` keys work as-is.
+        .geo.country_code = get(city_data, ["country_code"]) ?? ""
+        .geo.region_code = get(city_data, ["region_code"]) ?? ""
+        .geo.city = get(city_data, ["city_name"]) ?? ""
+        .geo.latitude = get(city_data, ["latitude"]) ?? null
+        .geo.longitude = get(city_data, ["longitude"]) ?? null
+        .geo.timezone = get(city_data, ["timezone"]) ?? ""
         .geo.asn = get(asn_data, ["autonomous_system_number"]) ?? null
         .geo.isp = get(asn_data, ["autonomous_system_organization"]) ?? ""
       }
