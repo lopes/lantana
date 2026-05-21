@@ -275,6 +275,35 @@ class TestNormalizeSuricata:
         # finding_title is null for every row
         assert result.get_column("finding_title").null_count() == result.height
 
+    def test_json_encoded_alert_string_is_flattened(self) -> None:
+        """``read_bronze_ndjson`` JSON-stringifies dict columns so polars schema
+        inference stays stable across heterogeneous rows. The alert flatten
+        helper must decode the string back into a Struct before extracting
+        subfields, otherwise every silver alert row drops its detection
+        metadata even when Suricata populated it.
+        """
+        stringified = pl.DataFrame({
+            "event_type": ["alert"],
+            "src_ip": ["203.0.113.50"],
+            "dest_ip": ["10.50.99.100"],
+            "proto": ["TCP"],
+            "alert": [
+                '{"severity": 1, "signature": "ET EXPLOIT Possible CVE-2021-44228",'
+                ' "signature_id": 2024897, "category": "Attempted Administrator'
+                ' Privilege Gain", "action": "allowed"}'
+            ],
+        })
+        result = normalize_suricata(stringified)
+        alerts = result.filter(pl.col("class_uid") == CLASS_DETECTION_FINDING)
+        assert alerts.height == 1
+        assert alerts.get_column("finding_title").to_list() == [
+            "ET EXPLOIT Possible CVE-2021-44228"
+        ]
+        assert alerts.get_column("finding_uid").to_list() == ["2024897"]
+        assert alerts.get_column("finding_category").to_list() == [
+            "Attempted Administrator Privilege Gain"
+        ]
+
 
 class TestGeoStructFlattening:
     """Vector ships `geo` as a nested struct; transform/metrics expects flat
@@ -332,6 +361,35 @@ class TestGeoStructFlattening:
         for field in ("country_code", "asn", "isp"):
             assert f"geo.{field}" in result.columns
             assert result.get_column(f"geo.{field}").null_count() == result.height
+
+    def test_json_encoded_geo_string_is_flattened(self) -> None:
+        """``read_bronze_ndjson`` JSON-stringifies nested structs to keep schema
+        inference stable across mixed-type rows. The flatten helper must decode
+        the string back into a Struct before extracting subfields — otherwise
+        every silver row gets null geo even when Vector populated the data.
+        """
+        stringified = pl.DataFrame({
+            "eventid": ["cowrie.session.connect"],
+            "src_ip": ["203.0.113.50"],
+            "dst_ip": ["10.50.99.100"],
+            "session": ["abc"],
+            "protocol": ["ssh"],
+            "username": [""],
+            "password": [""],
+            "input": [""],
+            "message": ["new connection"],
+            "timestamp": ["2026-05-19T20:48:48Z"],
+            "geo": [
+                '{"country_code": "BR", "region_code": "SP", "city": "Sao Paulo",'
+                ' "latitude": -23.5, "longitude": -46.6,'
+                ' "timezone": "America/Sao_Paulo", "asn": 12345, "isp": "Example"}'
+            ],
+        })
+        result = normalize_dataset(stringified, "cowrie")
+        assert "geo" not in result.columns
+        assert result.get_column("geo.country_code").to_list() == ["BR"]
+        assert result.get_column("geo.asn").to_list() == [12345]
+        assert result.get_column("geo.isp").to_list() == ["Example"]
 
 
 class TestNormalizeNftablesDefensive:

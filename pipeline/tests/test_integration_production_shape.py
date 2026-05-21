@@ -1,0 +1,467 @@
+"""End-to-end integration test against production-shape bronze.
+
+Mirrors what Vector ships on the VPS:
+  - nested ``geo`` struct on every event
+  - nested ``alert`` struct on Suricata alerts
+  - raw ``message`` strings for nftables (Vector doesn't parse the
+    kernel log yet — Issue A in PLAN.md)
+  - optional enrichment columns missing on some IPs (rate-limit
+    / sparse-200 days)
+  - the honeypot's own WAN address appearing as source on some
+    Suricata flow rows
+
+Pipes the fixtures through ``run_enrichment`` (all four providers mocked
+in the runner namespace) and then ``run_transform`` against the resulting
+silver. Asserts that every dataset either produces silver or logs a clean
+skip, every gold table either produces a result or is empty, and no leaks
+make it past the redaction layer.
+
+This is the load-bearing regression harness for the
+"bronze didn't match the shape the code assumed" class of defect
+that surfaced eight times in sequence on 2026-05-20.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any
+
+import httpx
+import polars as pl
+import pytest
+
+import lantana.common.datalake as datalake_mod
+import lantana.enrichment.runner as runner_mod
+from lantana.common.config import (
+    OperationConfig,
+    OperatorConfig,
+    RedactConfig,
+    ReportingConfig,
+    SecretsConfig,
+    SharingConfig,
+)
+from lantana.enrichment.providers.base import EnrichmentResult
+from lantana.enrichment.runner import run_enrichment
+from lantana.transform.runner import run_transform
+
+FIXTURE_DATE = date(2026, 5, 19)
+HONEYPOT_WAN = "192.0.2.100"
+ATTACKER_FULL = "203.0.113.10"  # all four providers return populated data
+ATTACKER_RATE_LIMITED = "203.0.113.20"  # all four providers return 429
+ATTACKER_SPARSE = "198.51.100.50"  # all four providers return empty {} (sparse 200)
+FILE_DOWNLOAD_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+PROD_BRONZE_FIXTURES = Path(__file__).parent / "fixtures" / "production_shape" / "bronze"
+
+# Enrichment data mirroring what each provider returns for the "full" attacker
+_FULL_ENRICHMENT: dict[str, dict[str, Any]] = {
+    "abuseipdb": {
+        "abuseipdb_confidence_score": 88,
+        "abuseipdb_total_reports": 247,
+        "abuseipdb_country_code": "BR",
+    },
+    "shodan": {
+        "shodan_ports": "22,80,443",
+        "shodan_os": "Linux",
+        "shodan_org": "Example Telecom BR",
+        "shodan_vulns": "",
+    },
+    "virustotal": {
+        "vt_malicious_count": 5,
+        "vt_ip_reputation": -10,
+    },
+    "greynoise": {
+        "greynoise_classification": "malicious",
+        "greynoise_noise": True,
+        "greynoise_name": "Mass Scanner",
+    },
+}
+
+_VT_HASH_DATA: dict[str, Any] = {
+    "vt_file_malicious_count": 42,
+    "vt_file_first_seen": "2026-05-15T00:00:00Z",
+    "vt_file_type": "Bourne-Again shell script",
+}
+
+
+def _make_429() -> httpx.HTTPStatusError:
+    req = httpx.Request("GET", "https://api.test")
+    resp = httpx.Response(status_code=429, request=req)
+    return httpx.HTTPStatusError("429 Too Many Requests", request=req, response=resp)
+
+
+def _make_ip_provider_class(provider_name: str, data_for_full: dict[str, Any]) -> type:
+    """Build a real class so the runner's ``isinstance(provider, ...)`` checks
+    pass. Patching the runner-namespace symbol to a lambda would break the
+    ``isinstance(provider, VirusTotalProvider)`` dispatch inside _query_provider.
+
+    Per-IP behaviour:
+      ATTACKER_FULL          → populated data
+      ATTACKER_RATE_LIMITED  → HTTPStatusError 429
+      ATTACKER_SPARSE / etc. → empty dict (sparse 200 response)
+    """
+
+    class _FakeIpProvider:
+        def __init__(self, _key: str | None = None) -> None:  # pragma: no cover
+            pass
+
+        async def enrich_ip(self, ip: str) -> EnrichmentResult:
+            if ip == ATTACKER_RATE_LIMITED:
+                raise _make_429()
+            data = data_for_full if ip == ATTACKER_FULL else {}
+            return EnrichmentResult(
+                provider=provider_name,
+                ip=ip,
+                data=dict(data),
+                queried_at=datetime.now(tz=UTC),
+            )
+
+        async def close(self) -> None:
+            return None
+
+    _FakeIpProvider.__name__ = f"_Fake{provider_name.title()}Provider"
+    return _FakeIpProvider
+
+
+def _make_vt_provider_class() -> type:
+    """VT mock provides both enrich_ip and enrich_hash."""
+
+    class _FakeVirusTotalProvider:
+        def __init__(self, _key: str | None = None) -> None:  # pragma: no cover
+            pass
+
+        async def enrich_ip(self, ip: str) -> EnrichmentResult:
+            if ip == ATTACKER_RATE_LIMITED:
+                raise _make_429()
+            data = _FULL_ENRICHMENT["virustotal"] if ip == ATTACKER_FULL else {}
+            return EnrichmentResult(
+                provider="virustotal",
+                ip=ip,
+                data=dict(data),
+                queried_at=datetime.now(tz=UTC),
+            )
+
+        async def enrich_hash(self, sha256: str) -> EnrichmentResult:
+            data = _VT_HASH_DATA if sha256 == FILE_DOWNLOAD_SHA else {}
+            return EnrichmentResult(
+                provider="virustotal",
+                ip=sha256,
+                data=dict(data),
+                queried_at=datetime.now(tz=UTC),
+            )
+
+        async def close(self) -> None:
+            return None
+
+    return _FakeVirusTotalProvider
+
+
+def _stub_secrets() -> SecretsConfig:
+    return SecretsConfig.model_validate({
+        "vault_apikey_virustotal": "test-vt",
+        "vault_apikey_shodan": "test-shodan",
+        "vault_apikey_abuseipdb": "test-abuseipdb",
+        "vault_apikey_greynoise": "test-greynoise",
+    })
+
+
+def _stub_reporting() -> ReportingConfig:
+    return ReportingConfig(
+        operator=OperatorConfig(
+            name="Test Operator",
+            handle="test_handle",
+            contact="https://test.example.com",
+            pgp_fingerprint="AABBCCDD",
+        ),
+        sharing=SharingConfig(
+            tlp="GREEN",
+            community="Test Community",
+            discord_channel="test-intel",
+        ),
+        operation=OperationConfig(
+            name="Test Operation",
+            description="Production-shape integration test",
+            sector="Test",
+            region="Test",
+            start_date="2026-05-01",
+        ),
+        redact=RedactConfig(
+            infrastructure_ips=[HONEYPOT_WAN, "10.50.99.100"],
+            infrastructure_cidrs=["10.50.99.0/24"],
+            pseudonym_map={
+                HONEYPOT_WAN: "honeypot-wan",
+                "10.50.99.100": "honeypot-sensor",
+            },
+        ),
+    )
+
+
+def _copy_bronze_fixtures(target_root: Path) -> None:
+    """Copy the on-disk fixture tree into a writeable tmp root.
+
+    `read_bronze_ndjson` reads NDJSON from a Hive-partitioned tree. The
+    fixture is committed under a stable path; we copy it into tmp_path
+    so the test never mutates the checked-in files.
+    """
+    for src in PROD_BRONZE_FIXTURES.rglob("events.json"):
+        rel = src.relative_to(PROD_BRONZE_FIXTURES)
+        dest = target_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+
+
+@pytest.fixture()
+def prod_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    """Set up the full enrichment + transform pipeline against production-shape bronze.
+
+    Returns a dict of resolved paths so tests can introspect silver / gold /
+    errors output after the run completes.
+    """
+    bronze_root = tmp_path / "bronze"
+    silver_root = tmp_path / "silver"
+    gold_root = tmp_path / "gold"
+    cache_db = tmp_path / "cache.db"
+    sensor_dir = tmp_path / "sensor"  # empty — no on-disk hashes
+    errors_path = tmp_path / "enrichment_errors.json"
+
+    sensor_dir.mkdir()
+    _copy_bronze_fixtures(bronze_root)
+
+    monkeypatch.setattr(datalake_mod, "BRONZE_ROOT", bronze_root)
+    monkeypatch.setattr(datalake_mod, "SILVER_ROOT", silver_root)
+    monkeypatch.setattr(datalake_mod, "GOLD_ROOT", gold_root)
+
+    real_read_bronze = datalake_mod.read_bronze_ndjson
+    real_write_silver = datalake_mod.write_silver_partition
+
+    def _read_bronze(
+        target_date: date,
+        dataset: str | None = None,
+        bronze_root: Path = bronze_root,
+    ) -> pl.DataFrame:
+        return real_read_bronze(target_date, dataset=dataset, bronze_root=bronze_root)
+
+    def _write_silver(
+        df: pl.DataFrame,
+        target_date: date,
+        dataset: str,
+        server: str,
+        silver_root: Path = silver_root,
+    ) -> Path:
+        return real_write_silver(df, target_date, dataset, server, silver_root=silver_root)
+
+    monkeypatch.setattr(runner_mod, "read_bronze_ndjson", _read_bronze)
+    monkeypatch.setattr(runner_mod, "write_silver_partition", _write_silver)
+
+    monkeypatch.setattr(runner_mod, "load_secrets", _stub_secrets)
+    monkeypatch.setattr(runner_mod, "load_reporting", _stub_reporting)
+
+    monkeypatch.setattr(
+        runner_mod, "AbuseIPDBProvider",
+        _make_ip_provider_class("abuseipdb", _FULL_ENRICHMENT["abuseipdb"]),
+    )
+    monkeypatch.setattr(
+        runner_mod, "ShodanProvider",
+        _make_ip_provider_class("shodan", _FULL_ENRICHMENT["shodan"]),
+    )
+    monkeypatch.setattr(runner_mod, "VirusTotalProvider", _make_vt_provider_class())
+    monkeypatch.setattr(
+        runner_mod, "GreyNoiseProvider",
+        _make_ip_provider_class("greynoise", _FULL_ENRICHMENT["greynoise"]),
+    )
+
+    return {
+        "bronze": bronze_root,
+        "silver": silver_root,
+        "gold": gold_root,
+        "cache": cache_db,
+        "sensor": sensor_dir,
+        "errors": errors_path,
+    }
+
+
+@pytest.mark.asyncio()
+async def test_end_to_end_pipeline_against_production_shape(
+    prod_pipeline: dict[str, Path],
+) -> None:
+    """Run the full bronze → silver → gold pipeline against production-shape bronze.
+
+    A single journey: any of the eight defect classes from 2026-05-20 would
+    fail one of the assertions below.
+    """
+    # --- Phase A+B+C: enrichment ---
+    await run_enrichment(
+        target_date=FIXTURE_DATE,
+        cache_db_path=prod_pipeline["cache"],
+        sensor_dir=prod_pipeline["sensor"],
+        errors_path=prod_pipeline["errors"],
+    )
+
+    silver_root = prod_pipeline["silver"]
+
+    date_str = FIXTURE_DATE.isoformat()
+
+    def _silver_parquet(dataset: str) -> Path:
+        return (
+            silver_root / f"dataset={dataset}" / f"date={date_str}"
+            / "server=sn-01" / "events.parquet"
+        )
+
+    def _gold_parquet(table: str) -> Path:
+        return prod_pipeline["gold"] / table / f"date={date_str}" / "summary.parquet"
+
+    # Silver written for cowrie / suricata / dionaea
+    for dataset in ("cowrie", "suricata", "dionaea"):
+        assert _silver_parquet(dataset).exists(), f"silver missing for {dataset}"
+
+    # Nftables silver intentionally missing — raw `message` only, normalize returns empty
+    nftables_dir = silver_root / "dataset=nftables" / f"date={date_str}"
+    assert not list(nftables_dir.rglob("*.parquet")), (
+        "nftables silver should be skipped when bronze is raw-message only"
+    )
+
+    # --- Silver schema invariants ---
+    cowrie_silver = pl.read_parquet(_silver_parquet("cowrie"))
+
+    # Geo struct flattened to flat dotted columns
+    geo_subs = (
+        "country_code", "region_code", "city", "latitude",
+        "longitude", "timezone", "asn", "isp",
+    )
+    for sub in geo_subs:
+        assert f"geo.{sub}" in cowrie_silver.columns, f"cowrie silver missing geo.{sub}"
+    assert "geo" not in cowrie_silver.columns, "raw `geo` struct should be dropped"
+
+    # Suricata alert struct flattened — finding_title etc. exist; raw `alert` is gone.
+    suricata_silver = pl.read_parquet(_silver_parquet("suricata"))
+    assert "finding_title" in suricata_silver.columns
+    assert "finding_uid" in suricata_silver.columns
+    assert "severity_id" in suricata_silver.columns
+    assert "alert" not in suricata_silver.columns
+
+    # WAN-source row was dropped by drop_infrastructure_source_rows
+    src_ips_in_suricata = set(suricata_silver.get_column("src_endpoint_ip").to_list())
+    assert HONEYPOT_WAN not in src_ips_in_suricata, (
+        "Layer-2 redact should have dropped the WAN-source row"
+    )
+
+    # Enrichment columns present for the full attacker; nulls for rate-limited / sparse.
+    # ATTACKER_FULL got data from all four providers.
+    full_rows = cowrie_silver.filter(pl.col("src_endpoint_ip") == ATTACKER_FULL)
+    assert full_rows.height > 0
+    assert "abuseipdb_confidence_score" in cowrie_silver.columns, (
+        "abuseipdb_confidence_score must materialise as a real column when at "
+        "least one IP got that provider's data"
+    )
+    full_scores = full_rows.get_column("abuseipdb_confidence_score").drop_nulls().to_list()
+    assert 88 in full_scores
+
+    # ATTACKER_SPARSE got empty data — enrichment columns should be null, not crash.
+    sparse_rows = cowrie_silver.filter(pl.col("src_endpoint_ip") == ATTACKER_SPARSE)
+    assert sparse_rows.height > 0
+    sparse_scores = sparse_rows.get_column("abuseipdb_confidence_score").to_list()
+    assert all(s is None for s in sparse_scores), (
+        "Sparse-200 IP should have null enrichment columns, not crash"
+    )
+
+    # File-hash enrichment landed on the file_download row
+    file_dl_rows = cowrie_silver.filter(pl.col("file_hash_sha256") == FILE_DOWNLOAD_SHA)
+    assert file_dl_rows.height == 1
+    if "vt_file_malicious_count" in cowrie_silver.columns:
+        assert file_dl_rows.get_column("vt_file_malicious_count").to_list()[0] == 42
+
+    # OPSEC: no WAN IP in any silver column we redact.
+    for col in cowrie_silver.columns:
+        if cowrie_silver.schema[col] != pl.Utf8:
+            continue
+        values = set(cowrie_silver.get_column(col).drop_nulls().to_list())
+        assert HONEYPOT_WAN not in values, f"WAN leak in cowrie silver column {col}"
+
+    # --- Phase D: gold transform ---
+    run_transform(
+        target_date=FIXTURE_DATE,
+        silver_root=silver_root,
+        gold_root=prod_pipeline["gold"],
+    )
+
+    expected_tables = (
+        "daily_summary",
+        "ip_reputation",
+        "behavioral_progression",
+        "geographic_summary",
+        "detection_findings",
+        "behavioral_progression_multiday",
+    )
+    for table in expected_tables:
+        parquet = _gold_parquet(table)
+        assert parquet.exists(), f"gold table {table} not produced"
+        df = pl.read_parquet(parquet)
+        assert not df.is_empty(), f"gold table {table} is empty"
+
+    # campaign_clusters: ATTACKER_FULL (admin/admin123 success) + ATTACKER_SPARSE
+    # (admin/admin123 failed) share a credential pair → one cluster should form.
+    clusters_path = _gold_parquet("campaign_clusters")
+    assert clusters_path.exists(), "campaign_clusters should form for shared creds"
+    clusters = pl.read_parquet(clusters_path)
+    assert clusters.height >= 1
+
+    # ip_reputation tolerates the schema-divergent inputs: row for the rate-limited
+    # IP has nulls for the enrichment columns, no crash on optional providers.
+    rep = pl.read_parquet(_gold_parquet("ip_reputation"))
+    rep_ips = set(rep.get_column("src_endpoint_ip").to_list())
+    assert ATTACKER_FULL in rep_ips
+    assert ATTACKER_RATE_LIMITED in rep_ips
+    assert ATTACKER_SPARSE in rep_ips
+
+    # geographic_summary used the flat geo.country_code column — non-empty top_countries
+    geo = pl.read_parquet(_gold_parquet("geographic_summary"))
+    top_countries = geo.get_column("top_countries").to_list()[0]
+    assert any("BR:" in entry for entry in top_countries), (
+        "geo.country_code flat column must reach gold layer"
+    )
+
+    # detection_findings: the WAN-source alert was dropped; the two attacker alerts remain.
+    findings = pl.read_parquet(_gold_parquet("detection_findings"))
+    finding_titles = set(findings.get_column("finding_title").to_list())
+    assert "ET SCAN Potential SSH Scan" in finding_titles
+    assert "ET EXPLOIT Possible CVE-2021-44228" in finding_titles
+    # The WAN-source alert (SURICATA TCPv4 invalid checksum) must NOT survive — it
+    # would only be present if drop_infrastructure_source_rows failed.
+    assert "SURICATA TCPv4 invalid checksum" not in finding_titles
+
+
+@pytest.mark.asyncio()
+async def test_errors_logged_for_rate_limited_ips(
+    prod_pipeline: dict[str, Path],
+) -> None:
+    """The 429-returning attacker IP must surface in enrichment_errors.json.
+
+    Silence is not success: every provider failure produces a structured
+    row, otherwise rate-limit budget exhaustion goes undiagnosed.
+    """
+    await run_enrichment(
+        target_date=FIXTURE_DATE,
+        cache_db_path=prod_pipeline["cache"],
+        sensor_dir=prod_pipeline["sensor"],
+        errors_path=prod_pipeline["errors"],
+    )
+
+    errors_path = prod_pipeline["errors"]
+    assert errors_path.exists(), "rate-limit errors must be recorded"
+
+    import json as _json
+
+    lines = errors_path.read_text(encoding="utf-8").strip().splitlines()
+    parsed = [_json.loads(line) for line in lines]
+    error_types = {entry["error_type"] for entry in parsed}
+    providers = {entry["provider"] for entry in parsed}
+
+    assert "rate_limit" in error_types
+    # All four providers see the rate-limited IP at least once → all four records.
+    assert {"abuseipdb", "shodan", "virustotal", "greynoise"}.issubset(providers)
+    # Nothing should be classified as "unknown" — that would mean an exception
+    # leaked past our typed handlers (the bug that defect #2 codified).
+    assert "unknown" not in error_types

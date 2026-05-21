@@ -273,29 +273,43 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
     return result
 
 
+_ALERT_FLAT_TARGETS: tuple[tuple[str, str, pl.DataType], ...] = (
+    ("severity", "alert_severity", pl.Int64()),
+    ("signature", "alert_signature", pl.Utf8()),
+    ("signature_id", "alert_signature_id", pl.Int64()),
+    ("category", "alert_category", pl.Utf8()),
+    ("action", "alert_action", pl.Utf8()),
+)
+
+
 def _flatten_suricata_alert_struct(df: pl.DataFrame) -> pl.DataFrame:
     """Ensure flat ``alert_*`` columns exist regardless of bronze shape.
 
     Production Suricata bronze (via Vector's eve.json) ships alert metadata
-    nested under an ``alert`` struct; test fixtures pre-flatten the same
-    fields. This helper hides the difference so the normaliser below can
-    always reference ``alert_severity`` etc. directly.
+    nested under an ``alert`` struct. ``read_bronze_ndjson`` JSON-stringifies
+    every dict-valued field to keep schema inference stable across rows, so
+    by the time silver normalisation runs the column may be a ``Struct``
+    (direct construction, unit tests), a ``Utf8`` containing JSON (the
+    production path through the bronze reader), or absent entirely (a future
+    bronze stream that doesn't carry alert metadata). All three are tolerated
+    here so the normaliser below can always reference ``alert_severity`` etc.
+    directly.
     """
-    flat_targets: list[tuple[str, str, pl.DataType]] = [
-        ("severity", "alert_severity", pl.Int64()),
-        ("signature", "alert_signature", pl.Utf8()),
-        ("signature_id", "alert_signature_id", pl.Int64()),
-        ("category", "alert_category", pl.Utf8()),
-        ("action", "alert_action", pl.Utf8()),
-    ]
-
     alert_dtype = df.schema.get("alert") if "alert" in df.columns else None
+
+    if alert_dtype == pl.Utf8():
+        decode_schema = pl.Struct([
+            pl.Field(sub, dtype) for sub, _flat, dtype in _ALERT_FLAT_TARGETS
+        ])
+        df = df.with_columns(pl.col("alert").str.json_decode(decode_schema).alias("alert"))
+        alert_dtype = df.schema.get("alert")
+
     struct_field_names: set[str] = set()
     if isinstance(alert_dtype, pl.Struct):
         struct_field_names = {field.name for field in alert_dtype.fields}
 
     new_columns: list[pl.Expr] = []
-    for sub, flat_name, dtype in flat_targets:
+    for sub, flat_name, dtype in _ALERT_FLAT_TARGETS:
         if flat_name in df.columns:
             continue
         if sub in struct_field_names:
@@ -305,6 +319,8 @@ def _flatten_suricata_alert_struct(df: pl.DataFrame) -> pl.DataFrame:
 
     if new_columns:
         df = df.with_columns(new_columns)
+    if "alert" in df.columns and isinstance(df.schema.get("alert"), pl.Struct):
+        df = df.drop("alert")
     return df
 
 
@@ -683,19 +699,31 @@ _GEO_SUBFIELDS: tuple[tuple[str, pl.DataType], ...] = (
 def _flatten_geo_struct(df: pl.DataFrame) -> pl.DataFrame:
     """Extract Vector's nested ``geo`` struct into flat ``geo.<field>`` columns.
 
-    Vector writes geo enrichment as a single struct column at ingest time;
-    downstream transform/metrics code (and the dashboard, STIX export, etc.)
-    expects flat dotted column names (``geo.country_code``, ``geo.asn``, ...).
-    Test fixtures pre-flatten the same fields, so the divergence between
-    production bronze and the test suite went unnoticed until lantana-transform
-    crashed on op_alpha's first complete silver write.
+    Vector writes geo enrichment as a single struct at ingest time; downstream
+    transform/metrics code (and the dashboard, STIX export, etc.) expects
+    flat dotted column names (``geo.country_code``, ``geo.asn``, ...).
 
-    If the geo struct is absent (no Vector enrichment ever happened, or a
-    different shape on a future honeypot), fill the flat columns with typed
-    nulls so downstream code can rely on the schema regardless. The original
-    `geo` struct column is dropped after extraction to keep silver clean.
+    Three bronze shapes are tolerated:
+
+    * **Struct** — the column is already an inferred ``pl.Struct``. Used by
+      unit tests that construct frames from Python dicts.
+    * **Utf8 (JSON-encoded)** — ``read_bronze_ndjson`` indiscriminately
+      JSON-stringifies every nested dict before constructing the DataFrame
+      so that mixed-type rows don't break schema inference. Production
+      bronze always lands here.
+    * **Absent** — no Vector enrichment ran (alternate sensor, partial
+      pipeline). Flat columns are filled with typed nulls so silver schema
+      is stable regardless.
+
+    The raw ``geo`` column is dropped after extraction to keep silver clean.
     """
     geo_dtype = df.schema.get("geo") if "geo" in df.columns else None
+
+    if geo_dtype == pl.Utf8():
+        decode_schema = pl.Struct([pl.Field(sub, dtype) for sub, dtype in _GEO_SUBFIELDS])
+        df = df.with_columns(pl.col("geo").str.json_decode(decode_schema).alias("geo"))
+        geo_dtype = df.schema.get("geo")
+
     struct_field_names: set[str] = set()
     if isinstance(geo_dtype, pl.Struct):
         struct_field_names = {f.name for f in geo_dtype.fields}
