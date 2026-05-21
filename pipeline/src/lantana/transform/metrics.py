@@ -38,6 +38,47 @@ STAGE_LABELS: dict[int, str] = {
 # Top-N limit for summary lists
 TOP_N: int = 10
 
+# Dataset-specific columns that gold aggregations reference. The
+# diagonal-concat in ``read_silver_partition`` produces a frame containing
+# the UNION of columns across all datasets present that day; on days when
+# a dataset's silver write failed (provider outage, normalize bug,
+# defect-of-the-month), its contributed columns disappear, and aggregations
+# that name them crash with ``ColumnNotFoundError``. This list pins them so
+# ``_ensure_gold_columns`` can backfill typed nulls regardless.
+_OPTIONAL_GOLD_COLUMNS: dict[str, pl.DataType] = {
+    # Cowrie / Dionaea login + command + file-download fields
+    "session": pl.Utf8(),
+    "user_name": pl.Utf8(),
+    "unmapped_password": pl.Utf8(),
+    "actor_process_cmd_line": pl.Utf8(),
+    "file_url": pl.Utf8(),
+    "file_path": pl.Utf8(),
+    "file_hash_sha256": pl.Utf8(),
+    # Suricata detection metadata
+    "finding_title": pl.Utf8(),
+    "finding_uid": pl.Utf8(),
+    "finding_category": pl.Utf8(),
+    "flow_id": pl.Int64(),
+}
+
+
+def _ensure_gold_columns(silver: pl.DataFrame) -> pl.DataFrame:
+    """Backfill optional gold columns as typed nulls when absent.
+
+    Gold runs against the union of whichever datasets produced silver that
+    day. When cowrie silver fails (defect #9, etc.) the column
+    ``session`` simply isn't in the diagonal-concat; without this guard,
+    ``compute_daily_summary`` crashes on ``pl.col("session")`` and the
+    whole transform step dies — leaving operators with NO gold tables
+    for that date despite suricata silver being healthy.
+    """
+    missing = [
+        pl.lit(None, dtype=dtype).alias(name)
+        for name, dtype in _OPTIONAL_GOLD_COLUMNS.items()
+        if name not in silver.columns
+    ]
+    return silver.with_columns(missing) if missing else silver
+
 
 def _optional_first(df: pl.DataFrame, col: str, alias: str) -> pl.Expr:
     """Return first() aggregation for a column, or null literal if column is absent."""
@@ -70,6 +111,8 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
     """
     if silver.is_empty():
         return pl.DataFrame()
+
+    silver = _ensure_gold_columns(silver)
 
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
@@ -119,6 +162,8 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     """
     if silver.is_empty():
         return pl.DataFrame()
+
+    silver = _ensure_gold_columns(silver)
 
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
@@ -204,6 +249,8 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
     """
     if silver.is_empty():
         return pl.DataFrame()
+
+    silver = _ensure_gold_columns(silver)
 
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
@@ -339,6 +386,8 @@ def compute_behavioral_progression_multiday(
     if combined.is_empty():
         return pl.DataFrame()
 
+    combined = _ensure_gold_columns(combined)
+
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
 
@@ -424,6 +473,8 @@ def compute_campaign_clusters(silver: pl.DataFrame) -> pl.DataFrame:
     """
     if silver.is_empty():
         return pl.DataFrame()
+
+    silver = _ensure_gold_columns(silver)
 
     # Filter to auth events with credentials
     auth = silver.filter(

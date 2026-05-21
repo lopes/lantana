@@ -105,10 +105,10 @@ def test_validate_no_leaks_catches_direct_ip(redaction_config: RedactionConfig) 
 
 
 def test_validate_no_leaks_catches_cidr_match(redaction_config: RedactionConfig) -> None:
-    """Validation catches IPs within infrastructure CIDRs."""
+    """Validation catches IPs within infrastructure CIDRs in IP-typed columns."""
     df = pl.DataFrame(
         {
-            "some_field": ["10.50.99.55"],
+            "src_ip": ["10.50.99.55"],
         }
     )
     with pytest.raises(ValueError, match="Infrastructure IP leak"):
@@ -125,6 +125,74 @@ def test_validate_no_leaks_ignores_non_ip_strings(redaction_config: RedactionCon
         }
     )
     assert validate_no_leaks(df, redaction_config) is True
+
+
+def test_validate_no_leaks_skips_attacker_content_columns(
+    redaction_config: RedactionConfig,
+) -> None:
+    """Attacker-supplied content (passwords, commands) is NOT validated here.
+
+    Cowrie silver for 2026-05-20 was lost when an attacker bruteforced SSH
+    using the honeypot's own WAN IP as the password attempt — the value
+    landed in ``unmapped_password`` and the previous validator scanned every
+    string column, raising ValueError and dropping the whole batch.
+
+    The new contract: redact_infrastructure_ips pseudonymizes content
+    columns upstream, validate_no_leaks scopes its check to IP-typed columns
+    only. Both invariants together preserve the OPSEC promise without
+    false-positiving on attacker noise.
+    """
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50"],
+            "dst_endpoint_ip": ["honeypot-wan"],
+            "unmapped_password": ["172.31.99.129"],  # attacker's password attempt
+            "actor_process_cmd_line": ["nc 10.50.99.55 4444"],
+            "message": ["nft drop SRC=203.0.113.50 DST=172.31.99.129"],
+        }
+    )
+    assert validate_no_leaks(df, redaction_config) is True
+
+
+def test_redact_replaces_wan_in_password(redaction_config: RedactionConfig) -> None:
+    """Attacker uses the WAN IP itself as a password attempt — must pseudonymize.
+
+    Real defect #9 from op_alpha 2026-05-20. The value gets exact-matched
+    and rewritten to the operator-facing pseudonym; gold's top_passwords can
+    safely publish that string.
+    """
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50"],
+            "user_name": ["root"],
+            "unmapped_password": ["172.31.99.129"],
+        }
+    )
+    result = redact_infrastructure_ips(df, redaction_config)
+    assert result.get_column("unmapped_password").to_list() == ["honeypot-wan"]
+
+
+def test_redact_replaces_wan_substring_in_message(
+    redaction_config: RedactionConfig,
+) -> None:
+    """nftables preserves the raw kernel log in `message` (including DST=<wan>).
+
+    Substring replacement scrubs the embedded address. The OPSEC promise is
+    that no operation address survives into shareable output — exact-match
+    isn't sufficient for free-text fields.
+    """
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50"],
+            "message": [
+                "[LANTANA_INPUT_DROP] SRC=203.0.113.50 DST=172.31.99.129 PROTO=TCP"
+            ],
+        }
+    )
+    result = redact_infrastructure_ips(df, redaction_config)
+    msg = result.get_column("message").to_list()[0]
+    assert "172.31.99.129" not in msg
+    assert "honeypot-wan" in msg
 
 
 # --- drop_infrastructure_source_rows ---

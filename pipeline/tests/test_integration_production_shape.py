@@ -381,12 +381,29 @@ async def test_end_to_end_pipeline_against_production_shape(
     if "vt_file_malicious_count" in cowrie_silver.columns:
         assert file_dl_rows.get_column("vt_file_malicious_count").to_list()[0] == 42
 
-    # OPSEC: no WAN IP in any silver column we redact.
+    # OPSEC: no WAN IP anywhere in cowrie silver. The fixture includes an
+    # attacker who SSH-bruteforced with the WAN IP as the password attempt
+    # (real defect #9 from op_alpha 2026-05-20). The previous validator
+    # caught this in `unmapped_password` and aborted the whole batch; the
+    # new contract pseudonymizes content columns upstream so silver lands
+    # safely AND publishable intel never carries the WAN address.
     for col in cowrie_silver.columns:
         if cowrie_silver.schema[col] != pl.Utf8:
             continue
-        values = set(cowrie_silver.get_column(col).drop_nulls().to_list())
-        assert HONEYPOT_WAN not in values, f"WAN leak in cowrie silver column {col}"
+        values = cowrie_silver.get_column(col).drop_nulls().to_list()
+        for val in values:
+            assert HONEYPOT_WAN not in val, (
+                f"WAN leak in cowrie silver column {col!r}: {val!r}"
+            )
+
+    # Specifically: the WAN-as-password attacker row must have its
+    # `unmapped_password` rewritten to the pseudonym.
+    wan_as_password_rows = cowrie_silver.filter(
+        pl.col("unmapped_password") == "honeypot-wan"
+    )
+    assert wan_as_password_rows.height == 1, (
+        "WAN-as-password attacker must be pseudonymized, not dropped"
+    )
 
     # --- Phase D: gold transform ---
     run_transform(

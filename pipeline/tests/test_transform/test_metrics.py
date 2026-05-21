@@ -331,6 +331,27 @@ class TestDailySummary:
         result = compute_daily_summary(pl.DataFrame())
         assert result.is_empty()
 
+    def test_suricata_only_silver_does_not_crash(self) -> None:
+        """When cowrie silver is missing (defect #9 transitively crashed it),
+        ``read_silver_partition`` returns a diagonal-concat lacking
+        cowrie-only columns like ``session``. Defect #10: the transform must
+        not ColumnNotFoundError — gold should still be produced from
+        whatever silver landed cleanly.
+        """
+        suricata_only = pl.DataFrame({
+            "class_uid": [2004, 4001, 4001],
+            "status_id": [0, 0, 0],
+            "src_endpoint_ip": ["203.0.113.10", "203.0.113.20", "198.51.100.50"],
+            "dataset": ["suricata"] * 3,
+        })
+        result = compute_daily_summary(suricata_only)
+        assert result.height == 1
+        row = result.row(0, named=True)
+        assert row["total_events"] == 3
+        assert row["unique_sessions"] == 0  # cowrie missing → no sessions
+        assert row["findings_detected"] == 1
+        assert row["network_events"] == 2
+
 
 # ---------------------------------------------------------------------------
 # ip_reputation
