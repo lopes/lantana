@@ -63,11 +63,25 @@ IOC_TYPE_IP = "ip"
 IOC_TYPE_HASH = "hash"
 
 # Circuit-breaker thresholds for _enrich_iocs_with_provider.
-# Rate limits don't reset within a single run, so once we've consistently been
-# 429'd there's no point retrying every remaining IOC and burning ~14s of
-# tenacity backoff each. Auth failures don't fix themselves mid-run either —
-# one is enough.
+#
+# Two complementary counters guard against burning wall-clock against a
+# provider whose quota has reset hours from now:
+#
+#   * RATE_LIMIT_THRESHOLD (consecutive): trips when N 429s arrive in a row
+#     with no successful response between them. Fast path for fully-
+#     exhausted providers with a sparse-or-empty cache — the very first IPs
+#     trip it, the remaining queue is skipped.
+#   * RATE_LIMIT_CUMULATIVE_THRESHOLD: trips on the total count of 429s
+#     across the whole loop, even if interleaved cache hits keep resetting
+#     the consecutive counter. Without this, a provider whose cache holds
+#     ~25% of the day's IPs (Shodan post-multi-day-accumulation) processes
+#     the entire queue because every 4-5 misses hit one cache entry — the
+#     consecutive counter never reaches 5. Defect #11, observed on the
+#     2026-05-21 12:10 re-run for date=2026-05-20.
+#
+# Auth failures don't fix themselves mid-run either — one is enough.
 CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD = 5
+CIRCUIT_BREAKER_RATE_LIMIT_CUMULATIVE_THRESHOLD = 30
 CIRCUIT_BREAKER_AUTH_FAILED_THRESHOLD = 1
 
 
@@ -271,6 +285,7 @@ async def _enrich_iocs_with_provider(
     results: list[EnrichmentResult] = []
     cache_hits = 0
     consecutive_rate_limits = 0
+    cumulative_rate_limits = 0
     auth_failures = 0
     for index, value in enumerate(iocs):
         cached = _get_cached(cache, provider_name, ioc_type, value)
@@ -286,6 +301,16 @@ async def _enrich_iocs_with_provider(
                 ioc_type=ioc_type,
                 reason="rate_limit_threshold",
                 consecutive=consecutive_rate_limits,
+                skipped=len(iocs) - index,
+            )
+            break
+        if cumulative_rate_limits >= CIRCUIT_BREAKER_RATE_LIMIT_CUMULATIVE_THRESHOLD:
+            logger.warning(
+                "provider_short_circuited",
+                provider=provider_name,
+                ioc_type=ioc_type,
+                reason="rate_limit_cumulative",
+                cumulative=cumulative_rate_limits,
                 skipped=len(iocs) - index,
             )
             break
@@ -309,6 +334,7 @@ async def _enrich_iocs_with_provider(
             _log_failure(etype, provider=provider_name, **{log_field: value})
             if etype == "rate_limit":
                 consecutive_rate_limits += 1
+                cumulative_rate_limits += 1
             elif etype == "auth_failed":
                 auth_failures += 1
             else:

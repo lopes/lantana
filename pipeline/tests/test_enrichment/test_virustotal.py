@@ -153,13 +153,16 @@ class TestVirusTotalHash:
 
 class TestVirusTotalRetry:
     @pytest.mark.asyncio()
-    async def test_429_is_retried(self, provider: VirusTotalProvider) -> None:
-        """Rate-limit 429 must be retried — that's the only reason for the retry budget.
+    async def test_429_fails_fast(self, provider: VirusTotalProvider) -> None:
+        """Rate-limit 429 must NOT be retried — defect #11.
 
-        With ``reraise=True`` on the @retry decorator (Phase 2), tenacity
-        propagates the original HTTPStatusError after exhausting attempts
-        instead of wrapping it in RetryError. We verify retry happened via
-        the mock's await count.
+        429 means "quota exhausted; reset is hours-to-monthly away".
+        Tenacity's 2-30 s exponential backoff cannot outwait that, so each
+        retried call is pure wall-clock burn. Op_alpha's 2026-05-21 12:10
+        re-run for 2026-05-20 wedged for an hour with three providers each
+        retrying ~3000 calls 3x because of this. The runner's
+        circuit-breaker (consecutive + cumulative thresholds) is the
+        correct authority to decide when to stop hitting the provider.
         """
         rate_limited = httpx.Response(
             429, json={"error": "Rate limit"},
@@ -172,7 +175,7 @@ class TestVirusTotalRetry:
              pytest.raises(httpx.HTTPStatusError) as exc_info:
             await provider.enrich_ip("1.2.3.4")
         assert exc_info.value.response.status_code == 429
-        assert mock_get.await_count >= 2
+        assert mock_get.await_count == 1  # single attempt, no retry
 
     @pytest.mark.asyncio()
     async def test_403_fails_fast(self, provider: VirusTotalProvider) -> None:

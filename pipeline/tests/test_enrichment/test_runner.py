@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, date, datetime
-from pathlib import Path
+from pathlib import Path  # noqa: TC003 - used at runtime in tmp_path fixtures
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -16,6 +16,7 @@ from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.base import EnrichmentResult
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
 from lantana.enrichment.runner import (
+    CIRCUIT_BREAKER_RATE_LIMIT_CUMULATIVE_THRESHOLD,
     CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD,
     IOC_TYPE_HASH,
     IOC_TYPE_IP,
@@ -686,6 +687,48 @@ class TestCircuitBreaker:
         # So total calls = threshold.
         assert provider.enrich_ip.call_count == CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD
         assert ("test_provider", "rate_limit") in errors
+
+    @pytest.mark.asyncio()
+    async def test_cumulative_rate_limit_trips_through_cache_interleave(
+        self, tmp_path: Path,
+    ) -> None:
+        """Scattered cache hits must not let an exhausted provider keep going.
+
+        Defect #11 from op_alpha 2026-05-21: Shodan had ~25% cache coverage
+        of a 4670-IP queue. Cache hits reset the consecutive counter every
+        few misses, the consecutive breaker never tripped, and the runner
+        ground through ~3400 fresh API calls — each one a 429. The
+        cumulative threshold is the safety net for this interleaving
+        pattern.
+        """
+        cache = _make_cache(tmp_path)
+        # Seed cache: every 5th IP is a hit, the rest are misses.
+        for i in range(0, 500, 5):
+            _set_cached(
+                cache, "test_provider", IOC_TYPE_IP, f"203.0.113.{i}",
+                EnrichmentResult(
+                    provider="test_provider", ip=f"203.0.113.{i}",
+                    data={"hit": True}, queried_at=datetime.now(tz=UTC),
+                ),
+            )
+
+        provider = AsyncMock()
+        provider.enrich_ip.side_effect = _rate_limit_error()
+
+        errors: ErrorAccumulator = {}
+        ips = [f"203.0.113.{i}" for i in range(500)]  # 500 IPs, 100 cached, 400 miss
+        results, cache_hits = await _enrich_iocs_with_provider(
+            "test_provider", provider, IOC_TYPE_IP, ips, cache, errors,
+        )
+        cache.close()
+
+        # The cumulative breaker (30 total 429s) trips long before we attempt
+        # all 400 misses — the consecutive breaker never trips because every
+        # 4-5 misses gets interrupted by a cache hit.
+        assert provider.enrich_ip.call_count <= CIRCUIT_BREAKER_RATE_LIMIT_CUMULATIVE_THRESHOLD
+        assert cache_hits > 0  # cache hits accumulated before the break
+        # Only cached entries made it into results — fresh calls all 429'd.
+        assert len(results) == cache_hits
 
     @pytest.mark.asyncio()
     async def test_success_resets_counter(self, tmp_path: Path) -> None:
