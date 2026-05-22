@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -176,6 +177,30 @@ def _set_cached(
 
 ErrorAccumulator = dict[tuple[str, str], EnrichmentError]
 
+# Query-string parameters whose values must never reach disk. Some providers
+# (notably Shodan) take the API key as a URL query parameter, and httpx's
+# HTTPStatusError stringifies the full request URL verbatim into its message
+# — which would then land in /var/lib/lantana/datalake/enrichment_errors.json
+# in cleartext, get read by the alerter, and potentially Discord-embedded.
+# Headers-based auth (AbuseIPDB / VirusTotal / GreyNoise) is unaffected;
+# headers never appear in the error string.
+_SENSITIVE_QUERY_PARAMS = ("key", "api_key", "apikey", "token", "access_token")
+_SENSITIVE_QUERY_RE = re.compile(
+    r"([?&])(" + "|".join(_SENSITIVE_QUERY_PARAMS) + r")=[^&\s'\"]+",
+    flags=re.IGNORECASE,
+)
+
+
+def _sanitize_error_message(message: str) -> str:
+    """Strip API keys from URL query strings in error messages.
+
+    Returns the message with `key=<value>` (and similar sensitive
+    parameter names) replaced by `key=REDACTED`. Anchored to `?` or `&`
+    so it never matches the same substring inside a JSON body, free
+    text, or path segment.
+    """
+    return _SENSITIVE_QUERY_RE.sub(r"\1\2=REDACTED", message)
+
 
 def _classify_http_error(status_code: int) -> str:
     """Map HTTP status code to a structured error type label.
@@ -212,16 +237,22 @@ def _record_error(
     error_type: str,
     message: str,
 ) -> None:
-    """Accumulate an error, incrementing count for repeated (provider, error_type)."""
+    """Accumulate an error, incrementing count for repeated (provider, error_type).
+
+    The message is run through ``_sanitize_error_message`` before storage
+    so that API keys embedded in request URLs (Shodan query-string auth)
+    never reach the enrichment_errors.json file.
+    """
+    safe_message = _sanitize_error_message(message)
     key = (provider, error_type)
     if key in errors:
         errors[key].count += 1
-        errors[key].error_message = message
+        errors[key].error_message = safe_message
     else:
         errors[key] = EnrichmentError(
             provider=provider,
             error_type=error_type,
-            error_message=message,
+            error_message=safe_message,
             timestamp=datetime.now(tz=UTC),
         )
 

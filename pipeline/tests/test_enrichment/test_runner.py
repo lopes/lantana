@@ -28,6 +28,7 @@ from lantana.enrichment.runner import (
     _init_cache,
     _merge_lookup,
     _record_error,
+    _sanitize_error_message,
     _set_cached,
     _write_error_summary,
 )
@@ -56,6 +57,55 @@ class TestClassifyHttpError:
         assert _classify_http_error(500) == "server_error"
         assert _classify_http_error(502) == "server_error"
         assert _classify_http_error(503) == "server_error"
+
+
+# --- _sanitize_error_message ---
+
+
+class TestSanitizeErrorMessage:
+    """Sanitiser strips API keys from URL query strings before persistence.
+
+    Headers-based auth (AbuseIPDB / VirusTotal / GreyNoise) never appears
+    in error messages — only query-string auth (Shodan) does, but the
+    sanitiser is provider-agnostic so a future provider adopting query
+    auth wouldn't leak either.
+    """
+
+    def test_shodan_url_key_redacted(self) -> None:
+        msg = (
+            "Client error '429 Too Many Requests' for url "
+            "'https://api.shodan.io/shodan/host/1.2.3.4?key=vN794DcKiMpK48MnhhKik2SwKtXxG4SJ'"
+        )
+        out = _sanitize_error_message(msg)
+        assert "vN794DcKiMpK48MnhhKik2SwKtXxG4SJ" not in out
+        assert "key=REDACTED" in out
+
+    def test_multiple_sensitive_param_names(self) -> None:
+        for param in ("api_key", "apikey", "token", "access_token"):
+            msg = f"https://example.com/x?{param}=SECRET123&other=keep"
+            out = _sanitize_error_message(msg)
+            assert "SECRET123" not in out, param
+            assert f"{param}=REDACTED" in out
+            assert "other=keep" in out
+
+    def test_case_insensitive_param_name(self) -> None:
+        msg = "https://x.com/y?Key=ABC123"
+        assert _sanitize_error_message(msg) == "https://x.com/y?Key=REDACTED"
+
+    def test_param_not_at_start_of_query(self) -> None:
+        msg = "https://api.shodan.io/host/1.2.3.4?ipAddress=1.2.3.4&key=SECRET"
+        out = _sanitize_error_message(msg)
+        assert "SECRET" not in out
+        assert "ipAddress=1.2.3.4" in out
+
+    def test_nonmatching_key_substring_preserved(self) -> None:
+        # 'key' inside a path segment, JSON body, or as part of another word
+        # must NOT trigger redaction.
+        msg = "Failed at /v2/keystore — 'key': 'visible'"
+        assert _sanitize_error_message(msg) == msg
+
+    def test_no_change_for_clean_message(self) -> None:
+        assert _sanitize_error_message("request timed out") == "request timed out"
 
 
 # --- _record_error ---
@@ -92,6 +142,31 @@ class TestRecordError:
         _record_error(errors, "abuseipdb", "rate_limit", "429")
         _record_error(errors, "abuseipdb", "timeout", "timed out")
         assert len(errors) == 2
+
+    def test_shodan_url_key_sanitised_before_storage(self) -> None:
+        """The bug found 2026-05-22: Shodan key was landing in enrichment_errors.json
+        because httpx HTTPStatusError messages embed the full request URL."""
+        errors: ErrorAccumulator = {}
+        leaky_msg = (
+            "Client error '429 Too Many Requests' for url "
+            "'https://api.shodan.io/shodan/host/1.2.3.4?key=REAL_KEY_VALUE'"
+        )
+        _record_error(errors, "shodan", "rate_limit", leaky_msg)
+        stored = errors[("shodan", "rate_limit")].error_message
+        assert "REAL_KEY_VALUE" not in stored
+        assert "key=REDACTED" in stored
+
+    def test_sanitisation_applies_on_update_too(self) -> None:
+        """The accumulator's update branch also runs through the sanitiser."""
+        errors: ErrorAccumulator = {}
+        _record_error(errors, "shodan", "rate_limit", "first")
+        _record_error(
+            errors,
+            "shodan",
+            "rate_limit",
+            "https://x.com/y?key=LEAK_2",
+        )
+        assert "LEAK_2" not in errors[("shodan", "rate_limit")].error_message
 
 
 # --- _write_error_summary ---
