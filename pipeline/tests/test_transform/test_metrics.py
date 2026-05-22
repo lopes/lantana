@@ -1147,3 +1147,56 @@ class TestRiskScoreDecomposition:
         # Inputs clip at 100; mean = 100; behavioral = 25 (commands); composite=62.5.
         assert row["enrichment_risk_score"] == pytest.approx(100.0)
         assert row["risk_score"] <= 100.0
+
+    def test_riot_with_hot_other_providers(self) -> None:
+        """The load-bearing Phase D verification scenario.
+
+        Per docs/risk-scoring.md § Example 2: a RIOT IP that other
+        providers also rate highly. GreyNoise short-circuits to 0; the
+        rest contribute normally. The score must come down without
+        erasing the other providers' input — that's the *whole point*
+        of expressing RIOT as a per-provider score-of-0 instead of a
+        gate or filter.
+
+        Setup mirrors the plan's specification:
+          abuseipdb_confidence_score=90  → abuseipdb_risk_score=90
+          vt_malicious_count=15          → virustotal_risk_score=100 (>10 bucket)
+          greynoise_riot=True            → greynoise_risk_score=0 (RIOT override)
+          shodan: not populated this day → null
+        """
+        df = pl.DataFrame([_row_with(
+            # No behavioral activity → behavioral_risk_score=0.
+            abuseipdb_confidence_score=90,
+            abuseipdb_risk_score=90.0,
+            virustotal_risk_score=100.0,
+            shodan_risk_score=None,
+            greynoise_classification="malicious",
+            greynoise_noise=True,
+            greynoise_riot=True,
+            greynoise_risk_score=0.0,
+        )])
+        result = compute_ip_reputation(df)
+        row = result.row(0, named=True)
+
+        # RIOT short-circuit visible in gold.
+        assert row["greynoise_risk_score"] == 0.0
+        assert row["greynoise_riot"] is True
+
+        # AbuseIPDB and VT scores reach gold unchanged.
+        assert row["abuseipdb_risk_score"] == 90.0
+        assert row["virustotal_risk_score"] == 100.0
+
+        # Enrichment = mean of populated (90, 100, 0) = 63.333…
+        assert row["enrichment_risk_score"] == pytest.approx(63.333333, rel=1e-4)
+
+        # No behavioral activity in the row.
+        assert row["behavioral_risk_score"] == pytest.approx(0.0)
+
+        # Composite = (63.333 + 0) / 2 ≈ 31.67. Critically below the STIX
+        # gate (40) — RIOT correctly pulled this IP below the threshold
+        # despite two other providers rating it max.
+        assert row["risk_score"] == pytest.approx(31.6667, rel=1e-3)
+        assert row["risk_score"] < 40.0, (
+            "RIOT IP with hot AbuseIPDB+VT must end up below the STIX gate; "
+            "if this fails, the RIOT short-circuit isn't doing its job."
+        )
