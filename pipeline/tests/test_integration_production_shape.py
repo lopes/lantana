@@ -500,3 +500,103 @@ async def test_errors_logged_for_rate_limited_ips(
     # Nothing should be classified as "unknown" — that would mean an exception
     # leaked past our typed handlers (the bug that defect #2 codified).
     assert "unknown" not in error_types
+
+
+@pytest.mark.asyncio()
+async def test_riot_signal_survives_bronze_to_gold(
+    prod_pipeline: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase D.5 load-bearing integration test for the GreyNoise RIOT
+    short-circuit.
+
+    The unit test in tests/test_transform/test_metrics.py
+    (TestRiskScoreDecomposition.test_riot_with_hot_other_providers)
+    pins the composite math at the gold layer. THIS test pins the *data
+    flow*: that ``greynoise_riot=True`` and ``greynoise_risk_score=0``
+    actually survive bronze → silver → gold through the runner's
+    ``_build_lookup`` + ``_merge_lookup``, the normaliser, and the gold
+    ``optional`` list in ``compute_ip_reputation``.
+
+    A future refactor that drops ``greynoise_riot`` from any of those
+    stages would pass the unit test (it builds silver in-memory) but fail
+    here.
+    """
+    # Override the GreyNoise provider with RIOT-flavoured data. The
+    # prod_pipeline fixture's default uses _FULL_ENRICHMENT["greynoise"]
+    # with riot=False — we replace it for this test only via monkeypatch.
+    riot_data: dict[str, Any] = {
+        "greynoise_classification": "malicious",
+        "greynoise_noise": True,
+        "greynoise_riot": True,            # ← the load-bearing flag
+        "greynoise_name": "Censys",
+        "greynoise_risk_score": 0.0,        # ← RIOT short-circuit value
+    }
+    monkeypatch.setattr(
+        runner_mod, "GreyNoiseProvider",
+        _make_ip_provider_class("greynoise", riot_data),
+    )
+
+    # Drive the full pipeline.
+    await run_enrichment(
+        target_date=FIXTURE_DATE,
+        cache_db_path=prod_pipeline["cache"],
+        sensor_dir=prod_pipeline["sensor"],
+        errors_path=prod_pipeline["errors"],
+        provider_state_path=prod_pipeline["provider_state"],
+    )
+    run_transform(
+        target_date=FIXTURE_DATE,
+        silver_root=prod_pipeline["silver"],
+        gold_root=prod_pipeline["gold"],
+    )
+
+    date_str = FIXTURE_DATE.isoformat()
+
+    # --- Silver carries the RIOT signal for the full attacker ---
+    cowrie_silver = pl.read_parquet(
+        prod_pipeline["silver"] / "dataset=cowrie" / f"date={date_str}"
+        / "server=sn-01" / "events.parquet"
+    )
+    attacker_rows = cowrie_silver.filter(pl.col("src_endpoint_ip") == ATTACKER_FULL)
+    assert attacker_rows.height > 0, (
+        f"fixture must include events for ATTACKER_FULL ({ATTACKER_FULL})"
+    )
+
+    riot_values = attacker_rows.get_column("greynoise_riot").to_list()
+    assert all(r is True for r in riot_values), (
+        f"greynoise_riot must survive silver write, got {riot_values}. "
+        "A failure here means _build_lookup or _merge_lookup is dropping "
+        "the boolean column."
+    )
+
+    gn_scores = attacker_rows.get_column("greynoise_risk_score").to_list()
+    assert all(s == 0.0 for s in gn_scores), (
+        f"RIOT must short-circuit greynoise_risk_score to 0 in silver, got {gn_scores}"
+    )
+
+    # --- Gold ip_reputation reflects the RIOT pull-down ---
+    rep = pl.read_parquet(
+        prod_pipeline["gold"] / "ip_reputation" / f"date={date_str}" / "summary.parquet"
+    )
+    attacker_row = rep.filter(pl.col("src_endpoint_ip") == ATTACKER_FULL).row(0, named=True)
+
+    # The riot bool flag survives the group_by aggregation.
+    assert attacker_row["greynoise_riot"] is True, (
+        "greynoise_riot dropped between silver and gold — "
+        "check compute_ip_reputation's `optional` list"
+    )
+    assert attacker_row["greynoise_risk_score"] == 0.0
+
+    # The other providers' scores reach gold unchanged.
+    assert attacker_row["abuseipdb_risk_score"] == 88.0
+    assert attacker_row["virustotal_risk_score"] == 50.0
+    assert attacker_row["shodan_risk_score"] == 25.0
+
+    # enrichment_risk_score = mean of all four populated providers, including
+    # the RIOT-zero. = (88 + 50 + 25 + 0) / 4 = 40.75.
+    # The 0 is included in the mean (it's a real score, not null); without
+    # the RIOT short-circuit, GreyNoise would contribute 75 and the mean
+    # would be (88 + 50 + 25 + 75) / 4 = 59.5. The 18.75-point gap is
+    # exactly what RIOT pulls down.
+    assert attacker_row["enrichment_risk_score"] == pytest.approx(40.75)
