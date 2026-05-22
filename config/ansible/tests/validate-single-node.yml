@@ -131,13 +131,15 @@
         fail_msg: "Log rotation file {{ item.item }} is missing."
       loop: "{{ logrotate_check.results }}"
 
-    - name: "Check Cron Jobs for Logs"
+    - name: "Check Cron Jobs (logs + monthly GeoIP)"
+      # Pipeline jobs (prune / enrich / transform / alert / report) moved
+      # from cron to systemd timers in 2026-05-22's deploy refactor;
+      # /etc/cron.d/lantana-pipeline no longer exists. Only the logrotate
+      # cron and the monthly GeoIP refresh stay on cron.
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
-        # Must match what roles deploy in /etc/cron.d/
         - /etc/cron.d/lantana-logs
-        - /etc/cron.d/lantana-pipeline
         - /etc/cron.d/lantana-geoip-update
       register: cron_check
 
@@ -146,6 +148,35 @@
         that: "item.stat.exists"
         fail_msg: "Cron job {{ item.item }} is missing."
       loop: "{{ cron_check.results }}"
+
+    - name: "Check pipeline systemd timer units"
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ item }}.timer"
+      loop:
+        - lantana-prune
+        - lantana-enrich
+        - lantana-transform
+        - lantana-alert
+        - lantana-report
+      register: pipeline_timer_check
+
+    - name: "Assert pipeline systemd timers are installed"
+      ansible.builtin.assert:
+        that: "item.stat.exists"
+        fail_msg: "Pipeline systemd timer {{ item.item }}.timer is missing."
+      loop: "{{ pipeline_timer_check.results }}"
+
+    - name: "Check pipeline systemd timers are enabled and active"
+      ansible.builtin.command: "systemctl is-enabled {{ item }}.timer"
+      loop:
+        - lantana-prune
+        - lantana-enrich
+        - lantana-transform
+        - lantana-alert
+        - lantana-report
+      register: pipeline_timer_enabled
+      changed_when: false
+      failed_when: pipeline_timer_enabled.rc != 0 or pipeline_timer_enabled.stdout.strip() != "enabled"
 
     - name: "Check if Log Files are being created"
       ansible.builtin.stat:
