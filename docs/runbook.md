@@ -533,6 +533,53 @@ Run after the first full pipeline cycle (i.e. after 06:00 UTC on the day followi
 
 Replace `<SN01>` with the sensor IP and `<PORT>` with the SSH admin port from `inventories/op_<name>/group_vars/all/main.yml`.
 
+### What you're actually verifying
+
+This is a 13-step walkthrough divided into two phases:
+
+* **Immediate (checks 1–4)** — confirm the deploy *itself* completed correctly. Timers are scheduled, the legacy cron file is gone, Vector is ingesting, the datalake directory tree exists. You run these within minutes of `ansible-playbook` finishing; results are deterministic. A failure here means rerun the deploy.
+
+* **Post first cycle (checks 5–13)** — confirm the pipeline *actually ran* and produced clean output. You can only run these after 06:00 UTC on day-2 because that's when the last scheduled job (`lantana-report`) fires. A failure here usually points at runtime state (provider quota exhausted, secrets misconfigured, etc.) — diagnose in place, don't redeploy.
+
+The 13 checks map to the architectural pieces:
+
+| Check | What it proves |
+|---|---|
+| 1 | Schedule itself is alive — five timers, next-fire times within 24h |
+| 2 | The cron→systemd migration completed cleanly (no double-fire risk) |
+| 3 | Vector source layer is ingesting; no startup errors |
+| 4 | Filesystem layout matches what `lantana-prune` will operate on |
+| 5 | Each pipeline job ran and exited 0 (the systemd contract; replaces the old `\| logger` pipe that masked exit codes) |
+| 6 | `run_summary` structlog line appears for enrich + transform — the single-line per-run health signal added today (operators get the day's outcome in one event instead of grepping ~15) |
+| 7 | Silver was written for all active datasets (cowrie + suricata + nftables) — confirms the bronze→silver path is functioning |
+| 8 | All seven gold tables produced — confirms the silver→gold transform completed |
+| 9 | `.provider_state.json` was created — confirms the new cross-run rate-limit memory is wired in. Empty `{}` on day-1 is fine; entries appear only after a provider trips its breaker |
+| 10 | The Shodan API-key sanitiser is working — `enrichment_errors.json` must not contain `key=<actual-value>` substrings |
+| 11 | Per-provider `<provider>_risk_score` columns landed in silver — verifies Phase D.1 (the new score helpers) are flowing through `_build_lookup` + `_merge_lookup` correctly |
+| 12 | Gold `ip_reputation` has the composite + decomposition + RIOT invariant. The load-bearing operational check: if any IP shows `greynoise_riot=True`, its `greynoise_risk_score` must be `0.0` |
+| 13 | The Discord report was actually sent (operator visual check). New format includes the `composite (enrichment+behavioral)/2` cell and the `A/V/S/G` per-provider column |
+
+### How to read the outputs
+
+**A clean day-2 morning looks like:**
+- `systemctl list-timers` shows five `lantana-*.timer` entries
+- `journalctl ... | grep run_summary` returns one JSON line per service with non-zero `silver_rows` and per-provider counters
+- `find ... gold/ -name '*.parquet' | awk -F/ '{print $7}' | sort -u` returns exactly the seven expected table names
+- The Discord report arrives at 06:00 UTC with all sections populated
+
+**Common non-issues** (don't panic, don't roll back):
+- GreyNoise columns missing or all-null in silver — the 50/week quota is tight; days where GN never returned a 200 are normal
+- `enrichment_errors.json` has rate-limit entries for VT or Shodan — expected on busy days; the dual circuit-breaker design means these are *handled*, not failures
+- `lantana-alert.service` shows `Result: success` but no Discord post — alerter is silent on clean days by design (it only posts on non-clean days)
+- Day-1 silver/gold partitions don't exist yet — the pipeline runs against *yesterday's* bronze, so on day-1 morning there's no upstream data to process
+
+**Real failures** (these need attention):
+- Any timer missing from `list-timers` → Ansible deploy didn't complete; rerun
+- `Result: failed` in `systemctl status` → check that service's journal for the exception
+- Missing `run_summary` despite `Result: success` → unit ran but exited before completing (check for `dataset_processing_failed` in journal)
+- `key=<long string>` in `enrichment_errors.json` → sanitiser regression; the test in `tests/test_enrichment/test_runner.py::TestSanitizeErrorMessage` should catch this locally first
+- RIOT IP with non-zero `greynoise_risk_score` in gold → integration regression (`test_riot_signal_survives_bronze_to_gold` should fail locally; if not, the bug is downstream of provider)
+
 ### Immediate post-deploy (within minutes of `ansible-playbook` finishing)
 
 ```bash

@@ -251,16 +251,18 @@ The pipeline is deployed by Ansible as part of the `profile_collector` role:
 1. **Source clone**: shallow `git clone` of the public repo (default `https://github.com/lopes/lantana.git`, configurable via `lantana_repo_url` and `lantana_repo_ref`) into `/opt/lantana/repo/`. The ref defaults to `main`; an operation can pin a tag or commit for reproducibility.
 2. **Virtual environment**: managed by `uv` (pinned via `roles/base/defaults/main.yml`) at `/opt/lantana/pipeline/venv/`. The Python interpreter comes from the system (`UV_PYTHON_DOWNLOADS=never`), not uv-managed.
 3. **Package install**: `uv sync --frozen --project /opt/lantana/repo/pipeline/`. `--frozen` enforces exact versions from the checked-in `uv.lock` — any drift fails the deploy rather than silently picking newer transitives.
-4. **Cron schedule** (`/etc/cron.d/lantana-pipeline` and `/etc/cron.d/lantana-geoip-update`):
+4. **Schedule** — pipeline jobs run as systemd `oneshot` services triggered by matching `.timer` units (deployed to `/etc/systemd/system/`). GeoIP refresh is still a cron entry (`/etc/cron.d/lantana-geoip-update`) since it's monthly and needs root.
 
-| Time (UTC) | Command | Description |
+| Time (UTC) | Unit / Job | Description |
 | --- | --- | --- |
-| 00:15 daily | `lantana-prune` | Retention + disk monitoring |
-| 01:00 daily | `lantana-enrich` | Bronze -> Silver (yesterday) |
-| 02:00 daily | `lantana-transform` | Silver -> Gold (yesterday) |
-| 02:30 monthly (1st) | `lantana-geoip-update` | Refresh MaxMind City + ASN MMDBs |
+| 00:15 daily | `lantana-prune.service` | Retention + disk monitoring |
+| 01:00 daily | `lantana-enrich.service` | Bronze → silver (yesterday) |
+| 04:00 daily | `lantana-transform.service` | Silver → gold (yesterday) — 3h margin after enrich because VT throttle can stretch it |
+| 05:00 daily | `lantana-alert.service` | Discord alert on non-clean days; silent on clean |
+| 06:00 daily | `lantana-report.service` | Daily Discord intel brief, always posts |
+| 02:30 monthly (1st) | `lantana-geoip-update` (cron) | Refresh MaxMind City + ASN MMDBs |
 
-All daily cron jobs run as the `nectar` user (UID 2002), which owns the datalake directories. The GeoIP refresh runs as root (writes the MMDBs and restarts Vector). The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`.
+All pipeline services run as the `nectar` user (UID 2002), which owns the datalake directories. The GeoIP refresh runs as root (writes the MMDBs and restarts Vector). The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`. Query a service's last run via `journalctl -u <name>.service`; see next-fire times via `systemctl list-timers`.
 
 ---
 

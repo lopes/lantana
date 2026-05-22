@@ -128,15 +128,17 @@ ls /etc/vector/conf.d/
 # cowrie.yaml, dionaea.yaml, suricata.yaml, forward.yaml, receive.yaml
 ```
 
-**Pipeline installed:**
+**Pipeline installed and scheduled:**
 
 ```bash
 ls /opt/lantana/pipeline/venv/bin/lantana-*
-# lantana-enrich, lantana-transform, lantana-prune, lantana-notify, lantana-report, lantana-dashboard
-cat /etc/cron.d/lantana-pipeline
-# 00:15 lantana-prune
-# 01:00 lantana-enrich
-# 02:00 lantana-transform
+# lantana-enrich, lantana-transform, lantana-prune, lantana-alert, lantana-notify, lantana-report, lantana-dashboard
+sudo systemctl list-timers --all | grep lantana
+# lantana-prune.timer      next fire 00:15 UTC
+# lantana-enrich.timer     next fire 01:00 UTC
+# lantana-transform.timer  next fire 04:00 UTC
+# lantana-alert.timer      next fire 05:00 UTC
+# lantana-report.timer     next fire 06:00 UTC
 ```
 
 ---
@@ -189,13 +191,14 @@ sudo journalctl -u vector --since "1 hour ago" | tail -20
 
 ## Day 1: First Pipeline Run
 
-The pipeline runs via cron at 01:00 UTC (enrichment) and 02:00 UTC (gold aggregation). After the first night:
+The pipeline runs via systemd timers: 01:00 UTC enrich, 04:00 transform, 05:00 alert, 06:00 report. After the first night:
 
 ### 1.1 Verify enrichment ran (bronze -> silver)
 
 ```bash
-# Check cron ran
-grep lantana-enrich /var/log/syslog | tail -5
+# Check the unit ran (and succeeded)
+sudo systemctl status lantana-enrich.service --no-pager | head
+sudo journalctl -u lantana-enrich.service --since '01:00 UTC' | grep run_summary
 
 # Silver layer should exist
 ls /var/lib/lantana/datalake/silver/
@@ -252,8 +255,9 @@ sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT COUNT(*) FROM cac
 ### 1.2 Verify gold aggregation ran (silver -> gold)
 
 ```bash
-# Check cron ran
-grep lantana-transform /var/log/syslog | tail -5
+# Check the unit ran (and succeeded)
+sudo systemctl status lantana-transform.service --no-pager | head
+sudo journalctl -u lantana-transform.service --since '04:00 UTC' | grep run_summary
 
 # Gold tables should exist — seven directories, one per table
 ls /var/lib/lantana/datalake/gold/
@@ -350,7 +354,7 @@ If enrichment columns are all null, check:
 
 - API keys in `/etc/lantana/collector/secrets.json` (non-empty for each provider)
 - GeoIP MMDB files in `/var/lib/lantana/collector/geoip/`
-- Enrichment runner logs: `grep lantana-enrich /var/log/syslog`
+- Enrichment runner logs: `sudo journalctl -u lantana-enrich.service --since today`
 
 ---
 
