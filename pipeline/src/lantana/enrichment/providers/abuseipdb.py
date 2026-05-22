@@ -37,7 +37,13 @@ class AbuseIPDBProvider:
         reraise=True,
     )
     async def enrich_ip(self, ip: str) -> EnrichmentResult:
-        """Query AbuseIPDB for abuse reports on an IP address."""
+        """Query AbuseIPDB for abuse reports on an IP address.
+
+        Returns only AbuseIPDB's threat verdict (confidence + reports).
+        Geo/network attributes (countryCode, isp, domain) are intentionally
+        dropped: MaxMind GeoIP is the source of truth for that data, and
+        duplicating it here just produces conflicting columns downstream.
+        """
         response = await self._client.get(
             self._BASE_URL,
             headers={
@@ -60,9 +66,6 @@ class AbuseIPDBProvider:
             data={
                 "abuseipdb_confidence_score": int(data["abuseConfidenceScore"]),
                 "abuseipdb_total_reports": int(data["totalReports"]),
-                "abuseipdb_country": str(data["countryCode"]),
-                "abuseipdb_isp": str(data["isp"]),
-                "abuseipdb_domain": str(data["domain"]),
             },
             queried_at=datetime.now(tz=UTC),
         )

@@ -59,7 +59,6 @@ _FULL_ENRICHMENT: dict[str, dict[str, Any]] = {
     "abuseipdb": {
         "abuseipdb_confidence_score": 88,
         "abuseipdb_total_reports": 247,
-        "abuseipdb_country_code": "BR",
     },
     "shodan": {
         "shodan_ports": "22,80,443",
