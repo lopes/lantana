@@ -81,6 +81,105 @@ Format choices:
 - VT cell = `{malicious}` — single most decision-relevant signal; vt_malicious=0 distinct from "not enriched" (renders as `0`, not `-`).
 - Shodan cell = `{N}p[+CVE]` — port count + boolean CVE marker. Full Shodan detail (port list, org, OS, CVE list) stays in the gold table for analysts who pull the parquet directly.
 
+### `lantana-report` scheduled + missing gold tables wired in
+
+Two more gaps closed in the same pass:
+
+* The report had never been scheduled — only the alerter (non-clean days) fired on a timer. Adds `lantana-report.service` / `.timer` at 06:00 UTC, after the alerter. The operator now gets a daily intel brief regardless of whether the day was clean.
+* `notify/discord.py:generate_and_send` previously read only `daily_summary / ip_reputation / behavioral_progression / campaign_clusters` from gold, omitting `geographic_summary` and `detection_findings`. Those tables are `Optional` parameters of `generate_daily_brief`, so the Geographic Origin and Detection Highlights sections were silently dropped from every actual report. Wires both in.
+
+---
+
+## Post-wipe verification checklist (tomorrow, 2026-05-23)
+
+This is the gating walk-through for the fresh-server deploy. Run the immediate checks within minutes of the Ansible run completing; the "first cycle" checks need to wait for the 06:00 UTC timer fan-out to finish. Everything is read-only.
+
+Replace `<SN01>` with the new sensor IP and `<PORT>` with the SSH port from the new inventory's `group_vars/all/main.yml`.
+
+### Immediate post-deploy (within minutes of `ansible-playbook` finishing)
+
+```bash
+# (1) Systemd timers active — five entries with next-fire timestamps.
+ssh -p <PORT> lantana@<SN01> "sudo systemctl list-timers --all | grep lantana"
+# Expect: lantana-prune.timer / -enrich / -transform / -alert / -report
+
+# (2) Cron file gone (the cron→timer migration removed it).
+ssh -p <PORT> lantana@<SN01> "sudo cat /etc/cron.d/lantana-pipeline 2>&1 | head"
+# Expect: cat: ... : No such file or directory
+
+# (3) AbuseIPDB provider in the venv reflects today's verdict-only shape.
+ssh -p <PORT> lantana@<SN01> "sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c '
+from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
+import inspect, re
+src = inspect.getsource(AbuseIPDBProvider.enrich_ip)
+print(re.search(r\"data=\{[^}]+\}\", src).group(0))
+'"
+# Expect: only abuseipdb_confidence_score and abuseipdb_total_reports.
+
+# (4) Vector active and ingesting.
+ssh -p <PORT> lantana@<SN01> "sudo systemctl is-active vector && sudo journalctl -u vector --since '5 min ago' | grep -iE 'error|warn' | head"
+
+# (5) Datalake layout present.
+ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake -maxdepth 2 -type d | sort"
+# Expect: bronze/, silver/, gold/ — empty until the first events arrive.
+```
+
+### After the first full cycle (i.e. after 06:00 UTC on 2026-05-23)
+
+```bash
+# (6) Each systemd unit shows last-run success.
+ssh -p <PORT> lantana@<SN01> "for u in lantana-prune lantana-enrich lantana-transform lantana-alert lantana-report; do
+  echo == \$u ==; sudo systemctl status \$u.service --no-pager | head -10
+done"
+# Expect each: Loaded: loaded, ActiveState: inactive (dead), Result: success.
+
+# (7) journalctl captures structlog run_summary for enrich + transform.
+ssh -p <PORT> lantana@<SN01> "sudo journalctl -u lantana-enrich.service --since '01:00 UTC' | grep run_summary"
+ssh -p <PORT> lantana@<SN01> "sudo journalctl -u lantana-transform.service --since '04:00 UTC' | grep run_summary"
+# Expect: one structured line per service with silver_rows + provider stats.
+
+# (8) Silver written for active datasets (cowrie + suricata + nftables once Phase 2 events land).
+ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake/silver -name '*.parquet'"
+
+# (9) Gold present, all 7 tables.
+ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake/gold -name '*.parquet' | awk -F/ '{print \$7}' | sort -u"
+# Expect: behavioral_progression / behavioral_progression_multiday / campaign_clusters /
+#         daily_summary / detection_findings / geographic_summary / ip_reputation
+
+# (10) Provider state file created with shape `{provider: {last_rate_limited: 'YYYY-MM-DD'}}`.
+ssh -p <PORT> lantana@<SN01> "sudo cat /var/lib/lantana/datalake/.provider_state.json"
+# Empty `{}` is fine on day-1 if no provider tripped its rate-limit breaker.
+
+# (11) enrichment_errors.json contains no API-key residue (Phase B sanitiser working).
+ssh -p <PORT> lantana@<SN01> "sudo grep -E 'key=[A-Za-z0-9]{20,}' /var/lib/lantana/datalake/enrichment_errors.json | head"
+# Expect: NO output. Any match here is a sanitiser regression.
+
+# (12) Silver contains the expected enrichment columns.
+ssh -p <PORT> lantana@<SN01> "sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c '
+import polars as pl
+df = pl.read_parquet(\"/var/lib/lantana/datalake/silver/dataset=cowrie/date=2026-05-22/server=sn-01/events.parquet\")
+print({k: any(c.startswith(k) for c in df.columns) for k in [\"abuseipdb_\", \"shodan_\", \"vt_\", \"greynoise_\", \"geo.\"]})
+'"
+# Expect on a fresh server: greynoise_ may be False (50/week quota tight). The others True.
+
+# (13) Discord report received at 06:00 UTC with:
+#   - Geographic Origin section (top countries + ASNs from MaxMind)
+#   - Top Attackers table now showing AbuseIPDB / VT / Shodan columns
+#   - Threat Actor Attribution section (if any GN data this day)
+#   - Detection Highlights section (if Suricata fired)
+# Visual check; nothing to ssh.
+```
+
+### Acceptance gate
+
+If checks 1-13 all return the expected output: pipeline is healthy on the new server.
+
+If any check fails: don't roll back the wipe — diagnose in place. The most likely failure modes are:
+- **(1) failed** → ansible deploy didn't complete; rerun `--tags collector,pipeline`.
+- **(6) `Result: failed`** → check journal for that unit; the structured error event names what broke.
+- **(9) missing tables** → transform run died after silver. Look for `dataset_processing_failed` in journal.
+- **(13) no report** → either secrets.discord_webhook is unset (logs `no_discord_webhook`), or the unit ran but the webhook itself is rate-limited / mis-configured. `systemctl status lantana-report.service` and the journal will say.
+
 ---
 
 ## What's open

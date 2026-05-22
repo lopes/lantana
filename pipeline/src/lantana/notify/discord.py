@@ -82,11 +82,16 @@ def generate_and_send() -> None:
         logger.warning("no_discord_webhook", hint="Set discord_webhook in secrets.json")
         return
 
-    # Read gold tables
+    # Read gold tables. geographic_summary + detection_findings are
+    # optional in generate_daily_brief (they gate the Geographic Origin
+    # and Detection Highlights sections); the prior code omitted them
+    # and those sections were silently dropped from every report.
     summary = read_gold_table("daily_summary", yesterday)
     reputation = read_gold_table("ip_reputation", yesterday)
     progression = read_gold_table("behavioral_progression", yesterday)
     clusters = read_gold_table("campaign_clusters", yesterday)
+    geographic = read_gold_table("geographic_summary", yesterday)
+    detection = read_gold_table("detection_findings", yesterday)
 
     # Generate report
     brief = generate_daily_brief(
@@ -96,6 +101,8 @@ def generate_and_send() -> None:
         progression,
         clusters,
         reporting.operation.name,
+        geographic=geographic,
+        detection=detection,
     )
     embed_text = generate_embed_summary(yesterday, summary, progression)
 
