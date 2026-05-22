@@ -59,13 +59,23 @@
   # single conf.d file fails on "No sinks defined" because sinks live
   # in honeywall/forward.yaml. Handler runs once per play in the order
   # defined in this file — must be BEFORE "Restart Vector" so a broken
-  # VRL fails the play instead of crashlooping Vector. `shell:` (not
-  # `command:`) is required for glob expansion. See CLAUDE.md
-  # "Vector deployment discipline".
+  # VRL fails the play instead of crashlooping Vector.
+  #
+  # `find` enumerates the conf.d files instead of using a shell glob
+  # because on a *fresh* install the handler can fire from the base
+  # role before any conf.d/*.yaml has been templated. In that state
+  # the glob `/etc/vector/conf.d/*.yaml` is left literal by the shell,
+  # Vector receives a path that doesn't exist, and exits 78/CONFIG —
+  # which is exactly the crashloop pattern the validate is supposed
+  # to prevent (2026-05-22 fresh-install regression). When find
+  # returns empty, vector validates just vector.yaml — fine, since
+  # there are no sources/transforms to interact with the sinks yet.
+  # See CLAUDE.md "Vector deployment discipline".
   become: true
-  ansible.builtin.shell: >-
-    vector validate --no-environment
-    /etc/vector/vector.yaml /etc/vector/conf.d/*.yaml
+  ansible.builtin.shell: |
+    set -e
+    extra_files=$(find /etc/vector/conf.d -maxdepth 1 -name '*.yaml' 2>/dev/null || true)
+    vector validate --no-environment /etc/vector/vector.yaml $extra_files
   changed_when: false
 
 - name: "Restart Vector"
