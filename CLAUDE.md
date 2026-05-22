@@ -157,6 +157,16 @@ Two thresholds, both required:
 
 Defect #11 (2026-05-21): without these, a Shodan re-run with 4670 IPs / 1243 cache-warm hung for hours stacking up tenacity backoff on the remaining 3427 misses.
 
+### 6. Risk score composition is explicit
+
+`risk_score` is the single number STIX gate, dashboard buckets, and Discord top-5 read. It is composed in two layers — never re-derived ad-hoc:
+
+- **Per-provider sub-scores live in silver.** Every enrichment provider must expose a `<provider>_risk_score` field on a 0..100 scale alongside its raw fields, computed by a module-level `compute_risk_score(...)` helper. Tests for the helper live in the provider's test file. Adding a new provider without a sub-score means the gold composite silently ignores it.
+- **Gold composite is mean-of-two.** `enrichment_risk_score` is `pl.mean_horizontal` of the four per-provider scores (skipping nulls). `behavioral_risk_score` is honeypot-activity (auth + commands + downloads + findings). Final `risk_score = (enrichment.fill_null(0) + behavioral) / 2`, clipped 0..100.
+- **GreyNoise RIOT short-circuits to 0.** RIOT means the IP is on the Rule-It-Out list (known-benign infrastructure — CDNs, NTP, DNS). When set, `greynoise_risk_score=0` overrides classification, pulling the enrichment mean down. The row stays in silver with full enrichment intact; only the score is overridden. This prevents false-positive Indicators in STIX export and is the only place in the formula where one signal can subtract from another.
+
+Full reference (including all per-provider formulas, worked examples, and the FAQ): [docs/risk-scoring.md](docs/risk-scoring.md). Any change to the formula must update that doc and the test fixtures in `pipeline/tests/test_transform/test_metrics.py::TestRiskScoreDecomposition`.
+
 ## Pipeline verification discipline
 
 End-to-end pipeline runs on a live operation consume real provider budget and real time. They are a final verification step, never a feedback loop.

@@ -74,11 +74,13 @@ Community-driven abuse reporting database. We use it to surface IPs with known a
 
 | Silver column | Source field | Notes |
 |---|---|---|
-| `abuseipdb_confidence_score` | `data.abuseConfidenceScore` | 0–100; >25 flags as suspicious in gold scoring |
+| `abuseipdb_confidence_score` | `data.abuseConfidenceScore` | 0–100 |
 | `abuseipdb_total_reports`    | `data.totalReports`         | All-time report count |
-| `abuseipdb_country`          | `data.countryCode`          | ISO-3166 alpha-2 |
-| `abuseipdb_isp`              | `data.isp`                  | |
-| `abuseipdb_domain`           | `data.domain`               | |
+| `abuseipdb_risk_score`       | computed                    | = `abuseConfidenceScore` (pass-through 0..100) |
+
+Country/ISP/domain are intentionally NOT extracted — MaxMind GeoIP is the source of truth for geo/network attribution, and duplicates created downstream conflicts (commit `328f3aa`).
+
+**Risk-score derivation:** see [risk-scoring.md § AbuseIPDB](risk-scoring.md#abuseipdb).
 
 ### Shodan
 
@@ -94,11 +96,14 @@ Internet-wide scanner. We use it for open-port + service + ASN attribution on at
 
 | Silver column | Source field | Notes |
 |---|---|---|
-| `shodan_ports`  | `ports[]`            | Joined as comma-separated string |
-| `shodan_os`     | `os`                 | Often null |
-| `shodan_vulns`  | `vulns[]`            | Joined as comma-separated string; null when no CVEs |
-| `shodan_org`    | `org`                | Owning organization |
-| `shodan_asn`    | `asn`                | AS number (`AS<n>` form) |
+| `shodan_ports`        | `ports[]`            | Joined as comma-separated string |
+| `shodan_os`           | `os`                 | Often null |
+| `shodan_vulns`        | `vulns[]`            | Joined as comma-separated string; null when no CVEs |
+| `shodan_org`          | `org`                | Owning organization |
+| `shodan_asn`          | `asn`                | AS number (`AS<n>` form) |
+| `shodan_risk_score`   | computed             | Tri-state: 0 / 25 (ports only) / 100 (CVE present) |
+
+**Risk-score derivation:** see [risk-scoring.md § Shodan](risk-scoring.md#shodan).
 
 ### VirusTotal
 
@@ -116,10 +121,13 @@ Multi-vendor aggregator (90+ AV/blocklist engines). We query both IPs and file h
 
 | Silver column | Source field |
 |---|---|
-| `vt_malicious_count`  | `data.attributes.last_analysis_stats.malicious` |
-| `vt_suspicious_count` | `data.attributes.last_analysis_stats.suspicious` |
-| `vt_ip_reputation`    | `data.attributes.reputation` |
-| `vt_as_owner`         | `data.attributes.as_owner` |
+| `vt_malicious_count`     | `data.attributes.last_analysis_stats.malicious` |
+| `vt_suspicious_count`    | `data.attributes.last_analysis_stats.suspicious` |
+| `vt_ip_reputation`       | `data.attributes.reputation` |
+| `vt_as_owner`            | `data.attributes.as_owner` |
+| `virustotal_risk_score`  | computed — bucketed from `vt_malicious_count` (see below) |
+
+**Risk-score derivation:** see [risk-scoring.md § VirusTotal](risk-scoring.md#virustotal-ip).
 
 **Fields we extract into silver (hash):**
 
@@ -152,8 +160,11 @@ Internet background-noise classifier — identifies IPs that scan the entire int
 | `greynoise_name`           | `name`               | Actor label when classified |
 | `greynoise_last_seen`      | `last_seen`          | |
 | `greynoise_link`           | `link`               | Visualizer URL |
+| `greynoise_risk_score`     | computed             | Classification matrix with RIOT short-circuit to 0 |
 
 **HTTP 404 behaviour.** A 404 from this endpoint means "IP not in dataset," not an error. The provider returns a normalized result with `greynoise_classification: "unknown"` and all booleans false. Don't treat 404 as a pipeline failure.
+
+**Risk-score derivation:** see [risk-scoring.md § GreyNoise](risk-scoring.md#greynoise-the-only-provider-with-a-negative-override). Note: RIOT is the *benign* signal — when set, `greynoise_risk_score=0` overrides everything else, pulling the gold enrichment mean down.
 
 ---
 

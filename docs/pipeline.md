@@ -129,11 +129,31 @@ Retry semantics: tenacity wraps `provider.enrich_ip` / `enrich_hash` with 3 atte
 
 ### 3.2 Silver to Gold (daily aggregation)
 
-Entry point: `lantana-transform` (cron: 02:00 UTC, processes yesterday's data).
+Entry point: `lantana-transform` (systemd timer at 04:00 UTC, processes yesterday's data).
 
-Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes gold tables covering: daily aggregate statistics, per-IP risk scoring (composite of behavioral signals and all enrichment providers), behavioral progression staging (scan -> credential -> authenticated -> interactive), cross-day slow-burn detection (7-day lookback), credential-sharing campaign clusters, geographic distribution of attack origins, and IDS detection finding statistics.
+Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes gold tables covering: daily aggregate statistics, per-IP risk scoring (decomposed into per-provider, enrichment-aggregate, behavioral, and composite scores — see §3.2.1), behavioral progression staging (scan -> credential -> authenticated -> interactive), cross-day slow-burn detection (7-day lookback), credential-sharing campaign clusters, geographic distribution of attack origins, and IDS detection finding statistics.
 
 Gold tables are the single source of truth for all downstream output (STIX, reports, dashboard). Each table is a pure DataFrame transform — no side effects, no external calls. See [`transform/metrics.py`](../pipeline/src/lantana/transform/metrics.py) for table definitions and computation logic, and [`transform/runner.py`](../pipeline/src/lantana/transform/runner.py) for orchestration.
+
+#### 3.2.1 Risk score composition
+
+Per-IP scoring lives in two layers — per-provider sub-scores in silver (one column per provider, joined onto every event for that source IP), then a composite computed in `compute_ip_reputation` in gold. The gold table `ip_reputation` carries seven score-related columns:
+
+| Column | Where computed | Meaning |
+|---|---|---|
+| `abuseipdb_risk_score` | Silver (provider) | AbuseIPDB confidence, 0..100, pass-through |
+| `virustotal_risk_score` | Silver (provider) | Bucketed VT malicious-engine count |
+| `shodan_risk_score` | Silver (provider) | Tri-state: 0 / 25 (ports only) / 100 (CVE present) |
+| `greynoise_risk_score` | Silver (provider) | Classification matrix with RIOT short-circuit to 0 |
+| `enrichment_risk_score` | Gold | `mean_horizontal` of the four above, skipping nulls |
+| `behavioral_risk_score` | Gold | Honeypot-activity signals (auth + commands + downloads + findings) |
+| `risk_score` | Gold (final) | `(enrichment.fill_null(0) + behavioral) / 2` — the single number downstream consumers read |
+
+**Why three scores instead of one.** The previous single-formula `risk_score` blended enrichment and behavioral signals into one opaque number — `risk_score=80` could be "highly intel-flagged IP that did nothing" or "innocent-looking IP that hit interactive shell." The Phase D.2 decomposition lets an analyst answer *which signal drove the score* without re-running anything. STIX gate, dashboard buckets, and Discord top-5 sorting still read the composite `risk_score`; consumers wanting the breakdown can read the sub-scores directly.
+
+**Why RIOT subtracts.** GreyNoise's RIOT (Rule-It-Out) flag marks IPs as known-benign infrastructure (CDNs, NTP, DNS resolvers, Censys, etc.). When RIOT fires, `greynoise_risk_score` short-circuits to 0, pulling the enrichment mean down — but the row stays in silver with all enrichment intact so an analyst can still see what the other providers said. This prevents false-positive Indicators in STIX export.
+
+For full per-provider formulas, value ranges, worked examples, and the FAQ, see [docs/risk-scoring.md](risk-scoring.md).
 
 ### 3.3 Intelligence Output
 
