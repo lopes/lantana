@@ -6,7 +6,13 @@ from datetime import UTC, date, datetime
 
 import polars as pl
 
-from lantana.notify.report import generate_daily_brief, generate_embed_summary
+from lantana.notify.report import (
+    _fmt_abuseipdb,
+    _fmt_shodan,
+    _fmt_vt,
+    generate_daily_brief,
+    generate_embed_summary,
+)
 
 
 def _ts(minute: int = 0) -> datetime:
@@ -33,6 +39,12 @@ def _make_summary() -> pl.DataFrame:
 
 
 def _make_reputation() -> pl.DataFrame:
+    """Reputation fixture covering all three enrichment populations:
+
+    * 203.0.113.50 — fully enriched (AbuseIPDB + VT + Shodan w/ vulns)
+    * 198.51.100.22 — AbuseIPDB only (e.g. GN+VT+Shodan skipped or 404)
+    * 192.0.2.99 — no enrichment at all (e.g. all providers exhausted)
+    """
     return pl.DataFrame({
         "src_endpoint_ip": ["203.0.113.50", "198.51.100.22", "192.0.2.99"],
         "risk_score": [87.5, 42.3, 5.0],
@@ -43,6 +55,11 @@ def _make_reputation() -> pl.DataFrame:
         "commands_executed": [5, 0, 0],
         "findings_triggered": [3, 0, 0],
         "datasets": [["cowrie", "suricata", "nftables"], ["cowrie"], ["nftables"]],
+        "abuseipdb_score": [100, 73, None],
+        "abuseipdb_reports": [685, 12, None],
+        "vt_malicious": [13, None, None],
+        "shodan_ports": ["22,80,443", None, None],
+        "shodan_vulns": ["CVE-2023-1234", None, None],
     })
 
 
@@ -134,6 +151,86 @@ class TestGenerateDailyBrief:
         )
         assert isinstance(report, str)
         assert len(report) > 100
+
+
+class TestEnrichmentFormatters:
+    """Per-provider cell formatters for the Top Attackers table.
+
+    Reports must surface the underlying enrichment signals (AbuseIPDB
+    confidence, VT malicious count, Shodan ports + vulns) — the gold
+    risk_score blends them and obscures which provider drove the score.
+    """
+
+    def test_abuseipdb_fully_populated(self) -> None:
+        assert _fmt_abuseipdb({"abuseipdb_score": 100, "abuseipdb_reports": 685}) == "100/685"
+
+    def test_abuseipdb_missing_renders_dash(self) -> None:
+        assert _fmt_abuseipdb({}) == "-"
+        assert _fmt_abuseipdb({"abuseipdb_score": None, "abuseipdb_reports": None}) == "-"
+
+    def test_abuseipdb_partial_populated_treats_missing_as_zero(self) -> None:
+        """Partial population (score but no reports, or vice versa) shouldn't drop the cell."""
+        assert _fmt_abuseipdb({"abuseipdb_score": 50, "abuseipdb_reports": None}) == "50/0"
+        assert _fmt_abuseipdb({"abuseipdb_score": None, "abuseipdb_reports": 42}) == "0/42"
+
+    def test_vt_populated(self) -> None:
+        assert _fmt_vt({"vt_malicious": 13}) == "13"
+
+    def test_vt_zero_is_shown_not_dashed(self) -> None:
+        """vt_malicious=0 is a meaningful signal (IP is known to VT, just clean) — show it."""
+        assert _fmt_vt({"vt_malicious": 0}) == "0"
+
+    def test_vt_missing_renders_dash(self) -> None:
+        assert _fmt_vt({}) == "-"
+        assert _fmt_vt({"vt_malicious": None}) == "-"
+
+    def test_shodan_ports_only(self) -> None:
+        assert _fmt_shodan({"shodan_ports": "22,80,443", "shodan_vulns": None}) == "3p"
+
+    def test_shodan_ports_plus_cve(self) -> None:
+        assert _fmt_shodan(
+            {"shodan_ports": "22,80,443", "shodan_vulns": "CVE-2023-1234,CVE-2024-5678"},
+        ) == "3p+CVE"
+
+    def test_shodan_no_ports_no_vulns(self) -> None:
+        """Empty Shodan response (200 but no scan data) still distinct from totally-missing."""
+        assert _fmt_shodan({"shodan_ports": "", "shodan_vulns": None}) == "-"
+
+    def test_shodan_missing_renders_dash(self) -> None:
+        assert _fmt_shodan({}) == "-"
+
+
+class TestReportEnrichmentSurfacing:
+    """Bug from 2026-05-22: report consumed gold but never surfaced raw
+    AbuseIPDB / VT / Shodan signals; operator observation 'I don't recall
+    seeing Shodan data before' was correct. Verify the columns now appear."""
+
+    def test_top_attackers_table_has_enrichment_columns(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        # Header row must include the three new columns.
+        assert "AbuseIPDB" in report
+        assert "VT" in report
+        assert "Shodan" in report
+        # The fully-enriched fixture IP renders with its concrete values.
+        assert "100/685" in report   # AbuseIPDB score/reports
+        assert "| 13 |" in report    # VT malicious count cell
+        assert "3p+CVE" in report    # Shodan ports + CVE marker
+
+    def test_missing_enrichment_renders_dash_not_zero(self) -> None:
+        """The unenriched fixture row (192.0.2.99) must show `-`, not misleading `0`."""
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        # Find the line for 192.0.2.99 and confirm all three cells are dashed.
+        unenriched_line = next(
+            line for line in report.splitlines() if "192.0.2.99" in line
+        )
+        # Three trailing dashes for the three enrichment columns.
+        assert unenriched_line.count("| - ") >= 3
 
 
 class TestGenerateEmbedSummary:

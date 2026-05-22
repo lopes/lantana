@@ -8,8 +8,58 @@ as a .md file.
 from __future__ import annotations
 
 from datetime import date  # noqa: TC003 — runtime parameter type
+from typing import Any
 
 import polars as pl
+
+# --- Per-provider cell formatters for the Top Attackers table ---------------
+#
+# Each formatter returns a short compact string suitable for a Markdown
+# table cell. Empty/null/zero values render as a dash so the column never
+# misleads the reader into thinking a missing signal is a low signal.
+
+
+def _fmt_abuseipdb(row: dict[str, Any]) -> str:
+    """`{score}/{reports}` — confidence (0-100) and cumulative report count.
+
+    Returns `-` when AbuseIPDB didn't contribute for this IP (provider was
+    rate-limited, circuit-broken, or the IP is unknown to AbuseIPDB).
+    """
+    score = row.get("abuseipdb_score")
+    reports = row.get("abuseipdb_reports")
+    if score is None and reports is None:
+        return "-"
+    return f"{score if score is not None else 0}/{reports if reports is not None else 0}"
+
+
+def _fmt_vt(row: dict[str, Any]) -> str:
+    """`{malicious}` — count of AV vendors flagging this IP as malicious.
+
+    The single most decision-relevant VT signal. Returns `-` when the IP
+    wasn't enriched by VT this run.
+    """
+    malicious = row.get("vt_malicious")
+    if malicious is None:
+        return "-"
+    return f"{malicious}"
+
+
+def _fmt_shodan(row: dict[str, Any]) -> str:
+    """`{Np}+CVE` or `{Np}` — open-port count, with a CVE marker if vulns present.
+
+    Compact because the report has limited horizontal room. Full Shodan
+    detail (port list, organisation, OS, CVE list) stays in the gold
+    table for analysts who pull the parquet directly.
+    """
+    ports = row.get("shodan_ports")
+    vulns = row.get("shodan_vulns")
+    if ports is None and vulns is None:
+        return "-"
+    port_count = len(str(ports).split(",")) if ports else 0
+    cve_suffix = "+CVE" if vulns else ""
+    if port_count == 0 and not cve_suffix:
+        return "-"
+    return f"{port_count}p{cve_suffix}"
 
 
 def generate_daily_brief(
@@ -94,12 +144,14 @@ def generate_daily_brief(
         lines.append("    S --> C --> A --> I")
         lines.append("```\n")
 
-    # Top attackers (by risk score)
+    # Top attackers (by risk score). The AbuseIPDB / VT / Shodan columns
+    # surface the per-provider verdict explicitly — risk_score blends them
+    # all together and obscures which provider drove the score.
     if not reputation.is_empty():
         lines.append("## Top Attackers\n")
         top = reputation.sort("risk_score", descending=True).head(5)
-        lines.append("| IP | Risk | Country | Events | Stage |")
-        lines.append("|-----|------|---------|--------|-------|")
+        lines.append("| IP | Risk | Country | Events | Stage | AbuseIPDB | VT | Shodan |")
+        lines.append("|----|------|---------|--------|-------|-----------|-----|--------|")
         for r in top.iter_rows(named=True):
             stage = ""
             if not progression.is_empty():
@@ -109,7 +161,10 @@ def generate_daily_brief(
             lines.append(
                 f"| {r['src_endpoint_ip']} | {r['risk_score']:.1f} "
                 f"| {r.get('geo_country', '?')} "
-                f"| {r['total_events']:,} | {stage} |"
+                f"| {r['total_events']:,} | {stage} "
+                f"| {_fmt_abuseipdb(r)} "
+                f"| {_fmt_vt(r)} "
+                f"| {_fmt_shodan(r)} |"
             )
         lines.append("")
 

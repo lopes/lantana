@@ -72,29 +72,20 @@ ssh sn-01 "sudo journalctl -u lantana-enrich.service --since today | grep run_su
 
 AbuseIPDB and VirusTotal opt out: their daily / per-minute quotas refresh fast enough that skipping isn't useful. Future providers can add policy entries by editing `_PROVIDER_POLICY`.
 
+### Daily report now surfaces raw per-provider verdicts
+
+`notify/report.py` "Top Attackers" table grew three new columns — AbuseIPDB / VT / Shodan — populated by three small formatters (`_fmt_abuseipdb`, `_fmt_vt`, `_fmt_shodan`). Cells render as `100/685`, `13`, `3p+CVE` when data is present, or `-` when the IP wasn't enriched (provider rate-limited / skipped / IP unknown to the provider). The `risk_score` column stays in place but no longer obscures *which* provider drove the score.
+
+Format choices:
+- AbuseIPDB cell = `{score}/{reports}` — both signals matter; reports ≥ 10 contributes to risk_score, score is the AV-style 0-100 confidence.
+- VT cell = `{malicious}` — single most decision-relevant signal; vt_malicious=0 distinct from "not enriched" (renders as `0`, not `-`).
+- Shodan cell = `{N}p[+CVE]` — port count + boolean CVE marker. Full Shodan detail (port list, org, OS, CVE list) stays in the gold table for analysts who pull the parquet directly.
+
 ---
 
 ## What's open
 
-### 1. Daily report does not surface enrichment data
-
-**Confirmed gap** after reading `pipeline/src/lantana/notify/report.py` (260 lines, `lantana-report` CLI bound to `notify/discord.py:generate_and_send`):
-
-The `generate_daily_brief` Markdown report consumes these gold tables: `summary`, `reputation`, `progression`, `clusters`, `geographic`, `detection`. Enrichment surfacing audit:
-
-| Provider | Direct surfacing in report | Indirect (via `risk_score`) |
-|---|---|---|
-| MaxMind | ✓ `top_countries`, `top_asns` (Geographic Origin section) | yes |
-| GreyNoise | ✓ `greynoise_name`, `greynoise_class` (Threat Actor Attribution section) | yes |
-| AbuseIPDB | ✗ never shown raw | yes — drives `risk_score` × 0.3 |
-| Shodan | ✗ never shown raw | yes — `+10` if `vulns` present |
-| VirusTotal | ✗ never shown raw | yes — `+10` if `malicious >= 3` |
-
-This explains the operator's "I don't recall seeing Shodan data before" observation. The signal IS computed; the report just hides it. The "Top Attackers" table has columns IP / Risk / Country / Events / Stage — perfect place to add `AbuseIPDB:100 | VT:13 | Shodan:port22+CVE` as a compact "Enrichment" column.
-
-**Fix scope:** add an "Enrichment" column to "Top Attackers", or a separate "Threat Intel Highlights" section. Open design question on which.
-
-### 2. Design proposal — pure-enrichment `risk_score`
+### 1. Design proposal — pure-enrichment `risk_score`
 
 **Idea:** add an `enrichment_risk_score` that answers *only* "what do our four threat-intel providers think of this IP?" — separate from the existing `risk_score` in `compute_ip_reputation`, which blends enrichment with behavioural signals (auth attempts, commands executed, downloads). Two scores, two angles.
 
