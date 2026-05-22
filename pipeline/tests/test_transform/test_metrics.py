@@ -84,8 +84,11 @@ def silver_df() -> pl.DataFrame:
             "geo.asn": "4134",
             "geo.isp": "ChinaNet",
             "abuseipdb_confidence_score": 85,
+            "abuseipdb_risk_score": 85.0,
             "greynoise_classification": "malicious",
             "greynoise_noise": True,
+            "greynoise_riot": False,
+            "greynoise_risk_score": 75.0,
         })
 
     # --- attacker-1: auth attempts (2 fail, 1 success) ---
@@ -120,8 +123,11 @@ def silver_df() -> pl.DataFrame:
             "geo.asn": "4134",
             "geo.isp": "ChinaNet",
             "abuseipdb_confidence_score": 85,
+            "abuseipdb_risk_score": 85.0,
             "greynoise_classification": "malicious",
             "greynoise_noise": True,
+            "greynoise_riot": False,
+            "greynoise_risk_score": 75.0,
         })
 
     # --- attacker-1: commands executed ---
@@ -152,8 +158,11 @@ def silver_df() -> pl.DataFrame:
             "geo.asn": "4134",
             "geo.isp": "ChinaNet",
             "abuseipdb_confidence_score": 85,
+            "abuseipdb_risk_score": 85.0,
             "greynoise_classification": "malicious",
             "greynoise_noise": True,
+            "greynoise_riot": False,
+            "greynoise_risk_score": 75.0,
         })
 
     # --- attacker-1: file download (malware) ---
@@ -186,8 +195,11 @@ def silver_df() -> pl.DataFrame:
         "geo.asn": "4134",
         "geo.isp": "ChinaNet",
         "abuseipdb_confidence_score": 85,
+        "abuseipdb_risk_score": 85.0,
         "greynoise_classification": "malicious",
         "greynoise_noise": True,
+        "greynoise_riot": False,
+        "greynoise_risk_score": 75.0,
     })
 
     # --- attacker-1: suricata alert ---
@@ -217,8 +229,11 @@ def silver_df() -> pl.DataFrame:
         "geo.asn": "4134",
         "geo.isp": "ChinaNet",
         "abuseipdb_confidence_score": 85,
+        "abuseipdb_risk_score": 85.0,
         "greynoise_classification": "malicious",
         "greynoise_noise": True,
+        "greynoise_riot": False,
+        "greynoise_risk_score": 75.0,
     })
 
     # --- attacker-2: credential stuffing (15 auth failures, shared creds) ---
@@ -256,8 +271,11 @@ def silver_df() -> pl.DataFrame:
             "geo.asn": "12389",
             "geo.isp": "Rostelecom",
             "abuseipdb_confidence_score": 42,
+            "abuseipdb_risk_score": 42.0,
             "greynoise_classification": "benign",
             "greynoise_noise": False,
+            "greynoise_riot": False,
+            "greynoise_risk_score": 0.0,
         })
 
     # --- attacker-3: scanner only (nftables) ---
@@ -288,8 +306,11 @@ def silver_df() -> pl.DataFrame:
             "geo.asn": "15169",
             "geo.isp": "Google",
             "abuseipdb_confidence_score": 10,
+            "abuseipdb_risk_score": 10.0,
             "greynoise_classification": "benign",
             "greynoise_noise": False,
+            "greynoise_riot": False,
+            "greynoise_risk_score": 0.0,
         })
 
     return pl.DataFrame(rows)
@@ -367,7 +388,14 @@ class TestIPReputation:
         assert ips == {"203.0.113.50", "198.51.100.22", "192.0.2.99"}
 
     def test_attacker1_reputation(self, silver_df: pl.DataFrame) -> None:
-        """Attacker-1 (full escalation) has high risk score."""
+        """Attacker-1 (full escalation) has high risk score under Phase D.2 composite.
+
+        Score decomposes as:
+          enrichment_risk_score = mean(abuseipdb=85, greynoise=75) = 80.0
+          behavioral_risk_score = +20 (auth success) +25 (commands) +15 (findings)
+                                  +20 (downloads) + min(3,100)*0.1 = 80.3
+          risk_score = (80 + 80.3) / 2 = 80.15
+        """
         result = compute_ip_reputation(silver_df)
         a1 = result.filter(pl.col("src_endpoint_ip") == "203.0.113.50")
         row = a1.row(0, named=True)
@@ -377,26 +405,47 @@ class TestIPReputation:
         assert row["commands_executed"] == 2
         assert row["findings_triggered"] == 1
         assert row["downloads"] == 1
-        # Has auth success (+20), commands (+25), findings (+15), downloads (+20),
-        # abuseipdb 85*0.3=25.5, volume min(3,100)*0.1=0.3 -> capped at 100
-        assert row["risk_score"] >= 95
+        assert row["enrichment_risk_score"] == pytest.approx(80.0)
+        assert row["behavioral_risk_score"] == pytest.approx(80.3)
+        assert row["risk_score"] == pytest.approx(80.15)
 
     def test_scanner_low_risk(self, silver_df: pl.DataFrame) -> None:
-        """Scanner-only IP has lower risk score."""
+        """Scanner-only IP has very low risk score.
+
+        Score decomposes as:
+          enrichment_risk_score = mean(abuseipdb=10, greynoise=0) = 5.0
+          behavioral_risk_score = 0 (no auth, no commands, no findings,
+                                     no downloads, auth_attempts=0)
+          risk_score = (5 + 0) / 2 = 2.5
+        """
         result = compute_ip_reputation(silver_df)
         a3 = result.filter(pl.col("src_endpoint_ip") == "192.0.2.99")
         row = a3.row(0, named=True)
         assert row["auth_attempts"] == 0
         assert row["commands_executed"] == 0
-        # Only abuseipdb 10*0.3=3.0 + volume -> low
-        assert row["risk_score"] < 20
+        assert row["enrichment_risk_score"] == pytest.approx(5.0)
+        assert row["behavioral_risk_score"] == pytest.approx(0.0)
+        assert row["risk_score"] == pytest.approx(2.5)
 
     def test_enrichment_columns_present(self, silver_df: pl.DataFrame) -> None:
-        """GeoIP and enrichment data carried through."""
+        """GeoIP, raw enrichment, per-provider risk_scores, and the gold
+        sub-scores all materialise in the output schema."""
         result = compute_ip_reputation(silver_df)
         assert "geo_country" in result.columns
         assert "abuseipdb_score" in result.columns
         assert "greynoise_class" in result.columns
+        # Phase D.2 additions:
+        assert "greynoise_riot" in result.columns
+        assert "greynoise_noise" in result.columns
+        for col in (
+            "abuseipdb_risk_score",
+            "virustotal_risk_score",
+            "shodan_risk_score",
+            "greynoise_risk_score",
+            "enrichment_risk_score",
+            "behavioral_risk_score",
+        ):
+            assert col in result.columns
 
     def test_datasets_tracked(self, silver_df: pl.DataFrame) -> None:
         """Datasets list shows which datasets the IP appeared in."""
@@ -430,8 +479,16 @@ class TestIPReputation:
         # Optional columns return null when absent — required to be tolerated.
         assert row["abuseipdb_score"] is None
         assert row["greynoise_class"] is None
-        # Risk score still computes (no crash) — only behavioural signals here.
-        assert 0.0 <= row["risk_score"] <= 100.0
+        # Per-provider risk_scores also null on an enrichment-less day.
+        assert row["abuseipdb_risk_score"] is None
+        assert row["virustotal_risk_score"] is None
+        assert row["shodan_risk_score"] is None
+        assert row["greynoise_risk_score"] is None
+        # enrichment_risk_score: mean of all-nulls is null. behavioral_risk_score
+        # is 0 (no auth, no commands, etc.). Composite: (0 + 0) / 2 = 0.
+        assert row["enrichment_risk_score"] is None
+        assert row["behavioral_risk_score"] == pytest.approx(0.0)
+        assert row["risk_score"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -774,8 +831,13 @@ class TestDetectionFindings:
 
 
 class TestEnhancedRiskScoring:
-    def test_vt_malicious_boosts_score(self) -> None:
-        """vt_malicious_count >= 3 adds +10 to risk score."""
+    """Behaviour previously pinned to the old `+10 if vt_malicious_count >= 3`
+    / `+10 if shodan_vulns present` rules — re-cast as per-provider risk_score
+    contributions under the Phase D.2 composite. Direction of effect is the
+    same: a hot VT signal or Shodan-CVE marker raises the composite."""
+
+    def test_vt_risk_score_boosts_composite(self) -> None:
+        """A populated virustotal_risk_score lifts the composite."""
         base = {
             "class_uid": CLASS_NETWORK_ACTIVITY,
             "category_uid": 4,
@@ -801,25 +863,37 @@ class TestEnhancedRiskScoring:
             "geo.country_code": "US",
             "geo.asn": "1234",
             "geo.isp": "TestISP",
+            # No abuseipdb/greynoise/shodan/vt risk_score columns in the
+            # baseline — leave the per-provider mean fully null so only the
+            # one provider added per test contributes.
             "abuseipdb_confidence_score": 0,
             "greynoise_classification": None,
             "greynoise_noise": False,
+            "greynoise_riot": False,
         }
-        # Without VT
         df_no_vt = pl.DataFrame([base])
         r1 = compute_ip_reputation(df_no_vt)
         score_no_vt = r1.row(0, named=True)["risk_score"]
 
-        # With VT malicious >= 3
-        row_vt = {**base, "vt_malicious_count": 5}
+        # vt_malicious_count=5 → virustotal_risk_score=50 (bucket 3-5).
+        row_vt = {
+            **base,
+            "vt_malicious_count": 5,
+            "virustotal_risk_score": 50.0,
+        }
         df_vt = pl.DataFrame([row_vt])
         r2 = compute_ip_reputation(df_vt)
-        score_vt = r2.row(0, named=True)["risk_score"]
+        row_with_vt = r2.row(0, named=True)
+        score_vt = row_with_vt["risk_score"]
 
-        assert score_vt >= score_no_vt + 10
+        # With VT alone contributing 50/35 (only populated provider),
+        # enrichment_risk_score=50, behavioral=0, composite=25. Base composite
+        # has neither populated → 0. Net: at least +20 lift.
+        assert score_vt >= score_no_vt + 20
+        assert row_with_vt["virustotal_risk_score"] == 50.0
 
-    def test_shodan_vulns_boosts_score(self) -> None:
-        """Non-empty shodan_vulns adds +10 to risk score."""
+    def test_shodan_vulns_lifts_composite_via_score(self) -> None:
+        """Non-empty shodan_vulns → shodan_risk_score=100 lifts the composite."""
         base = {
             "class_uid": CLASS_NETWORK_ACTIVITY,
             "category_uid": 4,
@@ -845,20 +919,32 @@ class TestEnhancedRiskScoring:
             "geo.country_code": "US",
             "geo.asn": "1234",
             "geo.isp": "TestISP",
+            # No abuseipdb/greynoise/shodan/vt risk_score columns in the
+            # baseline — leave the per-provider mean fully null so only the
+            # one provider added per test contributes.
             "abuseipdb_confidence_score": 0,
             "greynoise_classification": None,
             "greynoise_noise": False,
+            "greynoise_riot": False,
         }
         df_no_vuln = pl.DataFrame([base])
         r1 = compute_ip_reputation(df_no_vuln)
         score_no_vuln = r1.row(0, named=True)["risk_score"]
 
-        row_vuln = {**base, "shodan_vulns": "CVE-2021-1234,CVE-2022-5678"}
+        row_vuln = {
+            **base,
+            "shodan_vulns": "CVE-2021-1234,CVE-2022-5678",
+            "shodan_risk_score": 100.0,
+        }
         df_vuln = pl.DataFrame([row_vuln])
         r2 = compute_ip_reputation(df_vuln)
-        score_vuln = r2.row(0, named=True)["risk_score"]
+        row_with_vuln = r2.row(0, named=True)
+        score_vuln = row_with_vuln["risk_score"]
 
-        assert score_vuln >= score_no_vuln + 10
+        # With Shodan=100 alone (the CVE marker), enrichment_risk_score=100,
+        # behavioral=0, composite=50. Base composite=0. Net: ≥ +30 lift.
+        assert score_vuln >= score_no_vuln + 30
+        assert row_with_vuln["shodan_risk_score"] == 100.0
 
     def test_optional_columns_present_when_available(self) -> None:
         """When enrichment columns exist, they appear in the output."""
@@ -910,3 +996,154 @@ class TestEnhancedRiskScoring:
         assert row["greynoise_name"] == "Mirai"
         assert row["shodan_ports"] == "22,80,443"
         assert row["vt_malicious"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Phase D.2 — risk_score decomposition (enrichment + behavioral → composite)
+# ---------------------------------------------------------------------------
+
+
+def _row_with(**overrides: object) -> dict[str, object]:
+    """Minimal per-IP test row builder for risk-score decomposition tests."""
+    base: dict[str, object] = {
+        "class_uid": CLASS_NETWORK_ACTIVITY,
+        "category_uid": 4,
+        "severity_id": 3,
+        "activity_id": 5,
+        "type_uid": 400105,
+        "time": _ts(),
+        "message": "test",
+        "status_id": STATUS_UNKNOWN,
+        "src_endpoint_ip": "1.2.3.4",
+        "src_endpoint_port": 12345,
+        "dst_endpoint_ip": "honeypot-01",
+        "dst_endpoint_port": 22,
+        "dataset": "nftables",
+        "server": "test",
+        "operation": "test",
+        "session": None,
+        "user_name": None,
+        "unmapped_password": None,
+        "actor_process_cmd_line": None,
+        "finding_title": None,
+        "finding_uid": None,
+        "geo.country_code": "US",
+        "geo.asn": "1234",
+        "geo.isp": "TestISP",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestRiskScoreDecomposition:
+    """Phase D.2 composite: risk_score = mean(enrichment, behavioral), each 0..100.
+
+    Each test fixes one side of the blend and asserts the math, isolating
+    the contribution. This is the load-bearing verification of the user's
+    "one risk_score, blended but trackable" intent."""
+
+    def test_all_enrichment_null_score_halves_behavioral(self) -> None:
+        """No provider data + behavioral signals firing → score = behavioral / 2."""
+        # auth_successes (+20) + commands (+25) + findings (+15) + downloads (+20)
+        # would land at 80 behavioral, but we use a simpler single-signal row to
+        # stay readable: auth_successes only → behavioral = 20 + auth_attempts*0.1.
+        df = pl.DataFrame([_row_with(
+            class_uid=CLASS_AUTHENTICATION,
+            status_id=STATUS_SUCCESS,
+        )])
+        result = compute_ip_reputation(df)
+        row = result.row(0, named=True)
+        # auth_successes=1, auth_attempts=1 (one auth event), behavioral = 20 + 0.1 = 20.1
+        assert row["enrichment_risk_score"] is None
+        assert row["behavioral_risk_score"] == pytest.approx(20.1)
+        # Composite: (fill_null(0) + 20.1) / 2 = 10.05
+        assert row["risk_score"] == pytest.approx(10.05)
+
+    def test_pure_enrichment_with_no_activity(self) -> None:
+        """Heavy enrichment, zero behavioural activity → score = enrichment / 2."""
+        df = pl.DataFrame([_row_with(
+            abuseipdb_risk_score=100.0,
+            virustotal_risk_score=100.0,
+            shodan_risk_score=100.0,
+            greynoise_risk_score=100.0,
+        )])
+        result = compute_ip_reputation(df)
+        row = result.row(0, named=True)
+        assert row["enrichment_risk_score"] == pytest.approx(100.0)
+        assert row["behavioral_risk_score"] == pytest.approx(0.0)
+        assert row["risk_score"] == pytest.approx(50.0)
+
+    def test_riot_ip_with_high_behavioral(self) -> None:
+        """RIOT IP that also did auth-success on the honeypot.
+
+        RIOT short-circuits GN to 0. Other enrichment may still contribute,
+        so the enrichment side isn't necessarily zero. But the behavioral
+        side does the lifting. Validates that RIOT lowers but doesn't erase
+        the score (the user's plan-time intent)."""
+        df = pl.DataFrame([_row_with(
+            class_uid=CLASS_AUTHENTICATION,
+            status_id=STATUS_SUCCESS,
+            # RIOT → GN score 0; AbuseIPDB unaffected.
+            abuseipdb_risk_score=90.0,
+            virustotal_risk_score=None,
+            shodan_risk_score=None,
+            greynoise_risk_score=0.0,
+            greynoise_riot=True,
+        )])
+        result = compute_ip_reputation(df)
+        row = result.row(0, named=True)
+        # enrichment = mean(90, null, null, 0) = 45
+        assert row["enrichment_risk_score"] == pytest.approx(45.0)
+        # behavioral = +20 (auth_successes) + 0.1 (auth_attempts=1) = 20.1
+        assert row["behavioral_risk_score"] == pytest.approx(20.1)
+        # Composite: (45 + 20.1) / 2 = 32.55
+        assert row["risk_score"] == pytest.approx(32.55)
+        # And the RIOT marker is visibly preserved (not dropped by the score).
+        assert row["greynoise_riot"] is True
+
+    def test_blended_average_correct(self) -> None:
+        """Full enrichment AND full behavioural escalation → score ≈ midpoint."""
+        df = pl.DataFrame([_row_with(
+            class_uid=CLASS_PROCESS_ACTIVITY,
+            abuseipdb_risk_score=80.0,
+            virustotal_risk_score=75.0,
+            shodan_risk_score=100.0,
+            greynoise_risk_score=75.0,
+        )])
+        # One CMD event → behavioral = +25 (commands) + 0.1 (auth_attempts*0.1
+        # contributes 0 here since auth_attempts=0). Actually auth_attempts only
+        # counts CLASS_AUTHENTICATION rows; this is process activity, so
+        # auth_attempts=0 and the 0.1 multiplier contributes 0.
+        result = compute_ip_reputation(df)
+        row = result.row(0, named=True)
+        # enrichment_risk_score = mean(80, 75, 100, 75) = 82.5
+        assert row["enrichment_risk_score"] == pytest.approx(82.5)
+        # behavioral = +25 (commands) = 25.0
+        assert row["behavioral_risk_score"] == pytest.approx(25.0)
+        # Composite: (82.5 + 25.0) / 2 = 53.75
+        assert row["risk_score"] == pytest.approx(53.75)
+
+    def test_partial_provider_coverage_uses_mean_of_populated(self) -> None:
+        """Only AbuseIPDB populated → enrichment_risk_score = that value alone."""
+        df = pl.DataFrame([_row_with(abuseipdb_risk_score=100.0)])
+        result = compute_ip_reputation(df)
+        row = result.row(0, named=True)
+        assert row["enrichment_risk_score"] == pytest.approx(100.0)
+        assert row["behavioral_risk_score"] == pytest.approx(0.0)
+        assert row["risk_score"] == pytest.approx(50.0)
+
+    def test_score_clipped_to_unit_range(self) -> None:
+        """Scores stay in [0, 100] even with extreme inputs."""
+        # Pathological: all maxes, plus high behavioural — still ≤ 100.
+        df = pl.DataFrame([_row_with(
+            class_uid=CLASS_PROCESS_ACTIVITY,
+            abuseipdb_risk_score=200.0,  # clipped on each side
+            virustotal_risk_score=200.0,
+            shodan_risk_score=200.0,
+            greynoise_risk_score=200.0,
+        )])
+        result = compute_ip_reputation(df)
+        row = result.row(0, named=True)
+        # Inputs clip at 100; mean = 100; behavioral = 25 (commands); composite=62.5.
+        assert row["enrichment_risk_score"] == pytest.approx(100.0)
+        assert row["risk_score"] <= 100.0

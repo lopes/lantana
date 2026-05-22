@@ -149,16 +149,30 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
 def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     """Compute per-IP reputation scores from enrichment and behavioral data.
 
-    Risk score formula (0-100, clipped):
-    - abuseipdb_score * 0.3 (max 30)
-    - +20 if auth_successes > 0
-    - +25 if commands_executed > 0
-    - +15 if findings_triggered > 0
-    - +20 if downloads > 0 (malware delivery)
-    - +min(auth_attempts, 100) * 0.1 (max 10)
-    - +10 if vt_malicious_count >= 3
-    - +10 if shodan_vulns present
-    - +5  if abuseipdb_total_reports >= 10
+    Three risk scores per IP (all 0..100, clipped):
+
+    * ``enrichment_risk_score`` — horizontal mean of the four per-provider
+      scores that landed in silver (``abuseipdb_risk_score``,
+      ``virustotal_risk_score``, ``shodan_risk_score``,
+      ``greynoise_risk_score``), skipping nulls. If every provider was
+      null for this IP, the mean is null and the composite below falls
+      back to behavioral only.
+    * ``behavioral_risk_score`` — derived purely from on-honeypot
+      activity:
+        +20 if auth_successes > 0
+        +25 if commands_executed > 0
+        +15 if findings_triggered > 0
+        +20 if downloads > 0
+        +min(auth_attempts, 100) * 0.1
+    * ``risk_score`` — the single number every downstream consumer reads
+      (STIX gate, dashboard buckets, Discord top-5, geography map):
+        risk_score = (enrichment.fill_null(0) + behavioral) / 2
+      Mean of two halves, each 0..100, so the composite is 0..100. The
+      ``fill_null(0)`` is deliberate: an IP with zero enrichment data
+      still attracts behavioral attention, just halved by the absent
+      intel side.
+
+    See docs/risk-scoring.md for the full formula + worked examples.
     """
     if silver.is_empty():
         return pl.DataFrame()
@@ -199,40 +213,60 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
         ("abuseipdb_total_reports", "abuseipdb_reports"),
         ("greynoise_classification", "greynoise_class"),
         ("greynoise_name", "greynoise_name"),
+        ("greynoise_noise", "greynoise_noise"),
+        ("greynoise_riot", "greynoise_riot"),
         ("shodan_ports", "shodan_ports"),
         ("shodan_os", "shodan_os"),
         ("shodan_vulns", "shodan_vulns"),
         ("shodan_org", "shodan_org"),
         ("vt_malicious_count", "vt_malicious"),
         ("vt_ip_reputation", "vt_reputation"),
+        # Per-provider risk_scores from Phase D.1 — pulled into gold for
+        # the composite blend below. Each is a Float64 in [0, 100] or null
+        # when the provider didn't contribute to this IP this run.
+        ("abuseipdb_risk_score", "abuseipdb_risk_score"),
+        ("virustotal_risk_score", "virustotal_risk_score"),
+        ("shodan_risk_score", "shodan_risk_score"),
+        ("greynoise_risk_score", "greynoise_risk_score"),
     ]
     enrichment_aggs = [_optional_first(silver, col, alias) for col, alias in optional]
 
     grouped = silver.group_by("src_endpoint_ip").agg(core_aggs + enrichment_aggs)
 
-    # Compute risk score
+    # Phase D.2 composite. Three score columns in a single with_columns so
+    # later expressions can reference the earlier aliases (polars resolves
+    # within one with_columns left-to-right via the expression chain).
+    behavioral_expr = (
+        pl.when(pl.col("auth_successes") > 0).then(20.0).otherwise(0.0)
+        + pl.when(pl.col("commands_executed") > 0).then(25.0).otherwise(0.0)
+        + pl.when(pl.col("findings_triggered") > 0).then(15.0).otherwise(0.0)
+        + pl.when(pl.col("downloads") > 0).then(20.0).otherwise(0.0)
+        + pl.min_horizontal(pl.col("auth_attempts").cast(pl.Float64), pl.lit(100.0)) * 0.1
+    ).clip(0.0, 100.0)
+
+    enrichment_expr = pl.mean_horizontal(
+        pl.col("abuseipdb_risk_score").cast(pl.Float64),
+        pl.col("virustotal_risk_score").cast(pl.Float64),
+        pl.col("shodan_risk_score").cast(pl.Float64),
+        pl.col("greynoise_risk_score").cast(pl.Float64),
+    ).clip(0.0, 100.0)
+
     result = grouped.with_columns(
+        enrichment_expr.alias("enrichment_risk_score"),
+        behavioral_expr.alias("behavioral_risk_score"),
+    ).with_columns(
         (
-            pl.col("abuseipdb_score").fill_null(0).cast(pl.Float64) * 0.3
-            + pl.when(pl.col("auth_successes") > 0).then(20.0).otherwise(0.0)
-            + pl.when(pl.col("commands_executed") > 0).then(25.0).otherwise(0.0)
-            + pl.when(pl.col("findings_triggered") > 0).then(15.0).otherwise(0.0)
-            + pl.when(pl.col("downloads") > 0).then(20.0).otherwise(0.0)
-            + pl.min_horizontal(pl.col("auth_attempts").cast(pl.Float64), pl.lit(100.0)) * 0.1
-            # Additional enrichment signals
-            + pl.when(pl.col("vt_malicious").fill_null(0) >= 3).then(10.0).otherwise(0.0)
-            + pl.when(
-                pl.col("shodan_vulns").is_not_null() & (pl.col("shodan_vulns") != "")
-            ).then(10.0).otherwise(0.0)
-            + pl.when(
-                pl.col("abuseipdb_reports").fill_null(0) >= 10
-            ).then(5.0).otherwise(0.0)
-        )
-        .clip(0.0, 100.0)
-        .alias("risk_score"),
+            (pl.col("enrichment_risk_score").fill_null(0.0)
+             + pl.col("behavioral_risk_score"))
+            / 2.0
+        ).clip(0.0, 100.0).alias("risk_score"),
     )
 
-    return result.sort("risk_score", descending=True)
+    return result.sort(
+        ["risk_score", "enrichment_risk_score"],
+        descending=[True, True],
+        nulls_last=True,
+    )
 
 
 def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
