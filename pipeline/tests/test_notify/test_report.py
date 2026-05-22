@@ -7,9 +7,8 @@ from datetime import UTC, date, datetime
 import polars as pl
 
 from lantana.notify.report import (
-    _fmt_abuseipdb,
-    _fmt_shodan,
-    _fmt_vt,
+    _fmt_provider_risk,
+    _fmt_risk_breakdown,
     generate_daily_brief,
     generate_embed_summary,
 )
@@ -39,15 +38,18 @@ def _make_summary() -> pl.DataFrame:
 
 
 def _make_reputation() -> pl.DataFrame:
-    """Reputation fixture covering all three enrichment populations:
+    """Reputation fixture covering Phase D.2's enrichment-coverage cases:
 
-    * 203.0.113.50 — fully enriched (AbuseIPDB + VT + Shodan w/ vulns)
-    * 198.51.100.22 — AbuseIPDB only (e.g. GN+VT+Shodan skipped or 404)
-    * 192.0.2.99 — no enrichment at all (e.g. all providers exhausted)
+    * 203.0.113.50 — fully enriched across all four providers; high composite.
+    * 198.51.100.22 — only AbuseIPDB populated; the other three are null.
+    * 192.0.2.99 — no enrichment at all (all four providers null); shows the
+      "behavioral only, halved" path.
     """
     return pl.DataFrame({
         "src_endpoint_ip": ["203.0.113.50", "198.51.100.22", "192.0.2.99"],
         "risk_score": [87.5, 42.3, 5.0],
+        "enrichment_risk_score": [90.0, 73.0, None],
+        "behavioral_risk_score": [85.0, 11.6, 10.0],
         "total_events": [50, 80, 20],
         "geo_country": ["CN", "RU", "US"],
         "auth_attempts": [10, 80, 0],
@@ -55,11 +57,11 @@ def _make_reputation() -> pl.DataFrame:
         "commands_executed": [5, 0, 0],
         "findings_triggered": [3, 0, 0],
         "datasets": [["cowrie", "suricata", "nftables"], ["cowrie"], ["nftables"]],
-        "abuseipdb_score": [100, 73, None],
-        "abuseipdb_reports": [685, 12, None],
-        "vt_malicious": [13, None, None],
-        "shodan_ports": ["22,80,443", None, None],
-        "shodan_vulns": ["CVE-2023-1234", None, None],
+        # Per-provider risk_scores (the four-slot A/V/S/G surfacing).
+        "abuseipdb_risk_score": [100.0, 73.0, None],
+        "virustotal_risk_score": [75.0, None, None],
+        "shodan_risk_score": [100.0, None, None],
+        "greynoise_risk_score": [75.0, None, None],
     })
 
 
@@ -153,84 +155,107 @@ class TestGenerateDailyBrief:
         assert len(report) > 100
 
 
-class TestEnrichmentFormatters:
-    """Per-provider cell formatters for the Top Attackers table.
+class TestProviderRiskFormatter:
+    """`A/V/S/G` per-provider risk_score quadruplet for the Top Attackers row.
 
-    Reports must surface the underlying enrichment signals (AbuseIPDB
-    confidence, VT malicious count, Shodan ports + vulns) — the gold
-    risk_score blends them and obscures which provider drove the score.
-    """
+    The four-slot fixed shape (one per provider) means an analyst can
+    scan a column and see at a glance which provider was offline today
+    (the `-` cells) without re-querying the gold table."""
 
-    def test_abuseipdb_fully_populated(self) -> None:
-        assert _fmt_abuseipdb({"abuseipdb_score": 100, "abuseipdb_reports": 685}) == "100/685"
+    def test_all_providers_populated(self) -> None:
+        assert _fmt_provider_risk({
+            "abuseipdb_risk_score": 100.0,
+            "virustotal_risk_score": 75.0,
+            "shodan_risk_score": 100.0,
+            "greynoise_risk_score": 75.0,
+        }) == "100/75/100/75"
 
-    def test_abuseipdb_missing_renders_dash(self) -> None:
-        assert _fmt_abuseipdb({}) == "-"
-        assert _fmt_abuseipdb({"abuseipdb_score": None, "abuseipdb_reports": None}) == "-"
+    def test_all_providers_null_renders_all_dashes(self) -> None:
+        assert _fmt_provider_risk({}) == "-/-/-/-"
 
-    def test_abuseipdb_partial_populated_treats_missing_as_zero(self) -> None:
-        """Partial population (score but no reports, or vice versa) shouldn't drop the cell."""
-        assert _fmt_abuseipdb({"abuseipdb_score": 50, "abuseipdb_reports": None}) == "50/0"
-        assert _fmt_abuseipdb({"abuseipdb_score": None, "abuseipdb_reports": 42}) == "0/42"
+    def test_partial_population_mixes_numbers_and_dashes(self) -> None:
+        assert _fmt_provider_risk({
+            "abuseipdb_risk_score": 88.0,
+            "virustotal_risk_score": None,
+            "shodan_risk_score": None,
+            "greynoise_risk_score": None,
+        }) == "88/-/-/-"
 
-    def test_vt_populated(self) -> None:
-        assert _fmt_vt({"vt_malicious": 13}) == "13"
+    def test_floats_render_as_rounded_ints(self) -> None:
+        """0..100 ints fit a four-slot table cell better than decimals."""
+        assert _fmt_provider_risk({
+            "abuseipdb_risk_score": 88.4,
+            "virustotal_risk_score": 50.6,
+            "shodan_risk_score": 25.0,
+            "greynoise_risk_score": 10.0,
+        }) == "88/51/25/10"
 
-    def test_vt_zero_is_shown_not_dashed(self) -> None:
-        """vt_malicious=0 is a meaningful signal (IP is known to VT, just clean) — show it."""
-        assert _fmt_vt({"vt_malicious": 0}) == "0"
 
-    def test_vt_missing_renders_dash(self) -> None:
-        assert _fmt_vt({}) == "-"
-        assert _fmt_vt({"vt_malicious": None}) == "-"
+class TestRiskBreakdownFormatter:
+    """`composite (enrichment+behavioral)/2` — the why-this-score cell."""
 
-    def test_shodan_ports_only(self) -> None:
-        assert _fmt_shodan({"shodan_ports": "22,80,443", "shodan_vulns": None}) == "3p"
+    def test_full_decomposition_rendered(self) -> None:
+        out = _fmt_risk_breakdown({
+            "risk_score": 87.5,
+            "enrichment_risk_score": 90.0,
+            "behavioral_risk_score": 85.0,
+        })
+        assert out == "87.5 (90+85)/2"
 
-    def test_shodan_ports_plus_cve(self) -> None:
-        assert _fmt_shodan(
-            {"shodan_ports": "22,80,443", "shodan_vulns": "CVE-2023-1234,CVE-2024-5678"},
-        ) == "3p+CVE"
+    def test_composite_only_when_sub_scores_missing(self) -> None:
+        """Backward-compat for pre-Phase-D.2 gold partitions."""
+        assert _fmt_risk_breakdown({"risk_score": 42.3}) == "42.3"
 
-    def test_shodan_no_ports_no_vulns(self) -> None:
-        """Empty Shodan response (200 but no scan data) still distinct from totally-missing."""
-        assert _fmt_shodan({"shodan_ports": "", "shodan_vulns": None}) == "-"
+    def test_dash_when_composite_missing(self) -> None:
+        assert _fmt_risk_breakdown({}) == "-"
 
-    def test_shodan_missing_renders_dash(self) -> None:
-        assert _fmt_shodan({}) == "-"
+    def test_em_dash_for_missing_subscore(self) -> None:
+        """One side present, other absent → keep the layout but mark the gap."""
+        out = _fmt_risk_breakdown({
+            "risk_score": 50.0,
+            "enrichment_risk_score": 100.0,
+            "behavioral_risk_score": None,
+        })
+        assert out == "50.0 (100+—)/2"
 
 
 class TestReportEnrichmentSurfacing:
-    """Bug from 2026-05-22: report consumed gold but never surfaced raw
-    AbuseIPDB / VT / Shodan signals; operator observation 'I don't recall
-    seeing Shodan data before' was correct. Verify the columns now appear."""
+    """Phase D.3 verification — the Top Attackers table surfaces each
+    provider's score (the A/V/S/G column) AND the composite decomposition
+    (the Risk column). An analyst reading the Discord brief can answer
+    'why this score?' without leaving the report."""
 
-    def test_top_attackers_table_has_enrichment_columns(self) -> None:
+    def test_top_attackers_table_has_provider_risk_column(self) -> None:
         report = generate_daily_brief(
             date(2026, 4, 25), _make_summary(), _make_reputation(),
             _make_progression(), _make_clusters(), "Test Op",
         )
-        # Header row must include the three new columns.
-        assert "AbuseIPDB" in report
-        assert "VT" in report
-        assert "Shodan" in report
-        # The fully-enriched fixture IP renders with its concrete values.
-        assert "100/685" in report   # AbuseIPDB score/reports
-        assert "| 13 |" in report    # VT malicious count cell
-        assert "3p+CVE" in report    # Shodan ports + CVE marker
+        assert "A/V/S/G" in report
+        # Fully-enriched fixture row renders its four scores.
+        assert "100/75/100/75" in report
+        # AbuseIPDB-only fixture row renders three dashes after the abuseipdb cell.
+        assert "73/-/-/-" in report
+        # Un-enriched fixture row renders all dashes.
+        assert "-/-/-/-" in report
 
-    def test_missing_enrichment_renders_dash_not_zero(self) -> None:
-        """The unenriched fixture row (192.0.2.99) must show `-`, not misleading `0`."""
+    def test_top_attackers_shows_risk_breakdown(self) -> None:
         report = generate_daily_brief(
             date(2026, 4, 25), _make_summary(), _make_reputation(),
             _make_progression(), _make_clusters(), "Test Op",
         )
-        # Find the line for 192.0.2.99 and confirm all three cells are dashed.
-        unenriched_line = next(
-            line for line in report.splitlines() if "192.0.2.99" in line
+        # Composite (enrichment + behavioral) layout for the fully-enriched IP.
+        assert "87.5 (90+85)/2" in report
+
+    def test_table_includes_legend_explaining_columns(self) -> None:
+        """A reader new to the report should be able to decode the columns
+        without leaving the brief — the legend line is the discoverability
+        contract."""
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
         )
-        # Three trailing dashes for the three enrichment columns.
-        assert unenriched_line.count("| - ") >= 3
+        assert "Risk legend:" in report
+        assert "A/V/S/G" in report
 
 
 class TestGenerateEmbedSummary:

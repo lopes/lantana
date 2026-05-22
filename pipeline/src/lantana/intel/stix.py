@@ -89,6 +89,15 @@ def _make_indicators(
             f"Risk score: {row['risk_score']:.1f}",
             f"Events: {row['total_events']}",
         ]
+        # Phase D.2 sub-scores — give STIX consumers the decomposition so
+        # they can apply their own enrichment-vs-behavioral weighting if
+        # they need to. Both fields default to None on pre-D.2 gold.
+        enrichment_sub = row.get("enrichment_risk_score")
+        behavioral_sub = row.get("behavioral_risk_score")
+        if enrichment_sub is not None or behavioral_sub is not None:
+            e_str = f"{enrichment_sub:.1f}" if enrichment_sub is not None else "—"
+            b_str = f"{behavioral_sub:.1f}" if behavioral_sub is not None else "—"
+            description_parts.append(f"Risk breakdown: enrichment={e_str}, behavioral={b_str}")
         if row.get("geo_country"):
             geo_str = row["geo_country"]
             if row.get("geo_city"):

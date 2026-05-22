@@ -40,13 +40,23 @@ def render(selected_date: date) -> None:
 
     st.divider()
 
-    # Risk distribution
+    # Risk distribution — composite + Phase D.2 decomposition side-by-side
     st.subheader("Risk Score Distribution")
-    st.bar_chart(
-        df.select("risk_score").to_pandas(),
-        x=None,
-        y="risk_score",
-    )
+    if "enrichment_risk_score" in df.columns and "behavioral_risk_score" in df.columns:
+        chart_cols = st.columns(3)
+        chart_cols[0].caption("Composite (final risk_score)")
+        chart_cols[0].bar_chart(df.select("risk_score").to_pandas(), y="risk_score")
+        chart_cols[1].caption("Enrichment half (mean of populated providers)")
+        chart_cols[1].bar_chart(
+            df.select("enrichment_risk_score").to_pandas(), y="enrichment_risk_score",
+        )
+        chart_cols[2].caption("Behavioral half (auth + commands + downloads + ...)")
+        chart_cols[2].bar_chart(
+            df.select("behavioral_risk_score").to_pandas(), y="behavioral_risk_score",
+        )
+    else:
+        # Pre-Phase-D.2 gold partition fallback.
+        st.bar_chart(df.select("risk_score").to_pandas(), y="risk_score")
 
     st.divider()
 
@@ -57,11 +67,18 @@ def render(selected_date: date) -> None:
         pl.col("risk_score").map_elements(_risk_label, return_dtype=pl.Utf8).alias("risk_level"),
     )
 
-    # Select columns for display
+    # Select columns for display. Per-provider risk_scores sit immediately
+    # after the composite + breakdown so the relationship is scannable.
     display_cols = [
         "src_endpoint_ip",
         "risk_score",
         "risk_level",
+        "enrichment_risk_score",
+        "behavioral_risk_score",
+        "abuseipdb_risk_score",
+        "virustotal_risk_score",
+        "shodan_risk_score",
+        "greynoise_risk_score",
         "total_events",
         "geo_country",
         "geo_city",
@@ -73,6 +90,7 @@ def render(selected_date: date) -> None:
         "abuseipdb_reports",
         "greynoise_class",
         "greynoise_name",
+        "greynoise_riot",
         "vt_malicious",
         "shodan_ports",
         "shodan_os",

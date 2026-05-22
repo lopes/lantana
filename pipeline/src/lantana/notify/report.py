@@ -12,54 +12,50 @@ from typing import Any
 
 import polars as pl
 
-# --- Per-provider cell formatters for the Top Attackers table ---------------
-#
-# Each formatter returns a short compact string suitable for a Markdown
-# table cell. Empty/null/zero values render as a dash so the column never
-# misleads the reader into thinking a missing signal is a low signal.
 
+def _fmt_provider_risk(row: dict[str, Any]) -> str:
+    """Compact per-provider 0..100 risk-score quadruplet for the Top Attackers
+    table.
 
-def _fmt_abuseipdb(row: dict[str, Any]) -> str:
-    """`{score}/{reports}` — confidence (0-100) and cumulative report count.
+    Format: ``A/V/S/G`` with each cell being the score rounded to int, or ``-``
+    when the provider didn't contribute (column null, e.g. rate-limited
+    that day). The four-slot fixed shape makes columns scannable across
+    rows even when one provider was offline.
 
-    Returns `-` when AbuseIPDB didn't contribute for this IP (provider was
-    rate-limited, circuit-broken, or the IP is unknown to AbuseIPDB).
+    Replaces the Phase E raw-cells (abuseipdb_score / vt_malicious /
+    shodan_ports+CVE) — per-provider risk_score is the comparable
+    0..100 surfacing that docs/risk-scoring.md defines.
     """
-    score = row.get("abuseipdb_score")
-    reports = row.get("abuseipdb_reports")
-    if score is None and reports is None:
+    def _cell(key: str) -> str:
+        value = row.get(key)
+        if value is None:
+            return "-"
+        return f"{round(float(value))}"
+
+    return (
+        f"{_cell('abuseipdb_risk_score')}/"
+        f"{_cell('virustotal_risk_score')}/"
+        f"{_cell('shodan_risk_score')}/"
+        f"{_cell('greynoise_risk_score')}"
+    )
+
+
+def _fmt_risk_breakdown(row: dict[str, Any]) -> str:
+    """`{composite} = ({enrichment}+{behavioral})/2` — risk decomposition.
+
+    Lets the analyst answer "what drove this score?" without leaving the
+    report. Defaults gracefully when sub-scores are absent (e.g. old gold
+    partitions written before Phase D.2)."""
+    composite = row.get("risk_score")
+    enrichment = row.get("enrichment_risk_score")
+    behavioral = row.get("behavioral_risk_score")
+    if composite is None:
         return "-"
-    return f"{score if score is not None else 0}/{reports if reports is not None else 0}"
-
-
-def _fmt_vt(row: dict[str, Any]) -> str:
-    """`{malicious}` — count of AV vendors flagging this IP as malicious.
-
-    The single most decision-relevant VT signal. Returns `-` when the IP
-    wasn't enriched by VT this run.
-    """
-    malicious = row.get("vt_malicious")
-    if malicious is None:
-        return "-"
-    return f"{malicious}"
-
-
-def _fmt_shodan(row: dict[str, Any]) -> str:
-    """`{Np}+CVE` or `{Np}` — open-port count, with a CVE marker if vulns present.
-
-    Compact because the report has limited horizontal room. Full Shodan
-    detail (port list, organisation, OS, CVE list) stays in the gold
-    table for analysts who pull the parquet directly.
-    """
-    ports = row.get("shodan_ports")
-    vulns = row.get("shodan_vulns")
-    if ports is None and vulns is None:
-        return "-"
-    port_count = len(str(ports).split(",")) if ports else 0
-    cve_suffix = "+CVE" if vulns else ""
-    if port_count == 0 and not cve_suffix:
-        return "-"
-    return f"{port_count}p{cve_suffix}"
+    if enrichment is None and behavioral is None:
+        return f"{composite:.1f}"
+    e_str = f"{enrichment:.0f}" if enrichment is not None else "—"
+    b_str = f"{behavioral:.0f}" if behavioral is not None else "—"
+    return f"{composite:.1f} ({e_str}+{b_str})/2"
 
 
 def generate_daily_brief(
@@ -144,14 +140,16 @@ def generate_daily_brief(
         lines.append("    S --> C --> A --> I")
         lines.append("```\n")
 
-    # Top attackers (by risk score). The AbuseIPDB / VT / Shodan columns
-    # surface the per-provider verdict explicitly — risk_score blends them
-    # all together and obscures which provider drove the score.
+    # Top attackers (by composite risk_score). The "Risk" column shows the
+    # composite + the (enrichment+behavioral)/2 decomposition; "A/V/S/G"
+    # surfaces each provider's contribution at a glance so an analyst can
+    # see which signal drove the score (or notice when only behavioral
+    # signals are firing).
     if not reputation.is_empty():
         lines.append("## Top Attackers\n")
         top = reputation.sort("risk_score", descending=True).head(5)
-        lines.append("| IP | Risk | Country | Events | Stage | AbuseIPDB | VT | Shodan |")
-        lines.append("|----|------|---------|--------|-------|-----------|-----|--------|")
+        lines.append("| IP | Risk | Country | Events | Stage | A/V/S/G |")
+        lines.append("|----|------|---------|--------|-------|---------|")
         for r in top.iter_rows(named=True):
             stage = ""
             if not progression.is_empty():
@@ -159,13 +157,16 @@ def generate_daily_brief(
                 if ip_prog.height > 0:
                     stage = ip_prog.row(0, named=True)["stage_label"]
             lines.append(
-                f"| {r['src_endpoint_ip']} | {r['risk_score']:.1f} "
+                f"| {r['src_endpoint_ip']} "
+                f"| {_fmt_risk_breakdown(r)} "
                 f"| {r.get('geo_country', '?')} "
                 f"| {r['total_events']:,} | {stage} "
-                f"| {_fmt_abuseipdb(r)} "
-                f"| {_fmt_vt(r)} "
-                f"| {_fmt_shodan(r)} |"
+                f"| {_fmt_provider_risk(r)} |"
             )
+        lines.append("")
+        lines.append("_Risk legend: `composite (enrichment+behavioral)/2`. "
+                     "A/V/S/G = AbuseIPDB/VirusTotal/Shodan/GreyNoise per-provider "
+                     "risk (0..100, `-` = provider didn't contribute)._")
         lines.append("")
 
     # Threat actor attribution
