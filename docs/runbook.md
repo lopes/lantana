@@ -500,23 +500,21 @@ This pulls `/etc/lantana`, `/var/log/lantana`, and `/var/lib/lantana` over SSH v
 
 ### What happens next (automated routines)
 
-The platform runs itself from here. Routines to watch for:
+The platform runs itself from here. Pipeline jobs are systemd `oneshot` services triggered by matching `.timer` units (not cron). Query via `journalctl -u <unit>.service` and inspect schedule via `systemctl list-timers`.
 
 | Time (UTC) | Job | What it does |
 |---|---|---|
 | Continuous | Vector | Reads honeypot logs, enriches with GeoIP, writes bronze NDJSON |
 | 00:15 daily | `lantana-prune` | Enforces 180-day retention; emergency prune at >80% disk |
 | 01:00 daily | `lantana-enrich` | Bronze → silver: OCSF normalisation, redaction, Parquet |
-| 02:00 daily | `lantana-transform` | Silver → gold: aggregated intelligence, STIX bundles |
+| 04:00 daily | `lantana-transform` | Silver → gold: aggregated intelligence, STIX bundles |
+| 05:00 daily | `lantana-alert` | Posts Discord alert on non-clean days (silent on clean) |
+| 06:00 daily | `lantana-report` | Posts Discord daily intel brief regardless of clean state |
 | 02:30 (1st of month) | `lantana-geoip-update` | Refreshes MaxMind City + ASN databases |
 
 **Day one** — bronze accumulates from live traffic. Enrichment has nothing to process yet (it runs against yesterday's data).
 
-**Day two morning** — first full pipeline cycle. By ~03:00 UTC, check that silver and gold partitions exist alongside bronze:
-
-```bash
-sudo find /var/lib/lantana/datalake/ -maxdepth 3 -type d | sort
-```
+**Day two morning** — first full pipeline cycle. By ~06:00 UTC the entire chain (prune → enrich → transform → alert → report) has run. Walk through [§11 Post-deploy first-cycle verification](#11-post-deploy-first-cycle-verification) below to confirm everything fired cleanly.
 
 **Ongoing** — run the validation playbook periodically to confirm all services are healthy and the datalake is growing as expected:
 
@@ -526,6 +524,116 @@ ansible-playbook -i inventories/op_<name>/inventory.yml \
 ```
 
 See `docs/validation.md` for the full day-by-day checklist.
+
+---
+
+## 11. Post-deploy first-cycle verification
+
+Run after the first full pipeline cycle (i.e. after 06:00 UTC on the day following the deploy). All commands are read-only.
+
+Replace `<SN01>` with the sensor IP and `<PORT>` with the SSH admin port from `inventories/op_<name>/group_vars/all/main.yml`.
+
+### Immediate post-deploy (within minutes of `ansible-playbook` finishing)
+
+```bash
+# (1) Pipeline systemd timers active — five entries with next-fire timestamps.
+ssh -p <PORT> lantana@<SN01> "sudo systemctl list-timers --all | grep lantana"
+# Expect: lantana-prune.timer / -enrich / -transform / -alert / -report
+
+# (2) No legacy cron file (the systemd-timer migration removed it).
+ssh -p <PORT> lantana@<SN01> "sudo cat /etc/cron.d/lantana-pipeline 2>&1 | head"
+# Expect: cat: ... : No such file or directory
+
+# (3) Vector active and ingesting.
+ssh -p <PORT> lantana@<SN01> "sudo systemctl is-active vector"
+ssh -p <PORT> lantana@<SN01> "sudo journalctl -u vector --since '5 min ago' | grep -iE 'error|warn' | head"
+
+# (4) Datalake skeleton present.
+ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake -maxdepth 2 -type d | sort"
+# Expect: bronze/, silver/, gold/ — empty until the first events arrive.
+```
+
+### After the first full cycle (≥ 06:00 UTC on day two)
+
+```bash
+# (5) Each systemd unit shows last-run success.
+ssh -p <PORT> lantana@<SN01> "for u in lantana-prune lantana-enrich lantana-transform lantana-alert lantana-report; do
+  echo == \$u ==; sudo systemctl status \$u.service --no-pager | head -10
+done"
+# Expect each: Loaded: loaded, ActiveState: inactive (dead), Result: success.
+
+# (6) journalctl captures structlog run_summary for enrich + transform.
+ssh -p <PORT> lantana@<SN01> "sudo journalctl -u lantana-enrich.service --since '01:00 UTC' | grep run_summary"
+ssh -p <PORT> lantana@<SN01> "sudo journalctl -u lantana-transform.service --since '04:00 UTC' | grep run_summary"
+# Expect: one structured line per service with silver_rows + provider stats.
+
+# (7) Silver written for all active datasets.
+ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake/silver -name '*.parquet'"
+
+# (8) Gold present — all 7 tables.
+ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake/gold -name '*.parquet' | awk -F/ '{print \$7}' | sort -u"
+# Expect: behavioral_progression / behavioral_progression_multiday / campaign_clusters /
+#         daily_summary / detection_findings / geographic_summary / ip_reputation
+
+# (9) Provider state file created (shape: `{provider: {last_rate_limited: 'YYYY-MM-DD'}}`).
+ssh -p <PORT> lantana@<SN01> "sudo cat /var/lib/lantana/datalake/.provider_state.json"
+# Empty `{}` on day-1 is fine — no provider tripped its rate-limit breaker yet.
+
+# (10) enrichment_errors.json contains no API-key residue (the URL sanitiser is working).
+ssh -p <PORT> lantana@<SN01> "sudo grep -E 'key=[A-Za-z0-9]{20,}' /var/lib/lantana/datalake/enrichment_errors.json | head"
+# Expect: NO output. Any match here is a sanitiser regression.
+
+# (11) Silver carries the expected enrichment + per-provider risk_score columns.
+ssh -p <PORT> lantana@<SN01> "sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c '
+import polars as pl, glob
+parquets = glob.glob(\"/var/lib/lantana/datalake/silver/dataset=cowrie/date=*/server=*/events.parquet\")
+df = pl.read_parquet(sorted(parquets)[-1])
+print({k: any(c.startswith(k) for c in df.columns) for k in [
+    \"abuseipdb_\", \"shodan_\", \"vt_\", \"greynoise_\", \"geo.\",
+    \"abuseipdb_risk_score\", \"virustotal_risk_score\",
+    \"shodan_risk_score\", \"greynoise_risk_score\",
+]})
+'"
+# On a fresh server, greynoise_ may be False (50/week quota is tight).
+# The other raw fields and the four <provider>_risk_score columns should be True.
+
+# (12) Gold ip_reputation: composite + per-provider sub-scores + RIOT short-circuit.
+ssh -p <PORT> lantana@<SN01> "sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c '
+import polars as pl, glob
+parquets = glob.glob(\"/var/lib/lantana/datalake/gold/ip_reputation/date=*/summary.parquet\")
+df = pl.read_parquet(sorted(parquets)[-1])
+top = df.sort(\"risk_score\", descending=True).head(5)
+print(top.select([
+    \"src_endpoint_ip\", \"risk_score\", \"enrichment_risk_score\", \"behavioral_risk_score\",
+    \"abuseipdb_risk_score\", \"virustotal_risk_score\",
+    \"shodan_risk_score\", \"greynoise_risk_score\",
+    \"greynoise_riot\",
+]))
+'"
+# Expect: risk_score ≈ (enrichment + behavioral) / 2 for each row.
+# RIOT invariant: if any IP shows greynoise_riot=True, its greynoise_risk_score MUST be 0.0.
+# See docs/risk-scoring.md for the full formula reference.
+
+# (13) Discord report received at 06:00 UTC with:
+#   - Geographic Origin section (top countries + ASNs from MaxMind)
+#   - Top Attackers table — "Risk" cell shows `composite (enrichment+behavioral)/2`,
+#     "A/V/S/G" column shows per-provider scores (`-` for offline providers)
+#   - Threat Actor Attribution section (if any GN data this day)
+#   - Detection Highlights section (if Suricata fired)
+# Visual check; nothing to ssh.
+```
+
+### Acceptance gate
+
+If checks 1–13 all return the expected output, the pipeline is healthy.
+
+If any check fails, **don't roll back** — diagnose in place. Most likely failure modes:
+
+- **(1) failed** — Ansible deploy didn't complete; rerun `--tags collector,pipeline`.
+- **(5) `Result: failed`** — `journalctl -u <unit>` will name the failure.
+- **(8) missing tables** — Transform died after silver. Look for `dataset_processing_failed` in `journalctl -u lantana-transform.service`.
+- **(12) RIOT invariant violated** — A failure here means a refactor broke the GreyNoise short-circuit. Run `uv run pytest tests/test_integration_production_shape.py::test_riot_signal_survives_bronze_to_gold` locally to bisect.
+- **(13) no report** — Either `secrets.discord_webhook` is unset (logs `no_discord_webhook`), or the webhook itself is rate-limited / mis-configured. `systemctl status lantana-report.service` and its journal will say.
 
 ---
 
