@@ -21,15 +21,21 @@ from lantana.enrichment.runner import (
     IOC_TYPE_HASH,
     IOC_TYPE_IP,
     ErrorAccumulator,
+    ProviderState,
     _build_lookup,
     _classify_http_error,
+    _compute_ip_event_counts,
     _enrich_iocs_with_provider,
     _get_cached,
     _init_cache,
+    _load_provider_state,
     _merge_lookup,
     _record_error,
     _sanitize_error_message,
+    _save_provider_state,
+    _select_ips_for_provider,
     _set_cached,
+    _should_skip_provider,
     _write_error_summary,
 )
 
@@ -914,3 +920,137 @@ class TestCircuitBreaker:
         # All four attempted; the last succeeds. No premature bail.
         assert provider.enrich_ip.call_count == 4
         assert len(results) == 1
+
+
+# --- Provider state + IP selection policy ---
+
+
+class TestProviderStateRoundtrip:
+    def test_load_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        assert _load_provider_state(tmp_path / "nope.json") == {}
+
+    def test_load_malformed_file_returns_empty(self, tmp_path: Path) -> None:
+        p = tmp_path / "bad.json"
+        p.write_text("{not valid json")
+        assert _load_provider_state(p) == {}
+
+    def test_save_then_load_roundtrip(self, tmp_path: Path) -> None:
+        p = tmp_path / "state.json"
+        state: ProviderState = {
+            "greynoise": {"last_rate_limited": "2026-05-22"},
+            "shodan": {"last_rate_limited": "2026-05-21"},
+        }
+        _save_provider_state(p, state)
+        assert _load_provider_state(p) == state
+
+    def test_save_is_atomic_no_partial_file_on_failure(self, tmp_path: Path) -> None:
+        """A successful save leaves no .tmp file behind."""
+        p = tmp_path / "state.json"
+        _save_provider_state(p, {"x": {"k": "v"}})
+        assert not (tmp_path / "state.json.tmp").exists()
+
+    def test_load_drops_non_string_entries(self, tmp_path: Path) -> None:
+        """Hand-edited state with junk values is silently normalised."""
+        p = tmp_path / "state.json"
+        p.write_text(json.dumps({
+            "greynoise": {"last_rate_limited": "2026-05-22", "junk": 42},
+            "weird": [1, 2, 3],
+        }))
+        loaded = _load_provider_state(p)
+        assert loaded == {"greynoise": {"last_rate_limited": "2026-05-22"}}
+
+
+class TestShouldSkipProvider:
+    def test_no_policy_never_skips(self) -> None:
+        """abuseipdb / virustotal have no policy; never skip."""
+        assert _should_skip_provider("abuseipdb", {}, date(2026, 5, 22)) is False
+        assert _should_skip_provider("virustotal", {}, date(2026, 5, 22)) is False
+
+    def test_no_prior_trip_never_skips(self) -> None:
+        """GreyNoise with no recorded trip runs normally."""
+        assert _should_skip_provider("greynoise", {}, date(2026, 5, 22)) is False
+
+    def test_within_skip_window_skips(self) -> None:
+        """GN policy: 6-day window. Trip on day 0, attempt on day 5 → skip."""
+        state: ProviderState = {"greynoise": {"last_rate_limited": "2026-05-15"}}
+        assert _should_skip_provider("greynoise", state, date(2026, 5, 20)) is True
+
+    def test_at_skip_window_boundary_resumes(self) -> None:
+        """Trip on day 0, attempt on day 6 → resume (window is < not <=)."""
+        state: ProviderState = {"greynoise": {"last_rate_limited": "2026-05-15"}}
+        assert _should_skip_provider("greynoise", state, date(2026, 5, 21)) is False
+
+    def test_shodan_28_day_window(self) -> None:
+        """Shodan's 28-day window must respect its monthly quota."""
+        state: ProviderState = {"shodan": {"last_rate_limited": "2026-04-25"}}
+        # Day 27 since trip → still in window
+        assert _should_skip_provider("shodan", state, date(2026, 5, 22)) is True
+        # Day 28 → out of window
+        assert _should_skip_provider("shodan", state, date(2026, 5, 23)) is False
+
+    def test_malformed_date_string_treated_as_no_trip(self) -> None:
+        """Hand-edited state with garbage date doesn't crash."""
+        state: ProviderState = {"greynoise": {"last_rate_limited": "yesterday"}}
+        assert _should_skip_provider("greynoise", state, date(2026, 5, 22)) is False
+
+
+class TestComputeIpEventCounts:
+    def test_single_dataset(self) -> None:
+        df = pl.DataFrame({"src_ip": ["1.1.1.1", "1.1.1.1", "2.2.2.2"]})
+        counts = _compute_ip_event_counts({"cowrie": df})
+        assert counts == {"1.1.1.1": 2, "2.2.2.2": 1}
+
+    def test_multi_dataset_sums(self) -> None:
+        cowrie = pl.DataFrame({"src_ip": ["1.1.1.1", "1.1.1.1"]})
+        suricata = pl.DataFrame({"src_ip": ["1.1.1.1", "2.2.2.2", "2.2.2.2"]})
+        counts = _compute_ip_event_counts({"cowrie": cowrie, "suricata": suricata})
+        assert counts == {"1.1.1.1": 3, "2.2.2.2": 2}
+
+    def test_missing_src_ip_column_skipped(self) -> None:
+        """A dataset without src_ip (broken normaliser, malformed bronze) is ignored."""
+        good = pl.DataFrame({"src_ip": ["1.1.1.1"]})
+        bad = pl.DataFrame({"other_col": ["x"]})
+        counts = _compute_ip_event_counts({"good": good, "bad": bad})
+        assert counts == {"1.1.1.1": 1}
+
+    def test_empty_dataset_contributes_nothing(self) -> None:
+        empty = pl.DataFrame({"src_ip": []}, schema={"src_ip": pl.Utf8})
+        non_empty = pl.DataFrame({"src_ip": ["1.1.1.1"]})
+        assert _compute_ip_event_counts({"e": empty, "ne": non_empty}) == {"1.1.1.1": 1}
+
+
+class TestSelectIpsForProvider:
+    def test_no_policy_returns_unchanged(self) -> None:
+        ips = ["a", "b", "c"]
+        assert _select_ips_for_provider("abuseipdb", ips, {"a": 5, "b": 1}) == ips
+
+    def test_greynoise_subsamples_top_n_by_count(self) -> None:
+        """GN policy: top 40. With 50 IPs, return the 40 with highest event counts."""
+        ips = [f"ip{i:03d}" for i in range(50)]
+        counts = {f"ip{i:03d}": (50 - i) for i in range(50)}  # ip000 is hottest
+        selected = _select_ips_for_provider("greynoise", ips, counts)
+        assert len(selected) == 40
+        assert selected[0] == "ip000"
+        assert selected[-1] == "ip039"
+
+    def test_smaller_than_n_returns_unchanged(self) -> None:
+        """If the input list is below the cap, no subsampling happens."""
+        ips = ["a", "b", "c"]
+        selected = _select_ips_for_provider("greynoise", ips, {"a": 1, "b": 2, "c": 3})
+        assert selected == ips
+
+    def test_tie_break_alphabetical_when_subsampling(self) -> None:
+        """When subsampling fires, identical-count IPs sort alphabetically.
+
+        Sized to force GN's 40-cap to actually kick in; without enough
+        IPs the function short-circuits and returns the input unchanged.
+        """
+        ips = [f"ip-{c:03d}" for c in range(50)]
+        # All same count → tie-break decides which 40 of the 50 win.
+        counts = dict.fromkeys(ips, 5)
+        first = _select_ips_for_provider("greynoise", ips, counts)
+        second = _select_ips_for_provider("greynoise", ips, counts)
+        assert first == second  # determinism
+        assert len(first) == 40
+        # Alphabetical tie-break means the first 40 alphabetically win.
+        assert first == sorted(ips)[:40]

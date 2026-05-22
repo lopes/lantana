@@ -58,39 +58,43 @@ ssh sn-01 "sudo journalctl -u lantana-enrich.service --since today | grep run_su
 
 **Cache transition:** existing cached rows still contain the dropped fields and will progressively expire over the 7-day TTL. Silver during the transition will retain the columns as sparse data; gold doesn't reference them so nothing breaks. The user-scheduled server wipe will fully reset this; no manual cleanup needed.
 
+### Sensitive query-string redaction in `enrichment_errors.json`
+
+`enrichment/runner.py` now has `_sanitize_error_message` that strips known sensitive URL query parameters (`key`, `api_key`, `apikey`, `token`, `access_token`) before persisting. Applied unconditionally in `_record_error`. Shodan was the immediate motivator (URL-query auth → API key in error strings → into the alerter-readable JSON). Headers-based auth (AbuseIPDB, VT, GreyNoise) was never exposed; the redactor is also forward-looking for future providers.
+
+### Per-provider IP-selection policy + cross-run rate-limit memory
+
+`enrichment/runner.py` gained two complementary mechanisms for tight-quota providers:
+
+* **`subsample_top_n`** — pre-filter the IP list to the N highest-event-count IPs before any HTTP call. GreyNoise policy: 40 IPs (50/week with 10-IP safety margin). Event counts sum across all datasets — a single attacker IP appearing in both cowrie and suricata counts double, matching operator intuition.
+
+* **`skip_window_days`** — persist the last rate-limit trip date per provider to `/var/lib/lantana/datalake/.provider_state.json`. Future runs short-circuit the provider until the window elapses. GreyNoise: 6 days (1-day margin under 7-day quota). Shodan: 28 days (2-day margin under monthly quota). No more burning the same 5 IPs every morning to trip the breaker.
+
+AbuseIPDB and VirusTotal opt out: their daily / per-minute quotas refresh fast enough that skipping isn't useful. Future providers can add policy entries by editing `_PROVIDER_POLICY`.
+
 ---
 
 ## What's open
 
-### 2. GreyNoise — practically dead on free tier; needs a strategy
+### 1. Daily report does not surface enrichment data
 
-**Root cause** (confirmed from `enrichment/providers/greynoise.py` + `enrichment/runner.py`):
-- GreyNoise Community quota is 50 requests / 7 days rolling.
-- Runner iterates IPs in `sorted()` order, so GN burns its budget on the same lowest-numbered IPs every day.
-- Cache TTL is 7 days — same as the quota window, so cache can never bridge to the next quota refresh.
-- Net: zero `greynoise_*` data lands in silver or cache. Gold backfills the columns as typed nulls (no crash), and `is_automated` in `compute_behavioral_progression` always falls back to the 120s/heuristic branch instead of the GN signal.
+**Confirmed gap** after reading `pipeline/src/lantana/notify/report.py` (260 lines, `lantana-report` CLI bound to `notify/discord.py:generate_and_send`):
 
-**What we actually want from GN** (per 2026-05-22 user call): the classification — *noise*, *riot*, *malicious / unknown / benign* — plus operator name. This is the GN-specific signal not provided by AbuseIPDB/Shodan/VT.
+The `generate_daily_brief` Markdown report consumes these gold tables: `summary`, `reputation`, `progression`, `clusters`, `geographic`, `detection`. Enrichment surfacing audit:
 
-**Options:**
-- **(a) Subsample top-N IPs by event count.** Pass only the ~40-49 most active IPs of the day to GN. Stays under quota; hits the highest-signal IPs.
-- **(b) Iterate in randomised order + keep current cache.** Over a few days, the cache accumulates across the full IP space.
-- **(c) Persist breaker state across runs.** If yesterday's run tripped the rate-limit breaker, skip GN entirely today — frees the quota for the day after.
-- **(d) Combine (a)+(c).** Subsample on a clean day, skip entirely after a breaker trip.
+| Provider | Direct surfacing in report | Indirect (via `risk_score`) |
+|---|---|---|
+| MaxMind | ✓ `top_countries`, `top_asns` (Geographic Origin section) | yes |
+| GreyNoise | ✓ `greynoise_name`, `greynoise_class` (Threat Actor Attribution section) | yes |
+| AbuseIPDB | ✗ never shown raw | yes — drives `risk_score` × 0.3 |
+| Shodan | ✗ never shown raw | yes — `+10` if `vulns` present |
+| VirusTotal | ✗ never shown raw | yes — `+10` if `malicious >= 3` |
 
-My recommendation: **(d)**. (a) alone risks burning the daily share on a day GN has already been exhausted by yesterday; (c) alone leaves the sort-by-IP bias intact. Together they make GN useful and predictable.
+This explains the operator's "I don't recall seeing Shodan data before" observation. The signal IS computed; the report just hides it. The "Top Attackers" table has columns IP / Risk / Country / Events / Stage — perfect place to add `AbuseIPDB:100 | VT:13 | Shodan:port22+CVE` as a compact "Enrichment" column.
 
-### 3. Shodan API key leaks into `enrichment_errors.json`
+**Fix scope:** add an "Enrichment" column to "Top Attackers", or a separate "Threat Intel Highlights" section. Open design question on which.
 
-Shodan takes the API key as a URL query parameter. When the provider raises `HTTPStatusError` on 429, the error message (which httpx builds from the request URL) ends up in `enrichment_errors.json` verbatim — including `?key=<actual-key>`. File is read by the alerter; if the alerter ever embeds raw error messages in a Discord post, key leaks externally.
-
-**Fix:** sanitize URLs in `_record_error` / before write — strip `key=*` query param. Small change in `enrichment/runner.py`. ~10 min including test.
-
-### 4. Confirm daily report (`reporting`) surfaces enrichment data
-
-Today's findings show all four batch providers contribute to silver and gold. But the user "doesn't recall seeing Shodan data before" — worth confirming the daily Discord report template actually reads `shodan_*` / `vt_*` / `greynoise_*` columns from gold and includes them in the output. If not, the pipeline is producing intel that nobody sees.
-
-### 5. Design proposal — pure-enrichment `risk_score`
+### 2. Design proposal — pure-enrichment `risk_score`
 
 **Idea:** add an `enrichment_risk_score` that answers *only* "what do our four threat-intel providers think of this IP?" — separate from the existing `risk_score` in `compute_ip_reputation`, which blends enrichment with behavioural signals (auth attempts, commands executed, downloads). Two scores, two angles.
 

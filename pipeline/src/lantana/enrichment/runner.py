@@ -57,11 +57,40 @@ CACHE_TTL_DAYS = 7
 ERRORS_PATH = Path(
     os.environ.get("LANTANA_ENRICHMENT_ERRORS", "/var/lib/lantana/datalake/enrichment_errors.json")
 )
+PROVIDER_STATE_PATH = Path("/var/lib/lantana/datalake/.provider_state.json")
 
 DATASETS = ["cowrie", "suricata", "nftables", "dionaea"]
 
 IOC_TYPE_IP = "ip"
 IOC_TYPE_HASH = "hash"
+
+
+# Per-provider IP-selection policy. Two knobs:
+#
+#   * subsample_top_n: when set, pass only the N highest-event-count IPs to
+#     this provider instead of the full sorted unique-IP list. Used for tiny
+#     free-tier quotas where calling every IP is impossible (GreyNoise's
+#     50/week makes ~1100 daily IPs unreachable; without subsampling, the
+#     scarce budget burns on lowest-numbered IPs alphabetically).
+#
+#   * skip_window_days: when set, if the previous run hit a rate_limit
+#     error for this provider AND fewer than N days have passed since,
+#     skip the provider entirely (no HTTP calls). Avoids burning quota
+#     on a provider whose window hasn't refreshed yet. Pairs with the
+#     ``.provider_state.json`` file to persist trip dates across runs.
+#
+# Providers absent from this map (abuseipdb, virustotal) use the default
+# behaviour: full sorted IP list, no cross-run skipping. Their quota
+# windows are short enough (daily / per-minute) that skipping isn't
+# useful — the next day's run gets a fresh allowance.
+_PROVIDER_POLICY: dict[str, dict[str, int]] = {
+    # 50/week → 40 IPs gives a 10-IP safety margin. 6-day skip leaves 1
+    # day for the quota to definitely refresh before the next attempt.
+    "greynoise": {"subsample_top_n": 40, "skip_window_days": 6},
+    # 100/month → cache holds the long tail. Skip if exhausted; the
+    # 28-day window leaves a 2-day margin under the rolling 30-day cap.
+    "shodan": {"skip_window_days": 28},
+}
 
 # Circuit-breaker thresholds for _enrich_iocs_with_provider.
 #
@@ -278,6 +307,116 @@ def _write_error_summary(
             f.write(line + "\n")
 
 
+# -- Provider state (cross-run skip + IP subsampling) ------------------------
+
+
+ProviderState = dict[str, dict[str, str]]
+
+
+def _load_provider_state(path: Path) -> ProviderState:
+    """Load the persisted provider-state file, or return an empty dict.
+
+    The state file is best-effort: a malformed or missing file is treated
+    as an empty state so an operator manually editing it cannot bomb a
+    run.
+    """
+    if not path.exists():
+        return {}
+    try:
+        loaded: object = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("provider_state_load_failed", path=str(path), exc_repr=repr(exc))
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    # Narrow object → ProviderState shape, dropping anything malformed.
+    result: ProviderState = {}
+    for provider, entry in loaded.items():
+        if isinstance(provider, str) and isinstance(entry, dict):
+            result[provider] = {
+                k: v for k, v in entry.items() if isinstance(k, str) and isinstance(v, str)
+            }
+    return result
+
+
+def _save_provider_state(path: Path, state: ProviderState) -> None:
+    """Write the provider-state file atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
+    tmp.replace(path)
+
+
+def _should_skip_provider(
+    provider_name: str,
+    state: ProviderState,
+    target_date: date,
+) -> bool:
+    """Return True if the provider's skip-window from its last rate-limit
+    trip has not yet elapsed.
+
+    Behaviour:
+      * No policy for this provider → never skip.
+      * No prior trip recorded → never skip.
+      * Last trip + skip_window_days > target_date → skip.
+    """
+    policy = _PROVIDER_POLICY.get(provider_name, {})
+    window_days = policy.get("skip_window_days")
+    if window_days is None:
+        return False
+    last = state.get(provider_name, {}).get("last_rate_limited")
+    if not last:
+        return False
+    try:
+        last_date = date.fromisoformat(last)
+    except ValueError:
+        return False
+    return (target_date - last_date).days < window_days
+
+
+def _compute_ip_event_counts(dfs: dict[str, pl.DataFrame]) -> dict[str, int]:
+    """Count events per source IP across all bronze datasets.
+
+    Used to pick the highest-signal IPs when a provider's quota forces
+    subsampling. ``src_ip`` is the canonical bronze column populated by
+    Vector for every dataset that has IPs at all (cowrie, suricata,
+    nftables); datasets without it contribute zero rows to the count.
+
+    Implementation note: iterates raw Python rather than calling
+    ``value_counts()`` because polars' value_counts is not order-stable
+    between calls — pairing two separate column extractions misaligns IPs
+    with their counts.
+    """
+    counts: dict[str, int] = {}
+    for df in dfs.values():
+        if df.is_empty() or "src_ip" not in df.columns:
+            continue
+        for ip in df.get_column("src_ip").drop_nulls().to_list():
+            counts[str(ip)] = counts.get(str(ip), 0) + 1
+    return counts
+
+
+def _select_ips_for_provider(
+    provider_name: str,
+    ip_list: list[str],
+    event_counts: dict[str, int],
+) -> list[str]:
+    """Apply per-provider subsampling.
+
+    If the provider has ``subsample_top_n`` set, return the top-N IPs by
+    event count (descending); tie-break alphabetical for determinism.
+    Otherwise return the full sorted list unchanged.
+    """
+    policy = _PROVIDER_POLICY.get(provider_name, {})
+    top_n = policy.get("subsample_top_n")
+    if top_n is None or len(ip_list) <= top_n:
+        return ip_list
+    return sorted(
+        ip_list,
+        key=lambda ip: (-event_counts.get(ip, 0), ip),
+    )[:top_n]
+
+
 # -- Enrichment --------------------------------------------------------------
 
 
@@ -417,6 +556,7 @@ async def run_enrichment(
     cache_db_path: Path = CACHE_DB_PATH,
     sensor_dir: Path = Path("/var/lib/lantana/sensor"),
     errors_path: Path = ERRORS_PATH,
+    provider_state_path: Path = PROVIDER_STATE_PATH,
 ) -> None:
     """Run the full enrichment pipeline for a given date."""
     secrets = load_secrets()
@@ -482,12 +622,42 @@ async def run_enrichment(
             "unique_iocs_found", ioc_type=IOC_TYPE_HASH, count=len(unique_hashes),
         )
 
-        # Phase B: enrich each IOC type once, across the relevant providers
-        ip_list = sorted(unique_ips)
+        # Phase B: enrich each IOC type once, across the relevant providers.
+        # Two pre-flight steps before the loop:
+        #   1. Load persisted provider state (cross-run rate-limit memory)
+        #   2. Compute IP→event-count for subsampling on tiny-quota providers
+        provider_state = _load_provider_state(provider_state_path)
+        event_counts = _compute_ip_event_counts(dfs)
+        full_ip_list = sorted(unique_ips)
         ip_results: list[EnrichmentResult] = []
         for name, provider in providers.items():
+            if _should_skip_provider(name, provider_state, target_date):
+                last = provider_state.get(name, {}).get("last_rate_limited", "?")
+                logger.info(
+                    "provider_skipped_rate_limit_window",
+                    provider=name,
+                    last_rate_limited=last,
+                    target_date=target_date.isoformat(),
+                )
+                provider_stats[f"{name}:{IOC_TYPE_IP}"] = {
+                    "enriched": 0,
+                    "fresh": 0,
+                    "cache_hits": 0,
+                    "skipped_rate_limit": 1,
+                }
+                continue
+
+            selected_ips = _select_ips_for_provider(name, full_ip_list, event_counts)
+            if len(selected_ips) != len(full_ip_list):
+                logger.info(
+                    "provider_subsampled",
+                    provider=name,
+                    selected=len(selected_ips),
+                    total=len(full_ip_list),
+                )
+
             results, hits = await _enrich_iocs_with_provider(
-                name, provider, IOC_TYPE_IP, ip_list, cache, errors,
+                name, provider, IOC_TYPE_IP, selected_ips, cache, errors,
             )
             ip_results.extend(results)
             provider_stats[f"{name}:{IOC_TYPE_IP}"] = {
@@ -503,6 +673,16 @@ async def run_enrichment(
                 fresh=len(results) - hits,
                 cache_hits=hits,
             )
+
+            # Persist rate-limit trip date so future runs can short-circuit
+            # this provider until its quota window has elapsed. Any
+            # rate_limit error at all this run is sufficient signal — even
+            # one means the cache is exhausted enough that further calls
+            # are likely to fail.
+            if (name, "rate_limit") in errors:
+                provider_state.setdefault(name, {})["last_rate_limited"] = (
+                    target_date.isoformat()
+                )
 
         hash_results: list[EnrichmentResult] = []
         if unique_hashes:
@@ -587,6 +767,7 @@ async def run_enrichment(
                 )
                 _record_error(errors, "pipeline", "dataset_processing_failed", repr(exc))
 
+        _save_provider_state(provider_state_path, provider_state)
         logger.info(
             "run_summary",
             date=target_date.isoformat(),

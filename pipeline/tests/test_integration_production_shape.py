@@ -279,6 +279,7 @@ def prod_pipeline(
         "cache": cache_db,
         "sensor": sensor_dir,
         "errors": errors_path,
+        "provider_state": tmp_path / "provider_state.json",
     }
 
 
@@ -297,6 +298,7 @@ async def test_end_to_end_pipeline_against_production_shape(
         cache_db_path=prod_pipeline["cache"],
         sensor_dir=prod_pipeline["sensor"],
         errors_path=prod_pipeline["errors"],
+        provider_state_path=prod_pipeline["provider_state"],
     )
 
     silver_root = prod_pipeline["silver"]
@@ -471,6 +473,7 @@ async def test_errors_logged_for_rate_limited_ips(
         cache_db_path=prod_pipeline["cache"],
         sensor_dir=prod_pipeline["sensor"],
         errors_path=prod_pipeline["errors"],
+        provider_state_path=prod_pipeline["provider_state"],
     )
 
     errors_path = prod_pipeline["errors"]
