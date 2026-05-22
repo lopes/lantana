@@ -72,21 +72,22 @@ ssh sn-01 "sudo journalctl -u lantana-enrich.service --since today | grep run_su
 
 AbuseIPDB and VirusTotal opt out: their daily / per-minute quotas refresh fast enough that skipping isn't useful. Future providers can add policy entries by editing `_PROVIDER_POLICY`.
 
-### Daily report now surfaces raw per-provider verdicts
-
-`notify/report.py` "Top Attackers" table grew three new columns — AbuseIPDB / VT / Shodan — populated by three small formatters (`_fmt_abuseipdb`, `_fmt_vt`, `_fmt_shodan`). Cells render as `100/685`, `13`, `3p+CVE` when data is present, or `-` when the IP wasn't enriched (provider rate-limited / skipped / IP unknown to the provider). The `risk_score` column stays in place but no longer obscures *which* provider drove the score.
-
-Format choices:
-- AbuseIPDB cell = `{score}/{reports}` — both signals matter; reports ≥ 10 contributes to risk_score, score is the AV-style 0-100 confidence.
-- VT cell = `{malicious}` — single most decision-relevant signal; vt_malicious=0 distinct from "not enriched" (renders as `0`, not `-`).
-- Shodan cell = `{N}p[+CVE]` — port count + boolean CVE marker. Full Shodan detail (port list, org, OS, CVE list) stays in the gold table for analysts who pull the parquet directly.
-
 ### `lantana-report` scheduled + missing gold tables wired in
 
 Two more gaps closed in the same pass:
 
 * The report had never been scheduled — only the alerter (non-clean days) fired on a timer. Adds `lantana-report.service` / `.timer` at 06:00 UTC, after the alerter. The operator now gets a daily intel brief regardless of whether the day was clean.
 * `notify/discord.py:generate_and_send` previously read only `daily_summary / ip_reputation / behavioral_progression / campaign_clusters` from gold, omitting `geographic_summary` and `detection_findings`. Those tables are `Optional` parameters of `generate_daily_brief`, so the Geographic Origin and Detection Highlights sections were silently dropped from every actual report. Wires both in.
+
+### Phase D — `risk_score` redesign (per-provider sub-scores + composite)
+
+The single `risk_score` column lives on, but its derivation is now two-layered for full traceability. Five commits (`afb266a` → `8b2b3d4`):
+
+* **D.1** — Every enrichment provider emits a `<provider>_risk_score` (0..100) alongside its raw fields. AbuseIPDB passes confidence through; VirusTotal buckets the malicious-engine count; Shodan is tri-state (0 / 25 / 100); GreyNoise has the RIOT short-circuit override.
+* **D.2** — `compute_ip_reputation` aggregates the per-provider scores into `enrichment_risk_score` (horizontal mean, skipping nulls) and computes `behavioral_risk_score` separately (auth + commands + downloads + findings). Final `risk_score = (enrichment.fill_null(0) + behavioral) / 2`. The composite is now decomposable, not opaque.
+* **D.3** — Discord report's Top Attackers table grew a "Risk" cell showing `composite (enrichment+behavioral)/2` and an "A/V/S/G" column with the four per-provider scores. STIX descriptions include the breakdown. Streamlit dashboard splits into three side-by-side distribution charts. Phase E's stop-gap formatters (`_fmt_abuseipdb` / `_fmt_vt` / `_fmt_shodan`) were dropped — per-provider risk_scores are the cleaner permanent surfacing.
+* **D.4** — New `docs/risk-scoring.md` is the analyst's reference (formulas, value tables, four worked examples, FAQ). `docs/pipeline.md` §3.2.1 documents the gold composite. `docs/integrations.md` per-provider sections show the `<provider>_risk_score` column + cross-reference. `CLAUDE.md` gained principle #6 "Risk score composition is explicit" in the pipeline fail-safe section.
+* **D.5** — Load-bearing regression test: a GreyNoise RIOT IP with AbuseIPDB=90 and VT=15-malicious comes out at `risk_score ≈ 31.67`, below the STIX gate (40), while still carrying all enrichment in silver/gold. The test will fail loudly if a future refactor accidentally drops the RIOT override.
 
 ---
 
@@ -154,17 +155,39 @@ ssh -p <PORT> lantana@<SN01> "sudo cat /var/lib/lantana/datalake/.provider_state
 ssh -p <PORT> lantana@<SN01> "sudo grep -E 'key=[A-Za-z0-9]{20,}' /var/lib/lantana/datalake/enrichment_errors.json | head"
 # Expect: NO output. Any match here is a sanitiser regression.
 
-# (12) Silver contains the expected enrichment columns.
+# (12) Silver contains the expected enrichment columns AND per-provider risk_scores.
 ssh -p <PORT> lantana@<SN01> "sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c '
 import polars as pl
 df = pl.read_parquet(\"/var/lib/lantana/datalake/silver/dataset=cowrie/date=2026-05-22/server=sn-01/events.parquet\")
-print({k: any(c.startswith(k) for c in df.columns) for k in [\"abuseipdb_\", \"shodan_\", \"vt_\", \"greynoise_\", \"geo.\"]})
+print({k: any(c.startswith(k) for c in df.columns) for k in [
+    \"abuseipdb_\", \"shodan_\", \"vt_\", \"greynoise_\", \"geo.\",
+    \"abuseipdb_risk_score\", \"virustotal_risk_score\",
+    \"shodan_risk_score\", \"greynoise_risk_score\",
+]})
 '"
-# Expect on a fresh server: greynoise_ may be False (50/week quota tight). The others True.
+# Expect on a fresh server: greynoise_ may be False (50/week quota tight).
+# The other raw fields and the four <provider>_risk_score columns should be True.
 
-# (13) Discord report received at 06:00 UTC with:
+# (13) Gold ip_reputation has the Phase D.2 sub-scores + composite.
+ssh -p <PORT> lantana@<SN01> "sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c '
+import polars as pl
+df = pl.read_parquet(\"/var/lib/lantana/datalake/gold/ip_reputation/date=2026-05-22/summary.parquet\")
+top = df.sort(\"risk_score\", descending=True).head(5)
+print(top.select([
+    \"src_endpoint_ip\", \"risk_score\", \"enrichment_risk_score\", \"behavioral_risk_score\",
+    \"abuseipdb_risk_score\", \"virustotal_risk_score\",
+    \"shodan_risk_score\", \"greynoise_risk_score\",
+    \"greynoise_riot\",
+]))
+'"
+# Expect: risk_score ≈ (enrichment + behavioral) / 2 for each row.
+# If any IP shows greynoise_riot=True, its greynoise_risk_score MUST be 0.0
+# (Phase D.5 short-circuit verification).
+
+# (14) Discord report received at 06:00 UTC with:
 #   - Geographic Origin section (top countries + ASNs from MaxMind)
-#   - Top Attackers table now showing AbuseIPDB / VT / Shodan columns
+#   - Top Attackers table — "Risk" cell shows `composite (enrichment+behavioral)/2`,
+#     "A/V/S/G" column shows per-provider scores (`-` for offline providers)
 #   - Threat Actor Attribution section (if any GN data this day)
 #   - Detection Highlights section (if Suricata fired)
 # Visual check; nothing to ssh.
@@ -183,6 +206,15 @@ If any check fails: don't roll back the wipe — diagnose in place. The most lik
 ---
 
 ## What's open
+
+(Empty — Phase D landed across commits afb266a..8b2b3d4. The previous risk_score
+design proposal has been implemented end-to-end. See `docs/risk-scoring.md` for
+the analyst reference and the "Recent local changes" section above for the
+phase-by-phase summary.)
+
+---
+
+## Archive — earlier design proposals (now implemented)
 
 ### 1. Design proposal — pure-enrichment `risk_score`
 
