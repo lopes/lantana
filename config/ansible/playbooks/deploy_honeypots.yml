@@ -3,6 +3,17 @@
   hosts:
     - single_nodes
     - sensor_low_nodes
+  roles:
+    # The base role is included to bring its handlers into scope —
+    # specifically "Validate Vector config tree" and "Restart Vector",
+    # which every honeypot's Vector-template task notifies after
+    # rendering conf.d/<honeypot>.yaml. Without base in the play's
+    # roles list, Ansible can't find those handlers and the play
+    # fails at the first honeypot's "Deploy Vector configuration"
+    # task. Base is idempotent, so re-running it after deploy_single
+    # is a few seconds of all-ok checks.
+    - role: base
+      tags: [base]
   tasks:
     - name: "Deploy honeypot roles"
       ansible.builtin.include_role:
