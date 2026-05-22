@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from lantana.enrichment.providers.greynoise import GreyNoiseProvider
+from lantana.enrichment.providers.greynoise import GreyNoiseProvider, compute_risk_score
 
 
 @pytest.fixture()
@@ -95,7 +95,10 @@ class TestGreyNoiseProvider:
         """A 404 means the IP is not in the GreyNoise dataset, not an error."""
         not_found = httpx.Response(
             404,
-            json={"ip": "203.0.113.1", "message": "IP not observed scanning the internet or contained in RIOT data set"},
+            json={
+                "ip": "203.0.113.1",
+                "message": "IP not observed scanning the internet or in RIOT data set",
+            },
             request=httpx.Request("GET", "https://api.greynoise.io/v3/community/203.0.113.1"),
         )
         with patch.object(
@@ -119,3 +122,95 @@ class TestGreyNoiseProvider:
         with patch.object(keyed_provider._client, "aclose", new_callable=AsyncMock) as mock_close:
             await keyed_provider.close()
             mock_close.assert_called_once()
+
+
+class TestGreyNoiseRiskScore:
+    """GN scoring with the load-bearing RIOT override.
+
+    Per docs/risk-scoring.md (and the user's plan-time decision): RIOT
+    IPs must appear in the silver row WITH their enrichment present,
+    but their risk_score is driven to 0 so the gold mean pulls down.
+    This is the *only* place in the four-provider formula set where
+    a signal subtracts."""
+
+    def test_riot_overrides_malicious(self) -> None:
+        """RIOT must win even when classification says malicious — RIOT is
+        the rule-it-out list (Censys, Shodan-itself, CDNs, NTP, DNS) and
+        is a stronger benignness signal than a 'malicious' label."""
+        assert compute_risk_score("malicious", noise=True, riot=True) == 0.0
+
+    def test_riot_overrides_noise(self) -> None:
+        assert compute_risk_score("unknown", noise=True, riot=True) == 0.0
+
+    def test_malicious_classification(self) -> None:
+        assert compute_risk_score("malicious", noise=False, riot=False) == 75.0
+        assert compute_risk_score("malicious", noise=True, riot=False) == 75.0
+
+    def test_noise_and_unknown_classification(self) -> None:
+        """Noise=True with classification=unknown is a real GN pattern:
+        seen scanning broadly, not yet labelled. Mid-low signal."""
+        assert compute_risk_score("unknown", noise=True, riot=False) == 25.0
+
+    def test_unknown_classification_no_noise(self) -> None:
+        """'We know nothing' deserves a small non-zero — distinguishes
+        "queried and got back unknown" from "never queried" (which is null)."""
+        assert compute_risk_score("unknown", noise=False, riot=False) == 10.0
+
+    def test_benign_classification(self) -> None:
+        assert compute_risk_score("benign", noise=False, riot=False) == 0.0
+        assert compute_risk_score("benign", noise=True, riot=False) == 0.0
+
+
+class TestGreyNoiseRiskScoreInResult:
+    @pytest.mark.asyncio()
+    async def test_200_malicious_includes_risk_score(
+        self, anonymous_provider: GreyNoiseProvider,
+    ) -> None:
+        """Fixture has classification=malicious → expect 75 risk score."""
+        mock_get = AsyncMock(return_value=_ok_response())
+        with patch.object(anonymous_provider._client, "get", mock_get):
+            result = await anonymous_provider.enrich_ip("212.115.85.236")
+        assert result.data["greynoise_risk_score"] == 75.0
+
+    @pytest.mark.asyncio()
+    async def test_riot_response_drives_score_to_zero(
+        self, anonymous_provider: GreyNoiseProvider,
+    ) -> None:
+        """A malicious-classified RIOT IP must still come out at 0 — the
+        load-bearing case that justifies separating provider scoring from
+        the simple 'malicious_count' signal in other providers."""
+        riot_response = httpx.Response(
+            200,
+            json={
+                "ip": "8.8.8.8",
+                "noise": False,
+                "riot": True,
+                "classification": "malicious",
+                "name": "Google DNS",
+                "last_seen": "2026-05-20",
+                "link": "https://viz.greynoise.io/ip/8.8.8.8",
+            },
+            request=httpx.Request("GET", "https://api.greynoise.io/v3/community/8.8.8.8"),
+        )
+        mock_get = AsyncMock(return_value=riot_response)
+        with patch.object(anonymous_provider._client, "get", mock_get):
+            result = await anonymous_provider.enrich_ip("8.8.8.8")
+        # The raw fields still landed (analyst can see RIOT context); only
+        # the score is overridden.
+        assert result.data["greynoise_riot"] is True
+        assert result.data["greynoise_classification"] == "malicious"
+        assert result.data["greynoise_risk_score"] == 0.0
+
+    @pytest.mark.asyncio()
+    async def test_404_score_is_default_unknown(
+        self, anonymous_provider: GreyNoiseProvider,
+    ) -> None:
+        """404 → classification=unknown, noise=False, riot=False → 10.0."""
+        not_found = httpx.Response(
+            404, json={},
+            request=httpx.Request("GET", "https://api.greynoise.io/v3/community/9.9.9.9"),
+        )
+        mock_get = AsyncMock(return_value=not_found)
+        with patch.object(anonymous_provider._client, "get", mock_get):
+            result = await anonymous_provider.enrich_ip("9.9.9.9")
+        assert result.data["greynoise_risk_score"] == 10.0

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from lantana.enrichment.providers.shodan import ShodanProvider
+from lantana.enrichment.providers.shodan import ShodanProvider, compute_risk_score
 
 
 @pytest.fixture()
@@ -122,3 +122,51 @@ class TestShodanProvider:
              pytest.raises(httpx.HTTPStatusError):
             await provider.enrich_ip("1.2.3.4")
         assert mock_get.await_count == 1
+
+
+class TestShodanRiskScore:
+    """Tri-state Shodan score per docs/risk-scoring.md.
+
+    The CVE signal is the strongest Shodan datum: it implies the IP is
+    internet-exposed AND scanned AND has a known vulnerability — three
+    facts in one. Ports without CVEs is a weaker but real signal (exposed
+    surface). Empty Shodan = 0 (residential / unscanned)."""
+
+    def test_vulns_present_is_max_score(self) -> None:
+        assert compute_risk_score("22,80,443", "CVE-2024-1234") == 100.0
+
+    def test_vulns_present_with_no_ports_still_max(self) -> None:
+        """Unusual but possible: a CVE-marked IP with no enumerated ports
+        (Shodan response shape varies). The CVE is the load-bearing signal."""
+        assert compute_risk_score("", "CVE-2023-9999") == 100.0
+
+    def test_ports_only_mid_score(self) -> None:
+        assert compute_risk_score("22,80,443", None) == 25.0
+        assert compute_risk_score("443", "") == 25.0
+
+    def test_empty_response_zero_score(self) -> None:
+        """200-with-no-data (residential IP not in Shodan's scan index)
+        and the 404 fallback both reach this branch."""
+        assert compute_risk_score("", None) == 0.0
+        assert compute_risk_score("", "") == 0.0
+
+
+class TestShodanRiskScoreInResult:
+    @pytest.mark.asyncio()
+    async def test_200_response_includes_risk_score(self, provider: ShodanProvider) -> None:
+        mock_get = AsyncMock(return_value=_ok_response())
+        with patch.object(provider._client, "get", mock_get):
+            result = await provider.enrich_ip("1.2.3.4")
+        # Fixture has CVE-2024-1234 → expect 100.
+        assert result.data["shodan_risk_score"] == 100.0
+
+    @pytest.mark.asyncio()
+    async def test_404_response_score_is_zero(self, provider: ShodanProvider) -> None:
+        not_found = httpx.Response(
+            404, json={},
+            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
+        )
+        mock_get = AsyncMock(return_value=not_found)
+        with patch.object(provider._client, "get", mock_get):
+            result = await provider.enrich_ip("1.2.3.4")
+        assert result.data["shodan_risk_score"] == 0.0

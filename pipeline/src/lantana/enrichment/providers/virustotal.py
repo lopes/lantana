@@ -13,6 +13,33 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from lantana.enrichment.providers.base import EnrichmentResult, is_retryable_http_error
 
+# VT IP risk-score buckets: (lower_bound_inclusive, score). Evaluated
+# highest-first so the largest matching bucket wins.
+#
+# Calibrated against VT's typical 70-90 engine count:
+#   1-2 malicious  → 25  (often single-engine noise / false positives)
+#   3-5            → 50  (genuine multi-source agreement)
+#   6-10           → 75  (broadly flagged)
+#   >10            → 100 (heavily flagged; uncommon for IPs that aren't
+#                         known botnet C2 or active malware staging)
+VT_IP_RISK_BUCKETS: list[tuple[int, float]] = [
+    (11, 100.0),
+    (6, 75.0),
+    (3, 50.0),
+    (1, 25.0),
+]
+
+
+def compute_ip_risk_score(malicious_count: int) -> float:
+    """Bucket a VT malicious engine count into a 0..100 risk score.
+
+    See docs/risk-scoring.md.
+    """
+    for lower_bound, score in VT_IP_RISK_BUCKETS:
+        if malicious_count >= lower_bound:
+            return score
+    return 0.0
+
 
 def _empty_ip_result(ip: str) -> EnrichmentResult:
     return EnrichmentResult(
@@ -23,6 +50,7 @@ def _empty_ip_result(ip: str) -> EnrichmentResult:
             "vt_suspicious_count": 0,
             "vt_ip_reputation": 0,
             "vt_as_owner": "",
+            "virustotal_risk_score": 0.0,
         },
         queried_at=datetime.now(tz=UTC),
     )
@@ -80,14 +108,16 @@ class VirusTotalProvider:
         attributes = payload["data"]["attributes"]
         last_analysis: dict[str, int] = attributes.get("last_analysis_stats", {})  # type: ignore[assignment]
 
+        malicious = int(last_analysis.get("malicious", 0))
         return EnrichmentResult(
             provider="virustotal",
             ip=ip,
             data={
-                "vt_malicious_count": int(last_analysis.get("malicious", 0)),
+                "vt_malicious_count": malicious,
                 "vt_suspicious_count": int(last_analysis.get("suspicious", 0)),
                 "vt_ip_reputation": int(attributes.get("reputation", 0)),
                 "vt_as_owner": str(attributes.get("as_owner") or ""),
+                "virustotal_risk_score": compute_ip_risk_score(malicious),
             },
             queried_at=datetime.now(tz=UTC),
         )

@@ -14,6 +14,24 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from lantana.enrichment.providers.base import EnrichmentResult, is_retryable_http_error
 
 
+def compute_risk_score(ports_str: str, vulns_str: str | None) -> float:
+    """Tri-state Shodan score: 0 / 25 / 100.
+
+    * Any non-empty ``vulns_str`` → 100 (CVE on the IP is the strongest
+      Shodan signal — exposed, scanned, known-vulnerable).
+    * Ports present but no vulns → 25 (internet-exposed but no
+      enumerated CVEs).
+    * Both empty → 0 (Shodan responded but has no scan data, e.g. a
+      residential / cloud IP they haven't indexed).
+    See docs/risk-scoring.md.
+    """
+    if vulns_str:
+        return 100.0
+    if ports_str:
+        return 25.0
+    return 0.0
+
+
 class ShodanProvider:
     """Shodan internet intelligence provider.
 
@@ -56,6 +74,7 @@ class ShodanProvider:
                     "shodan_vulns": None,
                     "shodan_org": "",
                     "shodan_asn": "",
+                    "shodan_risk_score": 0.0,
                 },
                 queried_at=datetime.now(tz=UTC),
             )
@@ -83,6 +102,7 @@ class ShodanProvider:
                 "shodan_vulns": vulns_str,
                 "shodan_org": str(data.get("org") or ""),
                 "shodan_asn": str(data.get("asn") or ""),
+                "shodan_risk_score": compute_risk_score(ports_str, vulns_str),
             },
             queried_at=datetime.now(tz=UTC),
         )

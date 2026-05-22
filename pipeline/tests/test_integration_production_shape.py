@@ -54,26 +54,34 @@ FILE_DOWNLOAD_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b785
 
 PROD_BRONZE_FIXTURES = Path(__file__).parent / "fixtures" / "production_shape" / "bronze"
 
-# Enrichment data mirroring what each provider returns for the "full" attacker
+# Enrichment data mirroring what each provider returns for the "full" attacker.
+# Each provider's ``*_risk_score`` is the value that ``compute_risk_score``
+# would produce for the surrounding raw fields; the fixture pre-computes it so
+# the integration test mirrors production silver exactly.
 _FULL_ENRICHMENT: dict[str, dict[str, Any]] = {
     "abuseipdb": {
         "abuseipdb_confidence_score": 88,
         "abuseipdb_total_reports": 247,
+        "abuseipdb_risk_score": 88.0,  # = confidence
     },
     "shodan": {
         "shodan_ports": "22,80,443",
         "shodan_os": "Linux",
         "shodan_org": "Example Telecom BR",
         "shodan_vulns": "",
+        "shodan_risk_score": 25.0,  # ports present, no vulns
     },
     "virustotal": {
         "vt_malicious_count": 5,
         "vt_ip_reputation": -10,
+        "virustotal_risk_score": 50.0,  # bucket 3-5 → 50
     },
     "greynoise": {
         "greynoise_classification": "malicious",
         "greynoise_noise": True,
+        "greynoise_riot": False,
         "greynoise_name": "Mass Scanner",
+        "greynoise_risk_score": 75.0,  # classification=malicious
     },
 }
 

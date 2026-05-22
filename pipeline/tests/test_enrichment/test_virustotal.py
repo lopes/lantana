@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from lantana.enrichment.providers.virustotal import VirusTotalProvider
+from lantana.enrichment.providers.virustotal import (
+    VirusTotalProvider,
+    compute_ip_risk_score,
+)
 
 
 @pytest.fixture()
@@ -191,3 +194,75 @@ class TestVirusTotalRetry:
              pytest.raises(httpx.HTTPStatusError):
             await provider.enrich_ip("1.2.3.4")
         assert mock_get.await_count == 1
+
+
+class TestVtIpRiskScore:
+    """Bucketed VT IP score per docs/risk-scoring.md.
+
+    Buckets calibrated against VT's typical 70-90 engine count:
+      0       → 0   (clean / not seen)
+      1-2     → 25  (single-engine noise; often false positives)
+      3-5     → 50  (multi-source agreement)
+      6-10    → 75  (broadly flagged)
+      >10     → 100 (heavily flagged; uncommon outside known C2)
+    """
+
+    @pytest.mark.parametrize(
+        ("malicious_count", "expected_score"),
+        [
+            (0, 0.0),
+            (1, 25.0),
+            (2, 25.0),
+            (3, 50.0),
+            (4, 50.0),
+            (5, 50.0),
+            (6, 75.0),
+            (8, 75.0),
+            (10, 75.0),
+            (11, 100.0),
+            (50, 100.0),
+            (100, 100.0),
+        ],
+    )
+    def test_bucket_boundaries(self, malicious_count: int, expected_score: float) -> None:
+        assert compute_ip_risk_score(malicious_count) == expected_score
+
+    def test_negative_treated_as_zero(self) -> None:
+        """Defensive — VT shouldn't return negative but if it ever did
+        (e.g., a malformed response), return 0 rather than raising."""
+        assert compute_ip_risk_score(-1) == 0.0
+
+
+class TestVtIpRiskScoreInResult:
+    @pytest.mark.asyncio()
+    async def test_200_response_includes_risk_score(self, provider: VirusTotalProvider) -> None:
+        """A high-malicious-count IP returns the top-bucket risk score."""
+        resp = httpx.Response(
+            200,
+            json={
+                "data": {
+                    "attributes": {
+                        "last_analysis_stats": {"malicious": 15, "suspicious": 2},
+                        "reputation": -50,
+                        "as_owner": "Evil Hosting",
+                    },
+                },
+            },
+            request=httpx.Request("GET", "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4"),
+        )
+        mock_get = AsyncMock(return_value=resp)
+        with patch.object(provider._client, "get", mock_get):
+            result = await provider.enrich_ip("1.2.3.4")
+        assert result.data["vt_malicious_count"] == 15
+        assert result.data["virustotal_risk_score"] == 100.0
+
+    @pytest.mark.asyncio()
+    async def test_404_response_score_is_zero(self, provider: VirusTotalProvider) -> None:
+        not_found = httpx.Response(
+            404, json={},
+            request=httpx.Request("GET", "https://www.virustotal.com/api/v3/ip_addresses/9.9.9.9"),
+        )
+        mock_get = AsyncMock(return_value=not_found)
+        with patch.object(provider._client, "get", mock_get):
+            result = await provider.enrich_ip("9.9.9.9")
+        assert result.data["virustotal_risk_score"] == 0.0

@@ -23,6 +23,37 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from lantana.enrichment.providers.base import EnrichmentResult, is_retryable_http_error
 
 
+def compute_risk_score(
+    classification: str,
+    noise: bool,
+    riot: bool,
+) -> float:
+    """GreyNoise risk score with RIOT override to 0.
+
+    Logic (in order):
+      * ``riot=True`` → 0   (Rule-It-Out: known-benign infrastructure
+                              like Censys, NTP, DNS, CDNs. Overrides
+                              every other signal — per docs/risk-scoring.md,
+                              we keep the row in silver but lower the score.)
+      * ``classification == "malicious"`` → 75
+      * ``noise=True`` and ``classification == "unknown"`` → 25  (seen
+        scanning broadly but not yet labelled)
+      * ``classification == "benign"`` → 0
+      * else (``"unknown"`` with no noise signal) → 10  (lowest non-zero
+        confidence; "we know nothing about this IP" deserves a small
+        weight, not a zero.)
+    """
+    if riot:
+        return 0.0
+    if classification == "malicious":
+        return 75.0
+    if classification == "benign":
+        return 0.0
+    if noise and classification == "unknown":
+        return 25.0
+    return 10.0
+
+
 class GreyNoiseProvider:
     """GreyNoise Community API provider.
 
@@ -72,6 +103,7 @@ class GreyNoiseProvider:
                     "greynoise_name": "",
                     "greynoise_last_seen": None,
                     "greynoise_link": "",
+                    "greynoise_risk_score": compute_risk_score("unknown", False, False),
                 },
                 queried_at=datetime.now(tz=UTC),
             )
@@ -80,17 +112,21 @@ class GreyNoiseProvider:
         data: dict[str, str | bool | None] = response.json()
 
         last_seen_raw = data.get("last_seen")
+        classification = str(data.get("classification") or "unknown")
+        noise = bool(data.get("noise", False))
+        riot = bool(data.get("riot", False))
 
         return EnrichmentResult(
             provider="greynoise",
             ip=ip,
             data={
-                "greynoise_classification": str(data.get("classification") or "unknown"),
-                "greynoise_noise": bool(data.get("noise", False)),
-                "greynoise_riot": bool(data.get("riot", False)),
+                "greynoise_classification": classification,
+                "greynoise_noise": noise,
+                "greynoise_riot": riot,
                 "greynoise_name": str(data.get("name") or ""),
                 "greynoise_last_seen": str(last_seen_raw) if last_seen_raw else None,
                 "greynoise_link": str(data.get("link") or ""),
+                "greynoise_risk_score": compute_risk_score(classification, noise, riot),
             },
             queried_at=datetime.now(tz=UTC),
         )

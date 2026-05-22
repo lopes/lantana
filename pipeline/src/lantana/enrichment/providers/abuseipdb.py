@@ -14,6 +14,15 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from lantana.enrichment.providers.base import EnrichmentResult, is_retryable_http_error
 
 
+def compute_risk_score(confidence_score: int) -> float:
+    """Map AbuseIPDB's abuseConfidenceScore directly to a 0..100 risk score.
+
+    AbuseIPDB returns confidence as 0..100 already calibrated to community
+    reporting density; no normalisation needed. See docs/risk-scoring.md.
+    """
+    return float(max(0, min(100, confidence_score)))
+
+
 class AbuseIPDBProvider:
     """AbuseIPDB threat intelligence provider.
 
@@ -60,12 +69,14 @@ class AbuseIPDBProvider:
         payload: dict[str, dict[str, str | int | bool]] = response.json()
         data = payload["data"]
 
+        confidence = int(data["abuseConfidenceScore"])
         return EnrichmentResult(
             provider="abuseipdb",
             ip=ip,
             data={
-                "abuseipdb_confidence_score": int(data["abuseConfidenceScore"]),
+                "abuseipdb_confidence_score": confidence,
                 "abuseipdb_total_reports": int(data["totalReports"]),
+                "abuseipdb_risk_score": compute_risk_score(confidence),
             },
             queried_at=datetime.now(tz=UTC),
         )
