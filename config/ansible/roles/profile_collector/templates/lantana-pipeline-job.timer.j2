@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# Lantana pipeline job timer: {{ job_binary }}
+#
+# OnCalendar UTC is explicit so the schedule remains stable regardless
+# of any future system-timezone change. Persistent=true means if the
+# machine was off at trigger time, the job runs on the next boot —
+# critical for a pipeline whose missed days require manual --date
+# re-runs to recover.
+
+[Unit]
+Description={{ job_description }} (daily schedule)
+Documentation=https://github.com/lopes/lantana
+
+[Timer]
+OnCalendar={{ on_calendar }} UTC
+Persistent=true
+Unit={{ job_binary }}.service
+
+[Install]
+WantedBy=timers.target

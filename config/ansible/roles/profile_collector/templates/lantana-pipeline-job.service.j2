@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+# Lantana pipeline job: {{ job_binary }}
+#
+# Replaces the prior cron+`logger -t` plumbing with a native systemd
+# oneshot service. stdout/stderr land in the journal under the unit
+# name; query with: journalctl -u {{ job_binary }}.service
+# Exit code is preserved (visible via `systemctl status {{ job_binary }}.service`),
+# which restores the visibility the cron `| logger` pipe had masked.
+
+[Unit]
+Description={{ job_description }}
+Documentation=https://github.com/lopes/lantana
+
+[Service]
+Type=oneshot
+User={{ system.users.collector.name }}
+Group={{ system.users.collector.name }}
+ExecStart=/opt/lantana/pipeline/venv/bin/{{ job_binary }}
+# Default Standard{Output,Error}=journal — explicit for clarity.
+StandardOutput=journal
+StandardError=journal

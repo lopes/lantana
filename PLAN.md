@@ -29,21 +29,28 @@ After the #4 deploy below, all four pipe stdout+stderr through `logger -t <tag>`
 
 ## Recent local changes (committed, awaiting deploy)
 
-### #4 — cron stdout routed to journal via `logger -t <tag>`
+### #4 — pipeline jobs migrated from cron to systemd timers
 
-`config/ansible/roles/profile_collector/tasks/main.yml` now appends `2>&1 | /usr/bin/logger -t <name>` to all four cron lines. This is the **light fix**, not a full systemd-timer migration — cron remains the scheduler. The systemd-timer option (one service unit per job, journal-native exit code capture) stays parked as the long-term refactor.
+Two Jinja templates in `config/ansible/roles/profile_collector/templates/` (`lantana-pipeline-job.service.j2`, `lantana-pipeline-job.timer.j2`) are looped over the four jobs (prune/enrich/transform/alert) to produce per-job `.service` + `.timer` units in `/etc/systemd/system/`. Schedule unchanged (00:15 / 01:00 / 04:00 / 05:00 UTC). The legacy `/etc/cron.d/lantana-pipeline` is removed by the same play.
+
+**Why this beats the `| logger -t` interim:** native journal capture (no pipe needed), exit code preserved (`systemctl status lantana-enrich.service` shows the real return), `Persistent=true` catches up after downtime (a missed day fires on next boot), and `journalctl -u lantana-enrich.service` is the idiomatic query.
 
 ```bash
 ansible-playbook -i inventories/op_alpha/inventory.yml playbooks/deploy_single.yml \
-  --tags collector --ask-vault-pass
+  --tags collector,pipeline --ask-vault-pass
 ```
 
-**Verify after deploy** (wait for next 01:00 UTC, then):
+**Verify after deploy:**
 ```bash
-journalctl -t lantana-enrich --since 'today' | grep run_summary
-```
+# Timers active, with next-fire timestamps
+ssh sn-01 'sudo systemctl list-timers | grep lantana'
 
-Exit-code caveat: the `| logger` pipe means cron sees logger's exit (always 0), not the runner's. Acceptable because the error contract is file-based (`enrichment_errors.json` + alerter), not exit-code-based.
+# Cron file gone
+ssh sn-01 'sudo cat /etc/cron.d/lantana-pipeline 2>&1 | head'   # → No such file
+
+# After next 01:00 UTC:
+ssh sn-01 "sudo journalctl -u lantana-enrich.service --since today | grep run_summary"
+```
 
 ### AbuseIPDB result trimmed to verdict-only
 

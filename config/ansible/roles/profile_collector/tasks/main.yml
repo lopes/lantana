@@ -164,35 +164,80 @@
   changed_when: false
   tags: [collector, pipeline]
 
-# --- PIPELINE CRON JOBS ---
-- name: "Add pipeline cron jobs"
+# --- PIPELINE SYSTEMD TIMERS ---
+# Each pipeline job is a systemd oneshot service triggered by a matching
+# timer. Earlier cron+`logger -t` setup is replaced: this restores native
+# journal capture, exit-code visibility (`systemctl status`), and
+# Persistent=true catch-up after downtime. Schedule is identical to the
+# prior cron file (00:15 / 01:00 / 04:00 / 05:00 UTC).
+- name: "Deploy pipeline systemd service units"
   become: true
-  ansible.builtin.copy:
-    dest: /etc/cron.d/lantana-pipeline
-    content: |
-      # Lantana data pipeline — managed by Ansible.
-      #
-      # All four jobs pipe combined stdout+stderr through `logger` so the
-      # runners' structlog output (run_summary, provider_done, enrichment_done,
-      # silver_skipped_empty_after_normalize, dataset_processing_failed, etc.)
-      # lands in the systemd journal under a per-job tag instead of being
-      # discarded by cron's no-MTA mail default. Query with:
-      #   journalctl -t lantana-enrich --since '2026-05-22 00:00'
-      # The pipe masks the runner's exit code, which is acceptable: the error
-      # contract is file-based (/var/lib/lantana/datalake/enrichment_errors.json),
-      # not exit-code-based, and the alerter at 05:00 surfaces any non-clean state.
-      #
-      # Prune: daily at 00:15 UTC (180-day retention + disk monitoring)
-      15 0 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-prune 2>&1 | /usr/bin/logger -t lantana-prune
-      # Enrich: daily at 01:00 UTC (yesterday's bronze -> silver).
-      # Can take hours when there are many IOCs — VirusTotal's 4/min throttle
-      # dominates wall-clock time. Transform runs at 04:00 to leave a 3h margin.
-      0 1 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-enrich 2>&1 | /usr/bin/logger -t lantana-enrich
-      # Transform: daily at 04:00 UTC (yesterday's silver -> gold)
-      0 4 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-transform 2>&1 | /usr/bin/logger -t lantana-transform
-      # Alert: daily at 05:00 UTC — scan errors log, post Discord on non-clean days
-      0 5 * * * {{ system.users.collector.name }} /opt/lantana/pipeline/venv/bin/lantana-alert 2>&1 | /usr/bin/logger -t lantana-alert
+  ansible.builtin.template:
+    src: lantana-pipeline-job.service.j2
+    dest: "/etc/systemd/system/{{ item.binary }}.service"
+    owner: root
+    group: root
     mode: "0644"
+  loop:
+    - { binary: "lantana-prune",
+        description: "Lantana datalake prune (180d retention + disk monitoring)" }
+    - { binary: "lantana-enrich",
+        description: "Lantana enrichment (bronze→silver)" }
+    - { binary: "lantana-transform",
+        description: "Lantana transform (silver→gold)" }
+    - { binary: "lantana-alert",
+        description: "Lantana daily alerter (Discord, non-clean days only)" }
+  vars:
+    job_binary: "{{ item.binary }}"
+    job_description: "{{ item.description }}"
+  tags: [collector, pipeline]
+
+- name: "Deploy pipeline systemd timer units"
+  become: true
+  ansible.builtin.template:
+    src: lantana-pipeline-job.timer.j2
+    dest: "/etc/systemd/system/{{ item.binary }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { binary: "lantana-prune",
+        description: "Lantana datalake prune (180d retention + disk monitoring)",
+        calendar: "*-*-* 00:15:00" }
+    - { binary: "lantana-enrich",
+        description: "Lantana enrichment (bronze→silver)",
+        calendar: "*-*-* 01:00:00" }
+    - { binary: "lantana-transform",
+        description: "Lantana transform (silver→gold)",
+        calendar: "*-*-* 04:00:00" }
+    - { binary: "lantana-alert",
+        description: "Lantana daily alerter (Discord, non-clean days only)",
+        calendar: "*-*-* 05:00:00" }
+  vars:
+    job_binary: "{{ item.binary }}"
+    job_description: "{{ item.description }}"
+    on_calendar: "{{ item.calendar }}"
+  tags: [collector, pipeline]
+
+- name: "Enable and start pipeline systemd timers"
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - lantana-prune
+    - lantana-enrich
+    - lantana-transform
+    - lantana-alert
+  tags: [collector, pipeline]
+
+- name: "Remove legacy pipeline cron file"
+  become: true
+  ansible.builtin.file:
+    path: /etc/cron.d/lantana-pipeline
+    state: absent
   tags: [collector, pipeline]
 
 - name: "Remove legacy shell prune script"
