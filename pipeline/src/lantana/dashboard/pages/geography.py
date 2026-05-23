@@ -37,7 +37,7 @@ def render(selected_date: date) -> None:
             hover_data=["geo_country", "geo_city", "risk_score", "total_events"],
             projection="natural earth",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     st.divider()
 
@@ -58,7 +58,7 @@ def render(selected_date: date) -> None:
             .rename({"geo_country": "Country"})
             .with_row_index("Rank", offset=1)
         )
-        st.dataframe(countries.to_pandas(), hide_index=True, use_container_width=True)
+        st.dataframe(countries.to_pandas(), hide_index=True, width="stretch")
         st.bar_chart(countries.to_pandas(), x="Country", y="Unique IPs")
 
     with city_col:
@@ -76,7 +76,7 @@ def render(selected_date: date) -> None:
             .rename({"geo_city": "City", "geo_country": "Country"})
             .with_row_index("Rank", offset=1)
         )
-        st.dataframe(cities.to_pandas(), hide_index=True, use_container_width=True)
+        st.dataframe(cities.to_pandas(), hide_index=True, width="stretch")
 
     st.divider()
 
@@ -94,4 +94,4 @@ def render(selected_date: date) -> None:
         .rename({"geo_asn": "ASN", "geo_isp": "ISP"})
         .with_row_index("Rank", offset=1)
     )
-    st.dataframe(asns.to_pandas(), hide_index=True, use_container_width=True)
+    st.dataframe(asns.to_pandas(), hide_index=True, width="stretch")

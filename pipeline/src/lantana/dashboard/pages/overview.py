@@ -24,7 +24,7 @@ def _render_top_n_table(entries: list[dict[str, Any]], label: str) -> None:
             }
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
 

@@ -25,7 +25,7 @@ def _render_top_n_table(entries: list[dict[str, Any]], label: str, empty_caption
             }
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -44,7 +44,7 @@ def _render_credential_pairs(entries: list[dict[str, Any]]) -> None:
             }
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -105,5 +105,5 @@ def render(selected_date: date) -> None:
     st.dataframe(
         display_df.to_pandas(),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )

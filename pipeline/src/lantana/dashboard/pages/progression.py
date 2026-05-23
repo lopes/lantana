@@ -85,7 +85,7 @@ def render(selected_date: date) -> None:
     st.dataframe(
         filtered.select(available_cols).to_pandas(),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
     # --- Multi-day progression ---
@@ -138,5 +138,5 @@ def render(selected_date: date) -> None:
             .sort("progression_velocity_days", descending=True)
             .to_pandas(),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )

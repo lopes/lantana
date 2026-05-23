@@ -54,5 +54,5 @@ def render(selected_date: date) -> None:
     st.dataframe(
         df.select(available_cols).to_pandas(),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
