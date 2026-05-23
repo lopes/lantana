@@ -52,7 +52,15 @@ def main() -> None:
     Binds to 127.0.0.1 — never expose externally (OPSEC Layer 3).
     """
     if not streamlit.runtime.exists():
-        os.execvp(
+        # When the dashboard runs as the homeless `nectar` system user (via
+        # `sudo -u nectar`), $HOME stays as the invoking user's home — which
+        # nectar can't traverse. Streamlit then crashes reading ~/.streamlit/
+        # secrets.toml. Point HOME and CWD at a directory nectar owns: prefer
+        # XDG_CACHE_HOME (the runbook already sets it to /tmp), else /tmp.
+        runtime_dir = os.environ.get("XDG_CACHE_HOME") or "/tmp"
+        os.chdir(runtime_dir)
+        env = {**os.environ, "HOME": runtime_dir}
+        os.execvpe(
             sys.executable,
             [
                 sys.executable,
@@ -64,6 +72,7 @@ def main() -> None:
                 "--server.port=8501",
                 "--server.headless=true",
             ],
+            env,
         )
 
     st.set_page_config(
