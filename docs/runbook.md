@@ -531,6 +531,21 @@ See `docs/validation.md` for the full day-by-day checklist.
 
 Run after the first full pipeline cycle (i.e. after 06:00 UTC on the day following the deploy). All commands are read-only.
 
+### Fast path — run the playbook
+
+The 10 mechanically-verifiable checks below are encoded in `tests/validate-pipeline-cycle.yml`. From your workstation:
+
+```bash
+cd config/ansible
+ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass
+# Optional: override target_date (defaults to yesterday UTC)
+#   -e target_date=2026-05-23
+```
+
+If every task is green, the pipeline cycled cleanly. If any assertion fails, the `fail_msg` names the failing invariant and points at the next diagnostic command — drop into the **Manual interpretation** section below to localise.
+
+The Discord daily report content (check 13) is the one thing the playbook can't verify — it's a manual visual check (sections present, A/V/S/G column populated, composite-risk decomposition rendered).
+
 Replace `<SN01>` with the sensor IP and `<PORT>` with the SSH admin port from `inventories/op_<name>/group_vars/all/main.yml`.
 
 ### What you're actually verifying

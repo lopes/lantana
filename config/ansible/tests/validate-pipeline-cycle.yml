@@ -1,0 +1,253 @@
+---
+# Post-first-cycle pipeline verification — the executable counterpart to
+# the manual walkthrough in docs/runbook.md §11.
+#
+# Run after the first full pipeline cycle has completed (i.e. after the
+# 06:00 UTC lantana-report.service has fired for at least one day). All
+# checks are read-only. Asserts:
+#
+#   * Each pipeline systemd unit's last run succeeded (Result=success).
+#   * lantana-enrich + lantana-transform emitted a run_summary line in
+#     the journal.
+#   * Silver parquet was written for each expected dataset.
+#   * Gold parquet exists for all seven expected tables.
+#   * .provider_state.json file is present (its contents may be empty
+#     {} on day 1 — that's fine).
+#   * enrichment_errors.json contains no API-key residue (Phase B
+#     sanitiser invariant).
+#   * Silver carries the per-provider <provider>_risk_score columns
+#     (Phase D.1 invariant).
+#   * Gold ip_reputation carries enrichment_risk_score +
+#     behavioral_risk_score + composite risk_score (Phase D.2), AND
+#     respects the GreyNoise RIOT invariant (Phase D.5: any IP with
+#     greynoise_riot=True MUST have greynoise_risk_score=0.0).
+#
+# Defaults `target_date` to yesterday (UTC) since the pipeline runs
+# against yesterday's bronze. Override via:
+#   ansible-playbook ... -e target_date=2026-05-23
+
+- name: "VALIDATION: Pipeline first-cycle verification"
+  hosts: single_nodes
+  gather_facts: false
+  vars:
+    target_date: "{{ lookup('pipe', 'date -u -d yesterday +%Y-%m-%d') }}"
+    pipeline_units:
+      - lantana-prune
+      - lantana-enrich
+      - lantana-transform
+      - lantana-alert
+      - lantana-report
+    expected_silver_datasets:
+      - cowrie
+      - suricata
+      - nftables
+    expected_gold_tables:
+      - behavioral_progression
+      - behavioral_progression_multiday
+      - campaign_clusters
+      - daily_summary
+      - detection_findings
+      - geographic_summary
+      - ip_reputation
+    expected_provider_score_cols:
+      - abuseipdb_risk_score
+      - virustotal_risk_score
+      - shodan_risk_score
+      - greynoise_risk_score
+    py_bin: /opt/lantana/pipeline/venv/bin/python3
+    datalake_root: /var/lib/lantana/datalake
+  tasks:
+    - name: "Validation context"
+      ansible.builtin.debug:
+        msg: "Verifying pipeline cycle for target_date={{ target_date }}"
+
+    # === 5. Each pipeline unit's last invocation succeeded ===
+    - name: "Read systemd Result for each pipeline unit"
+      become: true
+      ansible.builtin.command: "systemctl show {{ item }}.service --property=Result --value"
+      loop: "{{ pipeline_units }}"
+      register: unit_results
+      changed_when: false
+
+    - name: "Assert each pipeline unit last ran with Result=success"
+      ansible.builtin.assert:
+        that: "item.stdout.strip() == 'success'"
+        fail_msg: >-
+          {{ item.item }}.service last Result={{ item.stdout.strip() }}
+          (expected 'success'). Inspect with:
+          journalctl -u {{ item.item }}.service --since '{{ target_date }} 00:00 UTC'
+      loop: "{{ unit_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # === 6. run_summary structured events in journal ===
+    - name: "Count run_summary events for enrich + transform"
+      become: true
+      ansible.builtin.shell: |
+        set -o pipefail
+        journalctl -u {{ item }}.service --since "{{ target_date }} 00:00 UTC" --no-pager 2>/dev/null \
+          | grep -c run_summary || true
+      loop:
+        - lantana-enrich
+        - lantana-transform
+      register: run_summary_counts
+      changed_when: false
+
+    - name: "Assert run_summary present for enrich + transform"
+      ansible.builtin.assert:
+        that: "item.stdout | int >= 1"
+        fail_msg: >-
+          No run_summary event in {{ item.item }}.service journal since
+          {{ target_date }} — unit ran but exited before completing.
+          Check journal for dataset_processing_failed.
+      loop: "{{ run_summary_counts.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # === 7. Silver parquet present for each active dataset ===
+    - name: "Stat silver partition per dataset"
+      become: true
+      ansible.builtin.find:
+        paths: "{{ datalake_root }}/silver/dataset={{ item }}/date={{ target_date }}"
+        patterns: "*.parquet"
+        recurse: true
+      loop: "{{ expected_silver_datasets }}"
+      register: silver_find
+
+    - name: "Assert silver parquet exists for each dataset"
+      ansible.builtin.assert:
+        that: "item.matched > 0"
+        fail_msg: "No silver parquet for dataset={{ item.item }} date={{ target_date }}."
+      loop: "{{ silver_find.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # === 8. Gold parquet present for all 7 expected tables ===
+    - name: "Stat gold partition per table"
+      become: true
+      ansible.builtin.find:
+        paths: "{{ datalake_root }}/gold/{{ item }}/date={{ target_date }}"
+        patterns: "*.parquet"
+      loop: "{{ expected_gold_tables }}"
+      register: gold_find
+
+    - name: "Assert gold parquet exists for each table"
+      ansible.builtin.assert:
+        that: "item.matched > 0"
+        fail_msg: "No gold parquet for table={{ item.item }} date={{ target_date }}."
+      loop: "{{ gold_find.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # === 9. Provider state file present ===
+    - name: "Stat .provider_state.json"
+      become: true
+      ansible.builtin.stat:
+        path: "{{ datalake_root }}/.provider_state.json"
+      register: provider_state_stat
+
+    - name: "Assert .provider_state.json was created"
+      ansible.builtin.assert:
+        that: "provider_state_stat.stat.exists"
+        fail_msg: "{{ datalake_root }}/.provider_state.json missing — Phase C cross-run state isn't being persisted."
+
+    # === 10. enrichment_errors.json has no API-key residue ===
+    - name: "Scan enrichment_errors.json for API-key residue"
+      become: true
+      ansible.builtin.shell: |
+        if [ -f {{ datalake_root }}/enrichment_errors.json ]; then
+          grep -E 'key=[A-Za-z0-9]{20,}' {{ datalake_root }}/enrichment_errors.json | wc -l
+        else
+          echo 0
+        fi
+      register: key_leak_count
+      changed_when: false
+
+    - name: "Assert no API-key leak in enrichment_errors.json"
+      ansible.builtin.assert:
+        that: "key_leak_count.stdout | int == 0"
+        fail_msg: >-
+          Found {{ key_leak_count.stdout }} potential API-key leak(s) in
+          enrichment_errors.json — Phase B sanitiser is broken. Run
+          tests/test_enrichment/test_runner.py::TestSanitizeErrorMessage
+          locally to bisect.
+
+    # === 11. Silver carries per-provider risk_score columns ===
+    - name: "Inspect cowrie silver schema for per-provider risk scores"
+      become: true
+      become_user: nectar
+      ansible.builtin.command:
+        argv:
+          - "{{ py_bin }}"
+          - "-c"
+          - |
+            import polars as pl, glob, json
+            parquets = sorted(glob.glob("{{ datalake_root }}/silver/dataset=cowrie/date={{ target_date }}/server=*/events.parquet"))
+            if not parquets:
+                print(json.dumps({"error": "no cowrie silver parquet for target_date"}))
+                raise SystemExit(0)
+            df = pl.read_parquet(parquets[-1])
+            present = {col: (col in df.columns) for col in {{ expected_provider_score_cols | to_json }}}
+            print(json.dumps(present))
+      register: silver_score_cols
+      changed_when: false
+
+    - name: "Assert all four <provider>_risk_score columns present in cowrie silver"
+      ansible.builtin.assert:
+        that: "(silver_score_cols.stdout | from_json).values() | reject() | list | length == 0"
+        fail_msg: >-
+          Silver missing one or more per-provider risk_score columns:
+          {{ silver_score_cols.stdout }}. Phase D.1 helpers may not be flowing
+          through _build_lookup/_merge_lookup.
+
+    # === 12. Gold ip_reputation: composite + RIOT invariant ===
+    - name: "Inspect gold ip_reputation for composite + RIOT invariant"
+      become: true
+      become_user: nectar
+      ansible.builtin.command:
+        argv:
+          - "{{ py_bin }}"
+          - "-c"
+          - |
+            import polars as pl, glob, json
+            parquets = sorted(glob.glob("{{ datalake_root }}/gold/ip_reputation/date={{ target_date }}/summary.parquet"))
+            if not parquets:
+                print(json.dumps({"error": "no ip_reputation gold for target_date"}))
+                raise SystemExit(0)
+            df = pl.read_parquet(parquets[-1])
+            required_cols = ["enrichment_risk_score", "behavioral_risk_score", "risk_score", "greynoise_riot", "greynoise_risk_score"]
+            missing = [c for c in required_cols if c not in df.columns]
+            if missing:
+                print(json.dumps({"error": f"missing columns: {missing}"}))
+                raise SystemExit(0)
+            # RIOT invariant — any greynoise_riot=True MUST have greynoise_risk_score=0.0
+            violators = df.filter(
+                pl.col("greynoise_riot") & (pl.col("greynoise_risk_score") != 0.0)
+            ).select("src_endpoint_ip").to_series().to_list()
+            print(json.dumps({
+                "rows": df.height,
+                "riot_present": int(df.get_column("greynoise_riot").fill_null(False).any()),
+                "riot_violators": violators,
+            }))
+      register: gold_invariants
+      changed_when: false
+
+    - name: "Assert gold has composite + sub-scores and RIOT invariant holds"
+      ansible.builtin.assert:
+        that:
+          - "'error' not in (gold_invariants.stdout | from_json)"
+          - "(gold_invariants.stdout | from_json).riot_violators | length == 0"
+        fail_msg: >-
+          Gold ip_reputation invariant violated: {{ gold_invariants.stdout }}.
+          If 'error' is set, Phase D.2 columns missing. If 'riot_violators'
+          is non-empty, the GreyNoise RIOT short-circuit failed for those IPs —
+          run pytest tests/test_integration_production_shape.py::test_riot_signal_survives_bronze_to_gold
+          locally to bisect.
+
+    - name: "Validation summary"
+      ansible.builtin.debug:
+        msg: |
+          ✅ All 10 mechanical checks passed for target_date={{ target_date }}.
+          Manual visual check (not automatable): confirm Discord daily report
+          arrived at 06:00 UTC with the A/V/S/G per-provider column and
+          composite risk decomposition in Top Attackers.
