@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from datetime import date, timedelta
 
 import streamlit as st
+import streamlit.runtime
 
 from lantana.common.datalake import GOLD_ROOT, list_gold_dates
 from lantana.dashboard.pages import (
@@ -42,7 +45,27 @@ def _setup_sidebar() -> date:
 
 
 def main() -> None:
-    """Launch the Lantana Streamlit dashboard."""
+    """Launch the Lantana Streamlit dashboard.
+
+    When invoked as a bare Python entry point (e.g. `lantana-dashboard`), re-exec
+    via `streamlit run` so the Streamlit runtime and HTTP server are initialised.
+    Binds to 127.0.0.1 — never expose externally (OPSEC Layer 3).
+    """
+    if not streamlit.runtime.exists():
+        os.execvp(
+            sys.executable,
+            [
+                sys.executable,
+                "-m",
+                "streamlit",
+                "run",
+                __file__,
+                "--server.address=127.0.0.1",
+                "--server.port=8501",
+                "--server.headless=true",
+            ],
+        )
+
     st.set_page_config(
         page_title="Lantana Intelligence Console",
         page_icon=":herb:",
