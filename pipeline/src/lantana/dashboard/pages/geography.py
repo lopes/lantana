@@ -20,9 +20,13 @@ def render(selected_date: date) -> None:
         st.info("No data available for this date.")
         return
 
-    # World map
+    # World map — one marker per attacker IP, sized by log10(events) so a
+    # single chatty IP doesn't drown out the rest. Country borders + dark
+    # theme colors match the Streamlit dark theme.
     geo_df = df.filter(
         pl.col("geo_latitude").is_not_null() & pl.col("geo_longitude").is_not_null()
+    ).with_columns(
+        (pl.col("total_events").cast(pl.Float64) + 1).log10().alias("_marker_scale"),
     )
 
     if not geo_df.is_empty():
@@ -30,12 +34,45 @@ def render(selected_date: date) -> None:
             geo_df.to_pandas(),
             lat="geo_latitude",
             lon="geo_longitude",
-            size="total_events",
+            size="_marker_scale",
+            size_max=22,
             color="risk_score",
-            color_continuous_scale="YlOrRd",
+            color_continuous_scale="Plasma",
+            range_color=(0, 100),
             hover_name="src_endpoint_ip",
-            hover_data=["geo_country", "geo_city", "risk_score", "total_events"],
+            hover_data={
+                "geo_country": True,
+                "geo_city": True,
+                "risk_score": ":.0f",
+                "total_events": ":,",
+                "_marker_scale": False,
+                "geo_latitude": False,
+                "geo_longitude": False,
+            },
             projection="natural earth",
+        )
+        fig.update_geos(
+            showcountries=True,
+            countrycolor="#3D4044",
+            showland=True,
+            landcolor="#262730",
+            showocean=True,
+            oceancolor="#0E1117",
+            showcoastlines=True,
+            coastlinecolor="#3D4044",
+            showframe=False,
+            bgcolor="rgba(0,0,0,0)",
+        )
+        fig.update_traces(marker={"sizemin": 4, "line": {"width": 0.5, "color": "#0E1117"}})
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin={"l": 0, "r": 0, "t": 10, "b": 0},
+            height=500,
+            coloraxis_colorbar={
+                "title": {"text": "Risk", "font": {"color": "#aaa"}},
+                "tickfont": {"color": "#aaa"},
+            },
         )
         st.plotly_chart(fig, width="stretch")
 
