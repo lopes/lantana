@@ -353,6 +353,23 @@ class TestDailySummary:
         # Counts must be positive integers, not strings.
         assert all(isinstance(e["count"], int) and e["count"] > 0 for e in row["top_usernames"])
 
+    def test_top_credential_pairs(self, silver_df: pl.DataFrame) -> None:
+        """Credential pairs surface as `[{username, password, count}, ...]`.
+
+        The silver fixture has attacker-1 try (root, admin) twice and
+        (root, password) once; attacker-2 hammers many pairs but reuses
+        (root, admin) too. (root, admin) should rank first.
+        """
+        result = compute_daily_summary(silver_df)
+        pairs = result.row(0, named=True)["top_credential_pairs"]
+        assert isinstance(pairs, list)
+        assert len(pairs) > 0
+        first = pairs[0]
+        assert set(first.keys()) == {"username", "password", "count"}
+        assert first["username"] == "root"
+        assert first["password"] == "admin"
+        assert first["count"] >= 2  # two distinct events with this pair
+
     def test_top_countries_ranked_by_unique_ips(self) -> None:
         """Country ranking matches `geographic_summary` (unique-IP based).
 

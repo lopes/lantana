@@ -110,6 +110,36 @@ def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[dict[str, str | i
     )
 
 
+def _top_n_credential_pairs(
+    df: pl.DataFrame, n: int = TOP_N
+) -> list[dict[str, str | int]]:
+    """Top-N username/password pairs, ranked by event count.
+
+    Returns `[{"username": str, "password": str, "count": int}, ...]`, stored
+    as `list[struct[username, password, count]]`. Useful on the Credentials
+    page to surface which exact pairs attackers reuse most — a different
+    signal from "top usernames" or "top passwords" alone (which can be
+    misleading when the most-tried user and most-tried pass never appear
+    together).
+    """
+    if "user_name" not in df.columns or "unmapped_password" not in df.columns:
+        return []
+    return (
+        df.filter(
+            pl.col("user_name").is_not_null()
+            & pl.col("unmapped_password").is_not_null()
+            & (pl.col("user_name") != "")
+            & (pl.col("unmapped_password") != "")
+        )
+        .group_by("user_name", "unmapped_password")
+        .len()
+        .sort("len", descending=True)
+        .head(n)
+        .rename({"user_name": "username", "unmapped_password": "password", "len": "count"})
+        .to_dicts()
+    )
+
+
 def _top_n_countries_by_unique_ips(
     df: pl.DataFrame, n: int = TOP_N
 ) -> list[dict[str, str | int]]:
@@ -162,6 +192,7 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
         {
             "top_usernames": [_top_n(silver, "user_name")],
             "top_passwords": [_top_n(silver, "unmapped_password")],
+            "top_credential_pairs": [_top_n_credential_pairs(silver)],
             "top_commands": [_top_n(silver, "actor_process_cmd_line")],
             "top_source_countries": [_top_n_countries_by_unique_ips(silver)],
             "top_source_ips": [_top_n(silver, "src_endpoint_ip")],

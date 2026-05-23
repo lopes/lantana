@@ -29,6 +29,25 @@ def _render_top_n_table(entries: list[dict[str, Any]], label: str, empty_caption
     )
 
 
+def _render_credential_pairs(entries: list[dict[str, Any]]) -> None:
+    """Render a Rank | Username | Password | Count table from the credential pairs column."""
+    if not entries:
+        st.caption("No credential pair data.")
+        return
+    st.dataframe(
+        pl.DataFrame(
+            {
+                "Rank": list(range(1, len(entries) + 1)),
+                "Username": [e["username"] for e in entries],
+                "Password": [e["password"] for e in entries],
+                "Count": [e["count"] for e in entries],
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
 def render(selected_date: date) -> None:
     """Render the credentials page for the selected date."""
     st.header(f"Credentials — {selected_date.isoformat()}")
@@ -40,7 +59,7 @@ def render(selected_date: date) -> None:
     if not summary.is_empty():
         row = summary.row(0, named=True)
 
-        user_col, pass_col = st.columns(2)
+        user_col, pass_col, pair_col = st.columns(3)
         with user_col:
             st.subheader("Top Usernames")
             _render_top_n_table(row.get("top_usernames", []), "Username", "No username data.")
@@ -48,6 +67,10 @@ def render(selected_date: date) -> None:
         with pass_col:
             st.subheader("Top Passwords")
             _render_top_n_table(row.get("top_passwords", []), "Password", "No password data.")
+
+        with pair_col:
+            st.subheader("Top Credential Pairs")
+            _render_credential_pairs(row.get("top_credential_pairs", []))
 
         st.divider()
 
