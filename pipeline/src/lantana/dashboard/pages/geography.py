@@ -52,8 +52,12 @@ def render(selected_date: date) -> None:
             projection="natural earth",
         )
         fig.update_geos(
+            resolution=50,
             showcountries=True,
             countrycolor="#3D4044",
+            showsubunits=True,
+            subunitcolor="#2F3236",
+            subunitwidth=0.3,
             showland=True,
             landcolor="#262730",
             showocean=True,
