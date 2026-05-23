@@ -56,6 +56,7 @@ def render(selected_date: date) -> None:
             .sort("Unique IPs", descending=True)
             .head(10)
             .rename({"geo_country": "Country"})
+            .with_row_index("Rank", offset=1)
         )
         st.dataframe(countries.to_pandas(), hide_index=True, use_container_width=True)
         st.bar_chart(countries.to_pandas(), x="Country", y="Unique IPs")
@@ -73,6 +74,7 @@ def render(selected_date: date) -> None:
             .sort("Unique IPs", descending=True)
             .head(10)
             .rename({"geo_city": "City", "geo_country": "Country"})
+            .with_row_index("Rank", offset=1)
         )
         st.dataframe(cities.to_pandas(), hide_index=True, use_container_width=True)
 
@@ -90,5 +92,6 @@ def render(selected_date: date) -> None:
         .sort("Unique IPs", descending=True)
         .head(10)
         .rename({"geo_asn": "ASN", "geo_isp": "ISP"})
+        .with_row_index("Rank", offset=1)
     )
     st.dataframe(asns.to_pandas(), hide_index=True, use_container_width=True)

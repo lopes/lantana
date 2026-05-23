@@ -239,14 +239,14 @@ def generate_daily_brief(
         download_urls = row.get("top_download_urls", [])
         if download_urls:
             lines.append("**Top URLs:**")
-            for url in download_urls[:5]:
-                lines.append(f"- `{url}`")
+            for entry in download_urls[:5]:
+                lines.append(f"- `{entry['value']}` ({entry['count']:,})")
             lines.append("")
         download_hashes = row.get("top_download_hashes", [])
         if download_hashes:
             lines.append("**Top Hashes (SHA256):**")
-            for h in download_hashes[:5]:
-                lines.append(f"- `{h}`")
+            for entry in download_hashes[:5]:
+                lines.append(f"- `{entry['value']}` ({entry['count']:,})")
             lines.append("")
 
     # Top credentials
@@ -255,17 +255,19 @@ def generate_daily_brief(
     if usernames or passwords:
         lines.append("## Top Credentials\n")
         if usernames:
-            lines.append(f"**Usernames:** {', '.join(usernames[:5])}")
+            entries = ", ".join(f"{u['value']} ({u['count']:,})" for u in usernames[:5])
+            lines.append(f"**Usernames:** {entries}")
         if passwords:
-            lines.append(f"**Passwords:** {', '.join(passwords[:5])}")
+            entries = ", ".join(f"{p['value']} ({p['count']:,})" for p in passwords[:5])
+            lines.append(f"**Passwords:** {entries}")
         lines.append("")
 
     # Top commands
     commands = row.get("top_commands", [])
     if commands:
         lines.append("## Top Commands\n")
-        for cmd in commands[:5]:
-            lines.append(f"- `{cmd}`")
+        for entry in commands[:5]:
+            lines.append(f"- `{entry['value']}` ({entry['count']:,})")
         lines.append("")
 
     # Footer

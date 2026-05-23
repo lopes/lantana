@@ -29,11 +29,29 @@ def _make_summary() -> pl.DataFrame:
         "commands_executed": [7],
         "findings_detected": [5],
         "network_events": [43],
-        "top_usernames": [["root", "admin", "test"]],
-        "top_passwords": [["admin", "123456", "password"]],
-        "top_commands": [["uname -a", "cat /etc/passwd"]],
-        "top_source_countries": [["CN", "RU", "US"]],
-        "top_source_ips": [["203.0.113.50", "198.51.100.22"]],
+        "top_usernames": [[
+            {"value": "root", "count": 50},
+            {"value": "admin", "count": 30},
+            {"value": "test", "count": 10},
+        ]],
+        "top_passwords": [[
+            {"value": "admin", "count": 40},
+            {"value": "123456", "count": 25},
+            {"value": "password", "count": 15},
+        ]],
+        "top_commands": [[
+            {"value": "uname -a", "count": 8},
+            {"value": "cat /etc/passwd", "count": 5},
+        ]],
+        "top_source_countries": [[
+            {"value": "CN", "count": 20},
+            {"value": "RU", "count": 10},
+            {"value": "US", "count": 5},
+        ]],
+        "top_source_ips": [[
+            {"value": "203.0.113.50", "count": 50},
+            {"value": "198.51.100.22", "count": 80},
+        ]],
     })
 
 

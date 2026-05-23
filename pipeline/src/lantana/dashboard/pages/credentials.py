@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 from datetime import date  # noqa: TC003 — runtime parameter type
+from typing import Any
 
 import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
+
+
+def _render_top_n_table(entries: list[dict[str, Any]], label: str, empty_caption: str) -> None:
+    """Render a Rank | <label> | Count dataframe from a list[struct] top-N column."""
+    if not entries:
+        st.caption(empty_caption)
+        return
+    st.dataframe(
+        pl.DataFrame(
+            {
+                "Rank": list(range(1, len(entries) + 1)),
+                label: [e["value"] for e in entries],
+                "Count": [e["count"] for e in entries],
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
 
 
 def render(selected_date: date) -> None:
@@ -24,31 +43,11 @@ def render(selected_date: date) -> None:
         user_col, pass_col = st.columns(2)
         with user_col:
             st.subheader("Top Usernames")
-            usernames = row.get("top_usernames", [])
-            if usernames:
-                user_df = pl.DataFrame(
-                    {
-                        "Username": usernames,
-                        "Rank": list(range(1, len(usernames) + 1)),
-                    }
-                )
-                st.dataframe(user_df.to_pandas(), hide_index=True)
-            else:
-                st.caption("No username data.")
+            _render_top_n_table(row.get("top_usernames", []), "Username", "No username data.")
 
         with pass_col:
             st.subheader("Top Passwords")
-            passwords = row.get("top_passwords", [])
-            if passwords:
-                pass_df = pl.DataFrame(
-                    {
-                        "Password": passwords,
-                        "Rank": list(range(1, len(passwords) + 1)),
-                    }
-                )
-                st.dataframe(pass_df.to_pandas(), hide_index=True)
-            else:
-                st.caption("No password data.")
+            _render_top_n_table(row.get("top_passwords", []), "Password", "No password data.")
 
         st.divider()
 

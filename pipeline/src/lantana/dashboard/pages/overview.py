@@ -3,11 +3,29 @@
 from __future__ import annotations
 
 from datetime import date  # noqa: TC003 — runtime parameter type
+from typing import Any
 
 import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
+
+
+def _render_top_n_table(entries: list[dict[str, Any]], label: str) -> None:
+    """Render a Rank | <label> | Count dataframe from a list[struct] top-N column."""
+    if not entries:
+        return
+    st.dataframe(
+        pl.DataFrame(
+            {
+                "Rank": list(range(1, len(entries) + 1)),
+                label: [e["value"] for e in entries],
+                "Count": [e["count"] for e in entries],
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
 
 
 def render(selected_date: date) -> None:
@@ -60,44 +78,24 @@ def render(selected_date: date) -> None:
 
     st.divider()
 
-    # Top-N charts
+    # Top-N tables: Rank | <Item> | Count
     user_col, pass_col = st.columns(2)
     with user_col:
         st.subheader("Top Usernames")
-        usernames = row.get("top_usernames", [])
-        if usernames:
-            st.dataframe(
-                pl.DataFrame({"Username": usernames, "Rank": range(1, len(usernames) + 1)}),
-                hide_index=True,
-            )
+        _render_top_n_table(row.get("top_usernames", []), "Username")
 
     with pass_col:
         st.subheader("Top Passwords")
-        passwords = row.get("top_passwords", [])
-        if passwords:
-            st.dataframe(
-                pl.DataFrame({"Password": passwords, "Rank": range(1, len(passwords) + 1)}),
-                hide_index=True,
-            )
+        _render_top_n_table(row.get("top_passwords", []), "Password")
 
     cmd_col, country_col = st.columns(2)
     with cmd_col:
         st.subheader("Top Commands")
-        commands = row.get("top_commands", [])
-        if commands:
-            st.dataframe(
-                pl.DataFrame({"Command": commands, "Rank": range(1, len(commands) + 1)}),
-                hide_index=True,
-            )
+        _render_top_n_table(row.get("top_commands", []), "Command")
 
     with country_col:
         st.subheader("Top Source Countries")
-        countries = row.get("top_source_countries", [])
-        if countries:
-            st.dataframe(
-                pl.DataFrame({"Country": countries, "Rank": range(1, len(countries) + 1)}),
-                hide_index=True,
-            )
+        _render_top_n_table(row.get("top_source_countries", []), "Country")
 
     st.divider()
 

@@ -229,7 +229,8 @@ def _make_malware_indicators(
         return [], []
 
     row = summary.row(0, named=True)
-    hashes: list[str] = row.get("top_download_hashes", []) or []
+    hash_entries = row.get("top_download_hashes", []) or []
+    hashes: list[str] = [e["value"] for e in hash_entries]
     if not hashes:
         return [], []
 

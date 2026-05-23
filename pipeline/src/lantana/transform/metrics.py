@@ -87,8 +87,14 @@ def _optional_first(df: pl.DataFrame, col: str, alias: str) -> pl.Expr:
     return pl.lit(None).alias(alias)
 
 
-def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[str]:
-    """Extract top-N most frequent non-null values from a column, ranked by event count."""
+def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[dict[str, str | int]]:
+    """Top-N most frequent non-null values + their event counts, ranked by count.
+
+    Returns `[{"value": str, "count": int}, ...]`, stored in gold as
+    `list[struct[value, count]]`. Dashboard pages render this as
+    `Rank | Value | Count`; the Discord report shows `value (count)`;
+    STIX export extracts just the `value` field.
+    """
     if col not in df.columns:
         return []
     return (
@@ -99,30 +105,29 @@ def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[str]:
         .len()
         .sort("len", descending=True)
         .head(n)
-        .get_column(col)
-        .to_list()
+        .rename({col: "value", "len": "count"})
+        .to_dicts()
     )
 
 
-def _top_n_countries_by_unique_ips(df: pl.DataFrame, n: int = TOP_N) -> list[str]:
-    """Top-N source countries ranked by unique attacker IPs.
+def _top_n_countries_by_unique_ips(
+    df: pl.DataFrame, n: int = TOP_N
+) -> list[dict[str, str | int]]:
+    """Top-N source countries + unique-IP counts.
 
-    Overview and Geography pages disagreed on the #1 country because Overview
-    ranked by raw event count (one chatty IP from CH dominated) while Geography
-    ranked by unique-IP count (US wins on volume of distinct attackers). For
-    honeypot intel the unique-IP metric is the right one — a single noisy
-    scanner shouldn't outrank a swarm of attackers from elsewhere.
+    Ranked by unique attacker IPs (not event count) to match `geographic_summary`.
+    A single chatty IP from CH should not outrank a swarm of distinct US scanners.
     """
     if "geo.country_code" not in df.columns or "src_endpoint_ip" not in df.columns:
         return []
     return (
         df.filter(pl.col("geo.country_code").is_not_null())
         .group_by("geo.country_code")
-        .agg(pl.col("src_endpoint_ip").n_unique().alias("unique_ips"))
-        .sort("unique_ips", descending=True)
+        .agg(pl.col("src_endpoint_ip").n_unique().alias("count"))
+        .sort("count", descending=True)
         .head(n)
-        .get_column("geo.country_code")
-        .to_list()
+        .rename({"geo.country_code": "value"})
+        .to_dicts()
     )
 
 

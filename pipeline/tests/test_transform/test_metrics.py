@@ -339,13 +339,19 @@ class TestDailySummary:
         assert row["network_events"] == 5  # 2 (a1) + 3 (a3)
 
     def test_top_n_lists(self, silver_df: pl.DataFrame) -> None:
-        """Top-N lists populated from silver data."""
+        """Top-N lists populated from silver data, each entry shaped {value, count}."""
         result = compute_daily_summary(silver_df)
         row = result.row(0, named=True)
-        assert "root" in row["top_usernames"]
-        assert "admin" in row["top_passwords"]
-        assert "uname -a" in row["top_commands"]
-        assert "CN" in row["top_source_countries"]
+        usernames = [e["value"] for e in row["top_usernames"]]
+        passwords = [e["value"] for e in row["top_passwords"]]
+        commands = [e["value"] for e in row["top_commands"]]
+        countries = [e["value"] for e in row["top_source_countries"]]
+        assert "root" in usernames
+        assert "admin" in passwords
+        assert "uname -a" in commands
+        assert "CN" in countries
+        # Counts must be positive integers, not strings.
+        assert all(isinstance(e["count"], int) and e["count"] > 0 for e in row["top_usernames"])
 
     def test_top_countries_ranked_by_unique_ips(self) -> None:
         """Country ranking matches `geographic_summary` (unique-IP based).
@@ -391,7 +397,13 @@ class TestDailySummary:
         silver = pl.DataFrame(rows)
         result = compute_daily_summary(silver)
         countries = result.row(0, named=True)["top_source_countries"]
-        assert countries[0] == "US", f"expected US first (5 unique IPs), got {countries}"
+        assert countries[0]["value"] == "US", (
+            f"expected US first (5 unique IPs), got {countries}"
+        )
+        assert countries[0]["count"] == 5  # 5 unique US IPs
+        # CH has 1 unique IP regardless of its 100 events
+        ch_entry = next(e for e in countries if e["value"] == "CH")
+        assert ch_entry["count"] == 1
 
     def test_empty_dataframe(self) -> None:
         """Empty silver returns empty summary."""
