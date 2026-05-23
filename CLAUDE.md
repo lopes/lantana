@@ -186,6 +186,10 @@ End-to-end pipeline runs on a live operation consume real provider budget and re
 - **Use `--date YYYY-MM-DD` for targeted re-runs** rather than waiting for the 01:00 UTC cron. `write_silver_partition` overwrites the date partition, so a re-run cleanly replaces a partial earlier write.
 - **A failed live run is expensive.** It may have burned the day's / month's quota for the providers it reached, blocking the next attempt for 24h+ on AbuseIPDB, until UTC midnight on VT, until the monthly reset on Shodan, and 7 days on GreyNoise.
 - **Mid-run hotfix protocol.** If a defect surfaces during an active live run, do not kill the run and do not redeploy mid-flight. Silver write is the last phase — killing means no silver. Let it finish, deploy the fix, then targeted re-run with `--date` after the relevant rate-limit windows reset.
+- **Two validation playbooks codify the post-deploy invariants** so verification is mechanical, not eyeball-driven:
+  - `config/ansible/tests/validate-single-node.yml` — runs immediately after `deploy_single.yml`. Asserts users, network, firewall, log directories, and (post-2026-05-22) the five `lantana-*.timer` units installed + enabled.
+  - `config/ansible/tests/validate-pipeline-cycle.yml` — runs after the first 06:00 UTC cycle. Asserts each pipeline unit's last `Result=success`, `run_summary` in journal, silver+gold parquet presence, `.provider_state.json` exists, no API-key residue in `enrichment_errors.json`, per-provider risk_score columns in silver, gold composite + sub-scores + the GreyNoise RIOT invariant. Defaults `target_date` to yesterday UTC; override with `-e target_date=...`.
+  - Visual checks (Discord report rendering, dashboard pages, STIX bundle) stay manual — see `docs/runbook.md` §11.
 
 ## Vector deployment discipline
 

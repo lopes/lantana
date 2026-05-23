@@ -2,6 +2,27 @@
 
 A day-by-day checklist for validating a fresh Lantana deployment. Covers infrastructure, honeypots, telemetry pipeline, enrichment, reports, and dashboard. Every file, directory, and service is listed explicitly.
 
+## Executable validation (the fast path)
+
+Most of the checks below are encoded in two Ansible playbooks. Run those first; drop into the manual day-by-day walkthrough only when you need to debug a failure or want to learn the architecture.
+
+| When | Playbook | What it checks |
+|---|---|---|
+| Immediately after `deploy_single.yml` | `tests/validate-single-node.yml` | Users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, systemd timers for the five pipeline jobs (enabled and present), GeoIP cron entry |
+| After the first 06:00 UTC cycle (day 2+) | `tests/validate-pipeline-cycle.yml` | Each pipeline unit's last `Result=success`, `run_summary` events in journal, silver written for cowrie/suricata/nftables, all 7 gold tables present, `.provider_state.json` exists, no API-key leak in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + GreyNoise RIOT invariant |
+
+Run them via:
+
+```bash
+cd config/ansible
+ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml --ask-vault-pass
+ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass
+# Override target_date if not yesterday-UTC:
+#   -e target_date=2026-05-23
+```
+
+If both pass, the deployment is healthy. The visual checks (Discord report rendering, dashboard pages, STIX bundle generation — §7.2 / §7.3) are the one thing the playbooks can't automate; walk those manually after a green automated run.
+
 ---
 
 ## Day 0: Deploy and Verify Infrastructure
@@ -385,10 +406,21 @@ Check your Discord channel for:
 
 ### 7.2 STIX bundles
 
-Generate a bundle manually:
+**Primary path — via the dashboard.** STIX bundles aren't stored server-side. They're generated on-demand from gold tables and streamed to the operator's browser. Open the dashboard (§7.3), navigate to the **STIX Export** page, pick the target date in the sidebar, click **Generate STIX 2.1 Bundle**, then **Download STIX Bundle (.json)** — the file saves to your workstation as `lantana-stix-<YYYY-MM-DD>.json`.
+
+Inspect the downloaded bundle on your workstation:
 
 ```bash
-/opt/lantana/pipeline/venv/bin/python3 -c "
+jq '.objects[] | {type, id, labels}' lantana-stix-2026-05-23.json | head -40
+# OPSEC sanity check — no internal IPs in any indicator pattern
+jq '.objects[] | select(.type=="indicator") | .pattern' lantana-stix-2026-05-23.json \
+  | grep -E '10\.|192\.168\.|fd99:' || echo "OK: no internal IPs"
+```
+
+**CLI path (for automation / debugging).** Generate a bundle from a sensor-side Python shell:
+
+```bash
+sudo -u nectar /opt/lantana/pipeline/venv/bin/python3 -c "
 import json
 from datetime import date, timedelta
 from lantana.common.config import load_reporting
@@ -403,7 +435,7 @@ summary = read_gold_table('daily_summary', yesterday)
 multiday = read_gold_table('behavioral_progression_multiday', yesterday)
 bundle = generate_bundle(yesterday, reporting, reputation, progression, clusters, summary=summary, multiday_progression=multiday)
 print(json.dumps(json.loads(bundle.serialize()), indent=2)[:2000])
-print(f'...')
+print('...')
 print(f'Total STIX objects: {len(bundle.objects)}')
 "
 ```
@@ -422,15 +454,24 @@ print(f'Total STIX objects: {len(bundle.objects)}')
 
 ### 7.3 Streamlit dashboard
 
-Launch the dashboard:
+The dashboard is the operator's personal console — **never exposed externally** (OPSEC Layer 3). It binds to `localhost:8501` on the sensor. Reach it from your workstation via SSH local-port-forwarding.
+
+**Workstation terminal:** open an SSH tunnel and leave it running.
 
 ```bash
-/opt/lantana/pipeline/venv/bin/lantana-dashboard
-# Or from local dev:
+# Replace <PORT> + <SN01> with the values from inventories/op_<name>/group_vars/all/main.yml.
+ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>
+```
+
+**Sensor (inside that SSH session, or a separate one):** launch streamlit.
+
+```bash
+sudo -u nectar XDG_CACHE_HOME=/tmp /opt/lantana/pipeline/venv/bin/lantana-dashboard
+# Or for local dev:
 cd pipeline && uv run python ../scripts/run-dashboard-local.py
 ```
 
-Open <http://localhost:8501> and verify each page:
+Then on your workstation, open <http://localhost:8501> and verify each page:
 
 **Overview page:**
 

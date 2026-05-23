@@ -697,6 +697,44 @@ If any check fails, **don't roll back** — diagnose in place. Most likely failu
 - **(12) RIOT invariant violated** — A failure here means a refactor broke the GreyNoise short-circuit. Run `uv run pytest tests/test_integration_production_shape.py::test_riot_signal_survives_bronze_to_gold` locally to bisect.
 - **(13) no report** — Either `secrets.discord_webhook` is unset (logs `no_discord_webhook`), or the webhook itself is rate-limited / mis-configured. `systemctl status lantana-report.service` and its journal will say.
 
+### Inspect the dashboard + export STIX
+
+The Streamlit dashboard is the operator's personal console — **never exposed externally** (OPSEC Layer 3). It binds to `localhost:8501` on the sensor. Reach it from your workstation via SSH local-port-forwarding:
+
+```bash
+# From your workstation: open an SSH tunnel and leave it running in a terminal.
+ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>
+
+# On the sensor (inside the SSH session above OR in a separate one):
+sudo -u nectar XDG_CACHE_HOME=/tmp /opt/lantana/pipeline/venv/bin/lantana-dashboard
+```
+
+Then on your workstation, open <http://localhost:8501>. Pages to walk:
+
+| Page | What to verify |
+|---|---|
+| **Overview** | Metric cards populated (events, IPs, auth attempts, commands, findings); top-N tables for IPs/usernames/passwords |
+| **Geography** | World map with attacker origins; top countries + ASNs match what's in the Discord report |
+| **IP Reputation** | High/Medium/Low risk metric cards; three side-by-side distribution charts (composite, enrichment, behavioral); per-provider risk_score columns (`abuseipdb_risk_score` etc.) in the IP table |
+| **Behavioral Progression** | Escalation funnel; stage scatter; automated-vs-manual breakdown; multi-day slow-burn section |
+| **Detection Findings** | Top Suricata rules; IPs per rule |
+| **Credentials** | Campaign cluster table (shared user:password pairs ≥ 2 IPs) |
+| **STIX Export** | Bundle preview metrics → **Generate STIX 2.1 Bundle** button → **Download** button |
+
+**Exporting a STIX bundle** (for sharing with peers):
+
+1. STIX Export page → pick the target date from the sidebar
+2. Click **Generate STIX 2.1 Bundle** → page shows `Bundle generated: N objects`
+3. Click **Download STIX Bundle (.json)** — file saves to your workstation as `lantana-stix-<YYYY-MM-DD>.json`
+4. Inspect locally before sharing:
+   ```bash
+   jq '.objects[] | {type, id, labels}' lantana-stix-2026-05-23.json | head -40
+   # Sanity-check: no internal IPs in any indicator pattern
+   jq '.objects[] | select(.type=="indicator") | .pattern' lantana-stix-2026-05-23.json | grep -E '10\.|192\.168\.|fd99:' || echo "OK: no internal IPs"
+   ```
+
+Bundles are **not stored server-side** — they're generated on-demand from gold tables and streamed to your browser. Re-generate any historic date by changing the sidebar date picker.
+
 ---
 
 ## Tearing Down or Rotating
@@ -719,4 +757,7 @@ Two common follow-ups:
 | Deploy base | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_single.yml --ask-vault-pass` |
 | Validate base | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv` |
 | Deploy honeypots | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_honeypots.yml --ask-vault-pass` |
+| Validate pipeline cycle | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass` |
+| Dashboard tunnel | `ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>` → on sensor: `sudo -u nectar XDG_CACHE_HOME=/tmp /opt/lantana/pipeline/venv/bin/lantana-dashboard` → browse to <http://localhost:8501> |
+| Export STIX bundle | Dashboard → STIX Export page → pick date → **Generate** → **Download** (`.json`) |
 | Baseline snapshot | `scripts/backup-vps.sh <host> <user> <key> <port> ./backups/<op_name>/baseline` |
