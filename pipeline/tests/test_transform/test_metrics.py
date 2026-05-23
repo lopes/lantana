@@ -347,6 +347,52 @@ class TestDailySummary:
         assert "uname -a" in row["top_commands"]
         assert "CN" in row["top_source_countries"]
 
+    def test_top_countries_ranked_by_unique_ips(self) -> None:
+        """Country ranking matches `geographic_summary` (unique-IP based).
+
+        Regression test for the Overview/Geography divergence: previously the
+        Overview page ranked countries by event count, so a single chatty IP
+        from CH would outrank a swarm of distinct US scanners. Both pages must
+        now use the same unique-IP ranking.
+        """
+        rows: list[dict[str, object]] = []
+        # CH: 1 IP, 100 events — would win event-count ranking
+        for i in range(100):
+            rows.append({
+                "class_uid": CLASS_AUTHENTICATION,
+                "status_id": STATUS_FAILURE,
+                "src_endpoint_ip": "192.0.2.1",
+                "geo.country_code": "CH",
+                "user_name": "root",
+                "unmapped_password": "x",
+                "actor_process_cmd_line": None,
+                "session": f"s-{i}",
+                "finding_title": None,
+                "finding_uid": None,
+                "file_hash_sha256": None,
+                "file_url": None,
+            })
+        # US: 5 distinct IPs, 1 event each — wins unique-IP ranking
+        for i in range(5):
+            rows.append({
+                "class_uid": CLASS_AUTHENTICATION,
+                "status_id": STATUS_FAILURE,
+                "src_endpoint_ip": f"198.51.100.{i + 1}",
+                "geo.country_code": "US",
+                "user_name": "admin",
+                "unmapped_password": "y",
+                "actor_process_cmd_line": None,
+                "session": f"u-{i}",
+                "finding_title": None,
+                "finding_uid": None,
+                "file_hash_sha256": None,
+                "file_url": None,
+            })
+        silver = pl.DataFrame(rows)
+        result = compute_daily_summary(silver)
+        countries = result.row(0, named=True)["top_source_countries"]
+        assert countries[0] == "US", f"expected US first (5 unique IPs), got {countries}"
+
     def test_empty_dataframe(self) -> None:
         """Empty silver returns empty summary."""
         result = compute_daily_summary(pl.DataFrame())

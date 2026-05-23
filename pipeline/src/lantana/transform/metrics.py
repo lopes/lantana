@@ -88,7 +88,7 @@ def _optional_first(df: pl.DataFrame, col: str, alias: str) -> pl.Expr:
 
 
 def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[str]:
-    """Extract top-N most frequent non-null values from a column."""
+    """Extract top-N most frequent non-null values from a column, ranked by event count."""
     if col not in df.columns:
         return []
     return (
@@ -100,6 +100,28 @@ def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[str]:
         .sort("len", descending=True)
         .head(n)
         .get_column(col)
+        .to_list()
+    )
+
+
+def _top_n_countries_by_unique_ips(df: pl.DataFrame, n: int = TOP_N) -> list[str]:
+    """Top-N source countries ranked by unique attacker IPs.
+
+    Overview and Geography pages disagreed on the #1 country because Overview
+    ranked by raw event count (one chatty IP from CH dominated) while Geography
+    ranked by unique-IP count (US wins on volume of distinct attackers). For
+    honeypot intel the unique-IP metric is the right one — a single noisy
+    scanner shouldn't outrank a swarm of attackers from elsewhere.
+    """
+    if "geo.country_code" not in df.columns or "src_endpoint_ip" not in df.columns:
+        return []
+    return (
+        df.filter(pl.col("geo.country_code").is_not_null())
+        .group_by("geo.country_code")
+        .agg(pl.col("src_endpoint_ip").n_unique().alias("unique_ips"))
+        .sort("unique_ips", descending=True)
+        .head(n)
+        .get_column("geo.country_code")
         .to_list()
     )
 
@@ -136,7 +158,7 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
             "top_usernames": [_top_n(silver, "user_name")],
             "top_passwords": [_top_n(silver, "unmapped_password")],
             "top_commands": [_top_n(silver, "actor_process_cmd_line")],
-            "top_source_countries": [_top_n(silver, "geo.country_code")],
+            "top_source_countries": [_top_n_countries_by_unique_ips(silver)],
             "top_source_ips": [_top_n(silver, "src_endpoint_ip")],
             "top_download_urls": [_top_n(silver, "file_url")],
             "top_download_hashes": [_top_n(silver, "file_hash_sha256")],
