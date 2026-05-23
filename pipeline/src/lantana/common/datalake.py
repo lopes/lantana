@@ -160,24 +160,38 @@ def read_gold_table(
     target_date: date,
     gold_root: Path = GOLD_ROOT,
 ) -> pl.DataFrame:
-    """Read a gold-layer Parquet table for a given date."""
+    """Read a gold-layer Parquet table for a given date.
+
+    Returns an empty DataFrame when the parquet is missing or unreadable — same
+    rationale as `list_gold_dates`: the dashboard should render an empty page,
+    not a stack trace.
+    """
     date_str = target_date.isoformat()
     path = gold_root / table_name / f"date={date_str}" / "summary.parquet"
-    if not path.exists():
+    try:
+        return pl.read_parquet(path)
+    except (FileNotFoundError, PermissionError):
         return pl.DataFrame()
-    return pl.read_parquet(path)
 
 
 def list_gold_dates(
     table_name: str,
     gold_root: Path = GOLD_ROOT,
 ) -> list[date]:
-    """List available dates for a gold table, sorted descending (newest first)."""
+    """List available dates for a gold table, sorted descending (newest first).
+
+    Returns `[]` when the table directory is missing or unreadable — the dashboard
+    sidebar treats an empty list as "no data yet" and falls back to a free date
+    picker. `Path.exists()` raises PermissionError (rather than returning False)
+    when a parent directory is not traversable, so the check has to be wrapped.
+    """
     table_dir = gold_root / table_name
-    if not table_dir.exists():
+    try:
+        entries = list(table_dir.iterdir())
+    except (FileNotFoundError, PermissionError):
         return []
     dates: list[date] = []
-    for entry in table_dir.iterdir():
+    for entry in entries:
         if entry.is_dir() and entry.name.startswith("date="):
             date_str = entry.name[5:]  # strip "date="
             dates.append(date.fromisoformat(date_str))

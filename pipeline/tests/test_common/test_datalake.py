@@ -142,3 +142,33 @@ def test_list_gold_dates(tmp_path: Path) -> None:
 def test_list_gold_dates_empty(tmp_path: Path) -> None:
     """Empty gold returns empty list."""
     assert list_gold_dates("nonexistent", gold_root=tmp_path) == []
+
+
+def test_list_gold_dates_unreadable_parent(tmp_path: Path) -> None:
+    """Unreadable gold parent returns `[]` rather than raising PermissionError.
+
+    Production scenario: the dashboard runs as a user that lacks traverse
+    permission on `/var/lib/lantana/datalake/`. `Path.exists()` propagates
+    PermissionError; `iterdir()` does the same. The function must swallow it.
+    """
+    table_dir = tmp_path / "daily_summary"
+    table_dir.mkdir()
+    (table_dir / "date=2026-04-25").mkdir()
+    tmp_path.chmod(0o000)
+    try:
+        assert list_gold_dates("daily_summary", gold_root=tmp_path) == []
+    finally:
+        tmp_path.chmod(0o755)
+
+
+def test_read_gold_table_unreadable(tmp_path: Path) -> None:
+    """Unreadable gold parquet returns an empty DataFrame, not a crash."""
+    write_gold_table(
+        pl.DataFrame({"x": [1]}), "daily_summary", date(2026, 4, 25), gold_root=tmp_path
+    )
+    tmp_path.chmod(0o000)
+    try:
+        result = read_gold_table("daily_summary", date(2026, 4, 25), gold_root=tmp_path)
+        assert result.is_empty()
+    finally:
+        tmp_path.chmod(0o755)
