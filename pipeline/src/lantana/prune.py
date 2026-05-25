@@ -80,7 +80,13 @@ def _prune_old_files(root: Path, cutoff: date, patterns: list[str]) -> int:
 
 
 def _cleanup_empty_dirs(root: Path) -> int:
-    """Remove empty directories under root. Returns count removed."""
+    """Remove empty directories under root. Returns count removed.
+
+    Caller's responsibility: ``root`` must be a tree the running user
+    fully owns. Walking the sensor zone from a nectar-owned process
+    crashes on stigma-owned subdirs (defect: PermissionError on
+    cowrie/misc), so callers must pick the right root.
+    """
     removed = 0
     if not root.exists():
         return removed
@@ -109,12 +115,12 @@ def run_prune(
     # Prune datalake date partitions
     total += _prune_date_partitions(lake_dir, cutoff)
 
-    # Prune sensor artifacts (downloads, TTY recordings)
+    # Prune sensor artifacts (downloads, TTY recordings). File deletes
+    # work because nectar has unlink rights on stigma's files; rmdir
+    # would not (parent dir is stigma-owned), so we only clean up the
+    # datalake tree, which nectar owns end-to-end.
     total += _prune_old_files(sensor_dir, cutoff, ["downloads/*", "tty/*"])
-
-    # Clean up empty directories
     _cleanup_empty_dirs(lake_dir)
-    _cleanup_empty_dirs(sensor_dir)
 
     logger.info("prune_complete", deleted=total, retention_days=retention_days)
     return total
@@ -153,11 +159,12 @@ def main() -> None:
         logger.debug("no_secrets_for_notify")
 
     if usage > DISK_CRITICAL_THRESHOLD:
-        # Emergency prune: keep only 14 days of artifacts
+        # Emergency prune: keep only 14 days of artifacts. Same ownership
+        # constraint as the standard prune above — file deletes only,
+        # no rmdir into stigma's tree.
         emergency_deleted = _prune_old_files(
             sensor_dir, _cutoff_date(EMERGENCY_RETENTION_DAYS), ["downloads/*", "tty/*"]
         )
-        _cleanup_empty_dirs(sensor_dir)
 
         after_usage = check_disk_usage(lake_dir)
         logger.warning(

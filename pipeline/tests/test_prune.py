@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import date, timedelta
-from pathlib import Path
-from unittest.mock import patch
+from pathlib import Path  # noqa: TC003 - used at runtime in tmp_path fixtures
 
 from lantana.prune import (
     _cleanup_empty_dirs,
@@ -109,6 +108,23 @@ class TestRunPrune:
 
         deleted = run_prune(lake, sensor, retention_days=180)
         assert deleted >= 2  # 1 partition + 1 file
+
+    def test_does_not_rmdir_sensor_empty_dirs(self, tmp_path: Path) -> None:
+        """Sensor empty dirs are not removed.
+
+        The sensor tree is owned by stigma; prune (running as nectar)
+        can unlink stigma's files but not rmdir stigma's directories.
+        Production defect: lantana-prune crashing with
+        PermissionError on `/var/lib/lantana/sensor/cowrie/misc`.
+        """
+        lake = tmp_path / "lake"
+        sensor = tmp_path / "sensor"
+        sensor.mkdir()
+        (sensor / "cowrie" / "misc").mkdir(parents=True)
+
+        run_prune(lake, sensor, retention_days=180)
+
+        assert (sensor / "cowrie" / "misc").exists()
 
 
 class TestCheckDiskUsage:
