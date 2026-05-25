@@ -45,7 +45,7 @@ class TestParseTimestamp:
         assert ts.hour == 4
 
     def test_empty_string_returns_none(self) -> None:
-        """Never-run services have an empty ActiveEnterTimestamp."""
+        """Never-run services have an empty ExecMainStartTimestamp."""
         assert _parse_timestamp("") is None
 
     def test_whitespace_only_returns_none(self) -> None:
@@ -68,22 +68,22 @@ class TestParseTimestamp:
 class TestParseShowOutput:
     def test_parses_key_value_lines(self) -> None:
         stdout = (
-            "ActiveEnterTimestamp=Mon 2026-05-25 04:01:13 UTC\n"
-            "InactiveEnterTimestamp=Mon 2026-05-25 04:19:55 UTC\n"
+            "ExecMainStartTimestamp=Mon 2026-05-25 04:01:13 UTC\n"
+            "ExecMainExitTimestamp=Mon 2026-05-25 04:19:55 UTC\n"
             "Result=success\n"
         )
         out = _parse_show_output(stdout)
-        assert out["ActiveEnterTimestamp"] == "Mon 2026-05-25 04:01:13 UTC"
+        assert out["ExecMainStartTimestamp"] == "Mon 2026-05-25 04:01:13 UTC"
         assert out["Result"] == "success"
 
     def test_skips_lines_without_equals(self) -> None:
-        out = _parse_show_output("ActiveEnterTimestamp=foo\nbogus line\nResult=ok\n")
-        assert out == {"ActiveEnterTimestamp": "foo", "Result": "ok"}
+        out = _parse_show_output("ExecMainStartTimestamp=foo\nbogus line\nResult=ok\n")
+        assert out == {"ExecMainStartTimestamp": "foo", "Result": "ok"}
 
     def test_empty_values_allowed(self) -> None:
         """Never-run units give us empty values, not missing keys."""
-        out = _parse_show_output("ActiveEnterTimestamp=\nResult=success\n")
-        assert out["ActiveEnterTimestamp"] == ""
+        out = _parse_show_output("ExecMainStartTimestamp=\nResult=success\n")
+        assert out["ExecMainStartTimestamp"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -94,8 +94,8 @@ class TestParseShowOutput:
 class TestCollectStepTimings:
     def test_happy_path_computes_duration(self) -> None:
         stdout = (
-            "ActiveEnterTimestamp=Mon 2026-05-25 04:01:00 UTC\n"
-            "InactiveEnterTimestamp=Mon 2026-05-25 04:19:30 UTC\n"
+            "ExecMainStartTimestamp=Mon 2026-05-25 04:01:00 UTC\n"
+            "ExecMainExitTimestamp=Mon 2026-05-25 04:19:30 UTC\n"
             "Result=success\n"
         )
         with patch("lantana.notify.timing.subprocess.run", return_value=_completed(stdout)):
@@ -110,7 +110,7 @@ class TestCollectStepTimings:
 
     def test_never_run_unit_returns_none_duration(self) -> None:
         """Both timestamps empty (e.g. timer fired but unit not yet scheduled)."""
-        stdout = "ActiveEnterTimestamp=\nInactiveEnterTimestamp=\nResult=success\n"
+        stdout = "ExecMainStartTimestamp=\nExecMainExitTimestamp=\nResult=success\n"
         with patch("lantana.notify.timing.subprocess.run", return_value=_completed(stdout)):
             timings = collect_step_timings(["lantana-prune"])
         assert timings[0].duration_seconds is None
@@ -154,8 +154,8 @@ class TestCollectStepTimings:
         crashed before writing the errors row, but the operator still sees
         the failure in the timing table."""
         stdout = (
-            "ActiveEnterTimestamp=Mon 2026-05-25 04:01:00 UTC\n"
-            "InactiveEnterTimestamp=Mon 2026-05-25 04:01:30 UTC\n"
+            "ExecMainStartTimestamp=Mon 2026-05-25 04:01:00 UTC\n"
+            "ExecMainExitTimestamp=Mon 2026-05-25 04:01:30 UTC\n"
             "Result=failed\n"
         )
         with patch("lantana.notify.timing.subprocess.run", return_value=_completed(stdout)):
@@ -171,12 +171,36 @@ class TestCollectStepTimings:
             timings = collect_step_timings(units)
         assert [t.unit for t in timings] == units
 
+    def test_oneshot_with_empty_active_enter_still_resolves(self) -> None:
+        """Regression: oneshot services have empty ActiveEnterTimestamp.
+
+        Discovered 2026-05-25 on op_alpha's lantana-enrich.service: systemd
+        does not populate ``ActiveEnterTimestamp`` for short oneshot units
+        (they never dwell in the active state). The query must read
+        ``ExecMainStartTimestamp`` / ``ExecMainExitTimestamp`` instead.
+        This fixture simulates the production shape — ``ActiveEnterTimestamp``
+        present but empty, ``ExecMainStart/ExitTimestamp`` populated — and
+        asserts the duration is still computed.
+        """
+        stdout = (
+            "ActiveEnterTimestamp=\n"
+            "InactiveEnterTimestamp=Mon 2026-05-25 16:32:33 UTC\n"
+            "ExecMainStartTimestamp=Mon 2026-05-25 16:31:09 UTC\n"
+            "ExecMainExitTimestamp=Mon 2026-05-25 16:32:33 UTC\n"
+            "Result=success\n"
+        )
+        with patch("lantana.notify.timing.subprocess.run", return_value=_completed(stdout)):
+            timings = collect_step_timings(["lantana-enrich"])
+        t = timings[0]
+        assert t.duration_seconds == 84.0  # 16:32:33 - 16:31:09 = 1m 24s
+        assert t.result == "success"
+
     def test_inactive_before_active_returns_none(self) -> None:
         """Defensive: if timestamps are swapped (e.g. unit just started, not yet finished),
         duration should be None rather than negative."""
         stdout = (
-            "ActiveEnterTimestamp=Mon 2026-05-25 04:05:00 UTC\n"
-            "InactiveEnterTimestamp=Mon 2026-05-25 04:01:00 UTC\n"
+            "ExecMainStartTimestamp=Mon 2026-05-25 04:05:00 UTC\n"
+            "ExecMainExitTimestamp=Mon 2026-05-25 04:01:00 UTC\n"
             "Result=success\n"
         )
         with patch("lantana.notify.timing.subprocess.run", return_value=_completed(stdout)):

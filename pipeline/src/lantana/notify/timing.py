@@ -2,9 +2,16 @@
 
 The 06:00 daily brief surfaces how long the prior night's pipeline took at
 each step. Source of truth is systemd's own bookkeeping — ``systemctl show
-<unit>.service --property=ActiveEnterTimestamp,InactiveEnterTimestamp,Result``
+<unit>.service --property=ExecMainStartTimestamp,ExecMainExitTimestamp,Result``
 gives us the wall-clock start, finish, and exit result of the most recent
 run without requiring any instrumentation inside the runners themselves.
+
+Why ExecMain* and not ActiveEnter*: lantana pipeline units are oneshot
+services that don't dwell in the "active" state long enough for systemd
+to populate ``ActiveEnterTimestamp`` — for a short oneshot it's empty
+and only ``ExecMainStartTimestamp`` reliably reflects when the process
+started. ``ExecMainExitTimestamp`` is symmetric and always present once
+the process has exited.
 
 Failure mode: subprocess error, missing timestamps, or parse failure all
 return ``StepTiming(duration_seconds=None, result="unknown")`` rather than
@@ -82,7 +89,7 @@ def _query_unit(unit: str) -> StepTiming:
                 "systemctl",
                 "show",
                 full_unit,
-                "--property=ActiveEnterTimestamp,InactiveEnterTimestamp,Result",
+                "--property=ExecMainStartTimestamp,ExecMainExitTimestamp,Result",
             ],
             capture_output=True,
             text=True,
@@ -110,8 +117,8 @@ def _query_unit(unit: str) -> StepTiming:
         return StepTiming(unit=unit, duration_seconds=None, result="unknown", finished_at=None)
 
     props = _parse_show_output(completed.stdout)
-    started = _parse_timestamp(props.get("ActiveEnterTimestamp", ""))
-    finished = _parse_timestamp(props.get("InactiveEnterTimestamp", ""))
+    started = _parse_timestamp(props.get("ExecMainStartTimestamp", ""))
+    finished = _parse_timestamp(props.get("ExecMainExitTimestamp", ""))
     result = props.get("Result", "unknown") or "unknown"
 
     duration_seconds: float | None = None
