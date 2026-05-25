@@ -76,7 +76,20 @@ Bucketed by `last_analysis_stats.malicious` (the engine count):
 
 Module constant: `VT_IP_RISK_BUCKETS` in `enrichment/providers/virustotal.py`.
 
-VT hash enrichment is intentionally out of scope here — that's per-file scoring (`vt_file_malicious_count`), and the IP-side composite blend doesn't consume it.
+### VirusTotal (file hash)
+
+Bucketed by `last_analysis_stats.malicious` on the file endpoint:
+
+| `malicious` count | `vt_file_risk_score` | Why this break |
+|---|---|---|
+| 0 | 0.0 | Clean / never analysed |
+| 1 | 50.0 | Single engine flagging — crosses the cache "malicious" threshold |
+| 2–4 | 75.0 | Multi-source agreement |
+| ≥5 | 100.0 | Broadly flagged malware |
+
+Module constant: `VT_FILE_RISK_BUCKETS` in `enrichment/providers/virustotal.py`.
+
+The thresholds are tighter than the IP buckets because file-scan FP rates are much lower — a single AV engine flagging a SHA256 is a much stronger signal than a single engine flagging an IP. This score is consumed by the cache classifier (`_classify_ttl` in `enrichment/runner.py`) to assign the 180-day malicious-hash TTL but is **not** part of the IP-side composite blend documented below.
 
 ### Shodan
 

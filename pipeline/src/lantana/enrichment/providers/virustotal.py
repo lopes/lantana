@@ -41,6 +41,25 @@ def compute_ip_risk_score(malicious_count: int) -> float:
     return 0.0
 
 
+# VT file risk-score buckets. File-scan FP rates are far lower than
+# IP-list FP rates, so a single engine flagging crosses the cache
+# "malicious" threshold (50). Used only for cache TTL classification —
+# the gold composite is per-IP and does not include this score.
+VT_FILE_RISK_BUCKETS: list[tuple[int, float]] = [
+    (5, 100.0),
+    (2, 75.0),
+    (1, 50.0),
+]
+
+
+def compute_file_risk_score(malicious_count: int) -> float:
+    """Bucket a VT malicious engine count for a file hash into a 0..100 score."""
+    for lower_bound, score in VT_FILE_RISK_BUCKETS:
+        if malicious_count >= lower_bound:
+            return score
+    return 0.0
+
+
 def _empty_ip_result(ip: str) -> EnrichmentResult:
     return EnrichmentResult(
         provider="virustotal",
@@ -65,6 +84,7 @@ def _empty_hash_result(sha256: str) -> EnrichmentResult:
             "vt_file_undetected_count": 0,
             "vt_file_name": "",
             "vt_file_type": "",
+            "vt_file_risk_score": 0.0,
         },
         queried_at=datetime.now(tz=UTC),
     )
@@ -145,14 +165,16 @@ class VirusTotalProvider:
         attributes = payload["data"]["attributes"]
         last_analysis: dict[str, int] = attributes.get("last_analysis_stats", {})  # type: ignore[assignment]
 
+        malicious = int(last_analysis.get("malicious", 0))
         return EnrichmentResult(
             provider="virustotal",
             ip=sha256,
             data={
-                "vt_file_malicious_count": int(last_analysis.get("malicious", 0)),
+                "vt_file_malicious_count": malicious,
                 "vt_file_undetected_count": int(last_analysis.get("undetected", 0)),
                 "vt_file_name": str(attributes.get("meaningful_name") or ""),
                 "vt_file_type": str(attributes.get("type_tag") or ""),
+                "vt_file_risk_score": compute_file_risk_score(malicious),
             },
             queried_at=datetime.now(tz=UTC),
         )

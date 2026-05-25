@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path  # noqa: TC003 - used at runtime in tmp_path fixtures
 from unittest.mock import AsyncMock, patch
 
@@ -16,14 +16,21 @@ from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
 from lantana.enrichment.providers.base import EnrichmentResult
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
 from lantana.enrichment.runner import (
+    CACHE_TTL_BENIGN_DAYS,
+    CACHE_TTL_MALICIOUS_DOMAIN_DAYS,
+    CACHE_TTL_MALICIOUS_HASH_DAYS,
+    CACHE_TTL_MALICIOUS_IP_DAYS,
     CIRCUIT_BREAKER_RATE_LIMIT_CUMULATIVE_THRESHOLD,
     CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD,
+    IOC_TYPE_DOMAIN,
     IOC_TYPE_HASH,
     IOC_TYPE_IP,
+    RISK_SCORE_MALICIOUS_THRESHOLD,
     ErrorAccumulator,
     ProviderState,
     _build_lookup,
     _classify_http_error,
+    _classify_ttl,
     _compute_ip_event_counts,
     _enrich_iocs_with_provider,
     _get_cached,
@@ -414,17 +421,152 @@ class TestCacheBehaviour:
         cache.close()
 
     def test_get_cached_handles_malformed_row(self, tmp_path: Path) -> None:
-        """A corrupt cached row is treated as a miss, not a crash."""
+        """A corrupt cached row is treated as a miss, not a crash.
+
+        Populates ``expires_at`` so the SQL freshness filter doesn't
+        short-circuit before the JSON decode path is exercised.
+        """
         cache = _make_cache(tmp_path)
+        now = datetime.now(tz=UTC)
         cache.execute(
-            "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("abuseipdb", IOC_TYPE_IP, "1.2.3.4", "{not json}", datetime.now(tz=UTC).isoformat()),
+            "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "abuseipdb", IOC_TYPE_IP, "1.2.3.4",
+                "{not json}",
+                now.isoformat(),
+                (now + timedelta(days=1)).isoformat(),
+            ),
         )
         cache.commit()
 
         assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
         cache.close()
+
+    def test_expired_row_not_returned(self, tmp_path: Path) -> None:
+        """A row whose expires_at is in the past must not be returned."""
+        cache = _make_cache(tmp_path)
+        now = datetime.now(tz=UTC)
+        cache.execute(
+            "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "abuseipdb", IOC_TYPE_IP, "1.2.3.4",
+                json.dumps({"abuseipdb_risk_score": 90}),
+                (now - timedelta(days=10)).isoformat(),
+                (now - timedelta(seconds=1)).isoformat(),
+            ),
+        )
+        cache.commit()
+        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
+        cache.close()
+
+    def test_unexpired_row_returned(self, tmp_path: Path) -> None:
+        """A row whose expires_at is in the future must be returned."""
+        cache = _make_cache(tmp_path)
+        now = datetime.now(tz=UTC)
+        cache.execute(
+            "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "abuseipdb", IOC_TYPE_IP, "1.2.3.4",
+                json.dumps({"abuseipdb_risk_score": 90}),
+                now.isoformat(),
+                (now + timedelta(days=30)).isoformat(),
+            ),
+        )
+        cache.commit()
+        result = _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4")
+        cache.close()
+        assert result is not None
+        assert result.data["abuseipdb_risk_score"] == 90
+
+    def test_null_expires_at_row_not_returned(self, tmp_path: Path) -> None:
+        """Rows written before the write path was switched (NULL expires_at)
+        must read as misses — SQL three-valued logic excludes them and the
+        next pipeline run re-queries them under the new policy."""
+        cache = _make_cache(tmp_path)
+        cache.execute(
+            "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, NULL)",
+            (
+                "abuseipdb", IOC_TYPE_IP, "1.2.3.4",
+                json.dumps({"abuseipdb_risk_score": 90}),
+                datetime.now(tz=UTC).isoformat(),
+            ),
+        )
+        cache.commit()
+        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
+        cache.close()
+
+
+class TestClassifyTtl:
+    """Per-row TTL classification.
+
+    A cache row is "malicious" iff its provider risk_score field is
+    present in result.data and ≥ RISK_SCORE_MALICIOUS_THRESHOLD.
+    Malicious rows get the long ioc_type-specific window (OpenCTI
+    defaults: 60 / 90 / 180 days); everything else gets 7 days.
+    """
+
+    def test_benign_ip_gets_7d(self) -> None:
+        ttl = _classify_ttl("abuseipdb", IOC_TYPE_IP, {"abuseipdb_risk_score": 10})
+        assert ttl == timedelta(days=CACHE_TTL_BENIGN_DAYS)
+
+    def test_malicious_ip_gets_60d(self) -> None:
+        ttl = _classify_ttl("abuseipdb", IOC_TYPE_IP, {"abuseipdb_risk_score": 90})
+        assert ttl == timedelta(days=CACHE_TTL_MALICIOUS_IP_DAYS)
+
+    def test_malicious_domain_gets_90d(self) -> None:
+        ttl = _classify_ttl("abuseipdb", IOC_TYPE_DOMAIN, {"abuseipdb_risk_score": 90})
+        assert ttl == timedelta(days=CACHE_TTL_MALICIOUS_DOMAIN_DAYS)
+
+    def test_malicious_hash_gets_180d(self) -> None:
+        ttl = _classify_ttl("virustotal", IOC_TYPE_HASH, {"vt_file_risk_score": 75})
+        assert ttl == timedelta(days=CACHE_TTL_MALICIOUS_HASH_DAYS)
+
+    def test_benign_hash_gets_7d(self) -> None:
+        ttl = _classify_ttl("virustotal", IOC_TYPE_HASH, {"vt_file_risk_score": 0})
+        assert ttl == timedelta(days=CACHE_TTL_BENIGN_DAYS)
+
+    def test_missing_risk_score_defaults_benign(self) -> None:
+        """Empty/legacy data dicts — no risk_score field — get the benign tier."""
+        ttl = _classify_ttl("abuseipdb", IOC_TYPE_IP, {})
+        assert ttl == timedelta(days=CACHE_TTL_BENIGN_DAYS)
+
+    def test_unknown_provider_defaults_benign(self) -> None:
+        """A provider not in _RISK_SCORE_FIELDS cannot be classified malicious."""
+        ttl = _classify_ttl("unknown_provider", IOC_TYPE_IP, {"risk_score": 100})
+        assert ttl == timedelta(days=CACHE_TTL_BENIGN_DAYS)
+
+    def test_threshold_boundary_50_is_malicious(self) -> None:
+        """Exactly RISK_SCORE_MALICIOUS_THRESHOLD crosses into the malicious tier."""
+        ttl = _classify_ttl(
+            "abuseipdb",
+            IOC_TYPE_IP,
+            {"abuseipdb_risk_score": RISK_SCORE_MALICIOUS_THRESHOLD},
+        )
+        assert ttl == timedelta(days=CACHE_TTL_MALICIOUS_IP_DAYS)
+
+    def test_threshold_just_below_50_is_benign(self) -> None:
+        ttl = _classify_ttl("abuseipdb", IOC_TYPE_IP, {"abuseipdb_risk_score": 49.99})
+        assert ttl == timedelta(days=CACHE_TTL_BENIGN_DAYS)
+
+    def test_virustotal_dual_field_picks_ip_score(self) -> None:
+        """VT IP rows expose virustotal_risk_score (not vt_file_risk_score)."""
+        ttl = _classify_ttl("virustotal", IOC_TYPE_IP, {"virustotal_risk_score": 100})
+        assert ttl == timedelta(days=CACHE_TTL_MALICIOUS_IP_DAYS)
+
+    def test_virustotal_dual_field_picks_file_score(self) -> None:
+        """VT hash rows expose vt_file_risk_score (not virustotal_risk_score)."""
+        ttl = _classify_ttl("virustotal", IOC_TYPE_HASH, {"vt_file_risk_score": 100})
+        assert ttl == timedelta(days=CACHE_TTL_MALICIOUS_HASH_DAYS)
+
+    def test_bool_value_in_score_field_treated_as_missing(self) -> None:
+        """Defensive — bool is an int subclass in Python but should NOT be
+        misread as a risk score by the isinstance check."""
+        ttl = _classify_ttl("abuseipdb", IOC_TYPE_IP, {"abuseipdb_risk_score": True})
+        assert ttl == timedelta(days=CACHE_TTL_BENIGN_DAYS)
 
 
 # --- Phase 2: error classification end-to-end through the provider retry path ---
@@ -552,6 +694,40 @@ class TestCacheSchemaMigration:
         conn = _init_cache(db_path)
         cols = {row[1] for row in conn.execute("PRAGMA table_info(cache)").fetchall()}
         assert "ioc_type" in cols
+        assert "expires_at" in cols
+        conn.close()
+
+    def test_pre_expires_at_schema_dropped(self, tmp_path: Path) -> None:
+        """A v3 cache (composite PK, no expires_at) is dropped and recreated.
+
+        Up to 7 days of data is lost — providers refill on the next run.
+        Same trade-off accepted for the v2→v3 migration.
+        """
+        db_path = tmp_path / "v3_cache.db"
+        v3 = sqlite3.connect(str(db_path))
+        v3.execute(
+            "CREATE TABLE cache ("
+            "  provider TEXT NOT NULL,"
+            "  ioc_type TEXT NOT NULL,"
+            "  ioc_value TEXT NOT NULL,"
+            "  data TEXT NOT NULL,"
+            "  queried_at TEXT NOT NULL,"
+            "  PRIMARY KEY (provider, ioc_type, ioc_value)"
+            ")"
+        )
+        v3.execute(
+            "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("abuseipdb", IOC_TYPE_IP, "1.2.3.4", "{}", datetime.now(tz=UTC).isoformat()),
+        )
+        v3.commit()
+        v3.close()
+
+        conn = _init_cache(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(cache)").fetchall()}
+        assert "expires_at" in cols
+        # The v3 row didn't survive the drop
+        assert conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0] == 0
         conn.close()
 
 

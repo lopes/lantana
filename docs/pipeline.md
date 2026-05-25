@@ -80,7 +80,7 @@ For each dataset (cowrie, suricata, nftables, dionaea):
    - GreyNoise (classification, noise/riot status, last seen, label) — IPs — see [Provider auth modes](#provider-auth-modes)
    - Shodan (open ports, services, vulns) — IPs
    - VirusTotal — IPs (reputation) and SHA256 hashes (file analysis, into `vt_file_*` columns)
-5. **Cache results** in SQLite keyed by `(provider, ioc_type, ioc_value)` with a 7-day TTL. Cache hits short-circuit the HTTP call entirely.
+5. **Cache results** in SQLite keyed by `(provider, ioc_type, ioc_value)` with a tiered per-row TTL — benign 7d, malicious IPs 60d, malicious domains 90d, malicious hashes 180d (OpenCTI default decay rules). A row is "malicious" iff its provider risk_score ≥ 50. Cache hits short-circuit the HTTP call entirely.
 6. **Record errors** — `_classify_http_error` maps statuses to actionable labels (`auth_failed`, `rate_limit`, `not_found`, `server_error`, `network_error`, `timeout`) and writes an NDJSON summary to `enrichment_errors.json`. `auth_failed` is logged at error level (operators must rotate the broken vault key); `not_found` is logged at debug (normal "IP/hash not in DB").
 7. **Merge enrichment** per dataset: IP enrichments joined on `src_ip`; hash enrichments joined on `shasum` for cowrie (see [§3.1.1](#311-how-enrichment-merges-into-events))
 8. **OCSF normalize** — rename columns and add OCSF metadata (see Section 4)
@@ -88,7 +88,7 @@ For each dataset (cowrie, suricata, nftables, dionaea):
 10. **Validate no leaks** — assert zero infrastructure IPs in any string column
 11. **Write silver** Parquet partitioned by dataset/date/server
 
-> **One-time cache migration note**: the cache schema changed in the IOC-first refactor (now keyed by `(provider, ioc_type, ioc_value)` instead of a single `key`). `_init_cache` detects the legacy schema on first run and drops + recreates the table. The data lost is ≤7 days old and providers will refill cheaply — with one exception. Shodan's 100-queries-per-month free tier will burn through quickly on the post-migration first run if the unique IP count is high. Plan the migration run for a low-stakes window; consider invoking `lantana-enrich` manually rather than letting the 01:00 UTC cron fire blind.
+> **One-time cache migration note**: the cache schema has gone through two backwards-incompatible migrations. The first (IOC-first refactor) added composite-key `(provider, ioc_type, ioc_value)` in place of a single `key`. The second (tiered-TTL change) added a per-row `expires_at` column so each entry decays under the policy that wrote it. Both are handled by `_init_cache` on first run: it detects the older schema and drops + recreates the table. The data lost is ≤7 days old and providers will refill cheaply — with one exception. Shodan's 100-queries-per-month free tier will burn through quickly on the post-migration first run if the unique IP count is high. Plan the migration run for a low-stakes window; consider invoking `lantana-enrich` manually rather than letting the 01:00 UTC cron fire blind.
 
 #### 3.1.1 How enrichment merges into events
 

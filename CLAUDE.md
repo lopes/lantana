@@ -219,6 +219,19 @@ Severity:
 
 Clean days produce no Discord output. The pipeline never takes a Discord dependency in the hot path — alerter reads the existing NDJSON file the runners already write.
 
+## Enrichment cache lifecycle
+
+The SQLite enrichment cache at `/var/lib/lantana/datalake/.enrichment_cache.db` uses a **tiered per-row TTL** keyed off the provider's own risk_score (`enrichment/runner.py:_classify_ttl`). Numbers match OpenCTI's default decay-rule durations:
+
+| Classification | IPs    | Domains | Hashes  |
+|---|---|---|---|
+| Benign         | 7 days | 7 days  | 7 days  |
+| Malicious      | 60d    | 90d     | 180d    |
+
+A row is "malicious" iff its per-provider `<provider>_risk_score` field (set by the provider's `compute_*_risk_score` helper) is ≥ `RISK_SCORE_MALICIOUS_THRESHOLD` (50.0). Classification happens per-row at write time; `expires_at` is persisted on the row so policy changes don't retroactively re-tier existing entries. The read path filters on `expires_at > NOW()`. Rows with NULL `expires_at` (only possible for entries written before the write path was migrated) read as misses by SQL three-valued logic — exactly the behavior we want.
+
+Adding a new enrichment provider: expose a `<provider>_risk_score` field in the result data and register the field name in `_RISK_SCORE_FIELDS` (`enrichment/runner.py`). Without that the cache classifier can't distinguish malicious from benign and every row falls into the 7-day benign tier.
+
 ## OPSEC Requirements
 
 Lantana produces shareable intelligence (Discord reports, STIX bundles). The primary OPSEC concern is **external/WAN IP leakage** — the public-facing addresses that identify the honeypot on the internet. If an attacker or peer discovers these, they can blacklist the honeypot, fingerprint the setup, or map the operator's infrastructure. Only the honeypot owner should know these addresses. OPSEC is enforced at every layer:

@@ -24,6 +24,7 @@ import re
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 import polars as pl
@@ -50,10 +51,24 @@ from lantana.enrichment.providers.shodan import ShodanProvider
 from lantana.enrichment.providers.virustotal import VirusTotalProvider
 from lantana.models.normalize import normalize_dataset
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 logger = structlog.get_logger()
 
 CACHE_DB_PATH = Path("/var/lib/lantana/datalake/.enrichment_cache.db")
-CACHE_TTL_DAYS = 7
+
+# Tiered cache TTLs by classification and ioc_type. Malicious-tier values
+# match OpenCTI's default decay-rule durations (IPv4 60d, domain 90d,
+# file hash 180d). The benign tier stays short so noise / unclassified
+# IOCs are re-checked frequently. Classification is per-row, derived
+# from the provider's own risk_score field (see _classify_ttl).
+CACHE_TTL_BENIGN_DAYS = 7
+CACHE_TTL_MALICIOUS_IP_DAYS = 60
+CACHE_TTL_MALICIOUS_DOMAIN_DAYS = 90
+CACHE_TTL_MALICIOUS_HASH_DAYS = 180
+RISK_SCORE_MALICIOUS_THRESHOLD = 50.0
+
 ERRORS_PATH = Path(
     os.environ.get("LANTANA_ENRICHMENT_ERRORS", "/var/lib/lantana/datalake/enrichment_errors.json")
 )
@@ -63,6 +78,7 @@ DATASETS = ["cowrie", "suricata", "nftables", "dionaea"]
 
 IOC_TYPE_IP = "ip"
 IOC_TYPE_HASH = "hash"
+IOC_TYPE_DOMAIN = "domain"  # placeholder; no provider enriches domains yet
 
 
 # Per-provider IP-selection policy. Two knobs:
@@ -118,20 +134,84 @@ CIRCUIT_BREAKER_AUTH_FAILED_THRESHOLD = 1
 # -- Cache -------------------------------------------------------------------
 
 
+# Per-provider risk_score field names in EnrichmentResult.data. Probed
+# in order — first hit wins. VirusTotal lists two entries because IP
+# and file results share the same provider key but expose distinct
+# fields (`virustotal_risk_score` on IPs, `vt_file_risk_score` on hashes).
+_RISK_SCORE_FIELDS: dict[str, tuple[str, ...]] = {
+    "abuseipdb": ("abuseipdb_risk_score",),
+    "virustotal": ("virustotal_risk_score", "vt_file_risk_score"),
+    "greynoise": ("greynoise_risk_score",),
+    "shodan": ("shodan_risk_score",),
+}
+
+
+def _classify_ttl(
+    provider: str,
+    ioc_type: str,
+    data: Mapping[str, object],
+) -> timedelta:
+    """Return the TTL to apply to a freshly written cache row.
+
+    A row is malicious iff its provider's risk_score field is present
+    in `data` and ≥ RISK_SCORE_MALICIOUS_THRESHOLD. Malicious rows
+    decay over OpenCTI-default windows (60/90/180d by ioc_type);
+    everything else falls into the 7-day benign tier.
+    """
+    fields = _RISK_SCORE_FIELDS.get(provider, ())
+    score: float | None = None
+    for field in fields:
+        raw = data.get(field)
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            score = float(raw)
+            break
+
+    is_malicious = score is not None and score >= RISK_SCORE_MALICIOUS_THRESHOLD
+    if not is_malicious:
+        return timedelta(days=CACHE_TTL_BENIGN_DAYS)
+    if ioc_type == IOC_TYPE_HASH:
+        return timedelta(days=CACHE_TTL_MALICIOUS_HASH_DAYS)
+    if ioc_type == IOC_TYPE_DOMAIN:
+        return timedelta(days=CACHE_TTL_MALICIOUS_DOMAIN_DAYS)
+    return timedelta(days=CACHE_TTL_MALICIOUS_IP_DAYS)
+
+
 def _init_cache(db_path: Path) -> sqlite3.Connection:
     """Initialise the SQLite enrichment cache.
 
-    The Phase 3 schema keys on `(provider, ioc_type, ioc_value)`. If an
-    older single-`key`-column table is on disk, we drop and recreate —
-    the data is at most 7 days old and providers will refill cheaply
-    (with the notable exception of Shodan's 100/month free tier; see
-    docs/pipeline.md for the operational warning).
+    Schema versions handled by the auto-migration:
+      * v2 — legacy single-``key`` column. Drop and recreate.
+      * v3 — composite PK ``(provider, ioc_type, ioc_value)`` but no
+        ``expires_at``; flat 7-day TTL. Drop and recreate so the new
+        tiered policy applies cleanly. Up to ~7 days of cache loss;
+        providers refill on the next run (Shodan's 100/month free
+        tier is the only painful one — see docs/pipeline.md).
+      * v4 — current: composite PK plus per-row ``expires_at``.
+
+    ``expires_at`` is nullable so the read path can survive rows
+    written before the write path was switched over; the SQL comparison
+    ``expires_at > NOW()`` returns NULL for them, which is treated as
+    expired — exactly what we want for unmigrated rows.
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(cache)").fetchall()}
     if existing_cols and "ioc_type" not in existing_cols:
-        logger.info("cache_schema_migration", reason="dropping_legacy_schema")
+        logger.info(
+            "cache_schema_migration",
+            reason="dropping_legacy_v2_schema",
+            from_version="v2",
+            to_version="v4",
+        )
+        conn.execute("DROP TABLE cache")
+        conn.commit()
+    elif existing_cols and "expires_at" not in existing_cols:
+        logger.info(
+            "cache_schema_migration",
+            reason="dropping_pre_expires_at_schema",
+            from_version="v3",
+            to_version="v4",
+        )
         conn.execute("DROP TABLE cache")
         conn.commit()
     conn.execute(
@@ -141,6 +221,7 @@ def _init_cache(db_path: Path) -> sqlite3.Connection:
         "  ioc_value TEXT NOT NULL,"
         "  data TEXT NOT NULL,"
         "  queried_at TEXT NOT NULL,"
+        "  expires_at TEXT,"
         "  PRIMARY KEY (provider, ioc_type, ioc_value)"
         ")"
     )
@@ -156,14 +237,21 @@ def _get_cached(
 ) -> EnrichmentResult | None:
     """Return the cached result for (provider, ioc_type, ioc_value), or None.
 
+    Freshness is decided per-row by the ``expires_at`` column set at
+    write time (see ``_classify_ttl``). Rows with NULL ``expires_at``
+    — only possible for entries written before the write path was
+    switched over — are excluded by the SQL comparison (NULL > anything
+    is NULL, which is falsy), so they read as misses and get re-queried.
+
     Malformed cached rows (data JSON that no longer deserialises) are
-    treated as a miss so one bad row cannot poison a whole batch.
+    also treated as a miss so one bad row cannot poison a whole batch.
     """
-    cutoff = (datetime.now(tz=UTC) - timedelta(days=CACHE_TTL_DAYS)).isoformat()
+    now_iso = datetime.now(tz=UTC).isoformat()
     row = conn.execute(
         "SELECT data, queried_at FROM cache "
-        "WHERE provider = ? AND ioc_type = ? AND ioc_value = ? AND queried_at > ?",
-        (provider, ioc_type, ioc_value, cutoff),
+        "WHERE provider = ? AND ioc_type = ? AND ioc_value = ? "
+        "AND expires_at > ?",
+        (provider, ioc_type, ioc_value, now_iso),
     ).fetchone()
     if row is None:
         return None
@@ -186,16 +274,24 @@ def _set_cached(
     ioc_value: str,
     result: EnrichmentResult,
 ) -> None:
-    """Store an enrichment result keyed by (provider, ioc_type, ioc_value)."""
+    """Store an enrichment result keyed by (provider, ioc_type, ioc_value).
+
+    ``expires_at`` is derived per-row from the result's own data via
+    ``_classify_ttl``: malicious rows (provider risk_score ≥ threshold)
+    get the long ioc_type-specific window, everything else gets 7 days.
+    """
+    expires_at = result.queried_at + _classify_ttl(provider, ioc_type, result.data)
     conn.execute(
         "INSERT OR REPLACE INTO cache "
-        "(provider, ioc_type, ioc_value, data, queried_at) VALUES (?, ?, ?, ?, ?)",
+        "(provider, ioc_type, ioc_value, data, queried_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         (
             provider,
             ioc_type,
             ioc_value,
             json.dumps(result.data),
             result.queried_at.isoformat(),
+            expires_at.isoformat(),
         ),
     )
     conn.commit()

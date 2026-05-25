@@ -229,7 +229,7 @@ Common `error_type` values and what they mean:
 | `error_type` | Cause | Action |
 |---|---|---|
 | `auth`         | 401/403 — bad API key                                  | Re-check `vault_apikey_<service>` and re-run `deploy_single.yml` with the `collector` tag. The runner now fails fast on auth errors (no retries), so the count equals the number of IPs that were attempted. |
-| `rate_limit`   | 429                                                    | Provider quota exhausted. Retry tomorrow (cache covers 7-day TTL). Consider trimming the IP set or upgrading the free tier. |
+| `rate_limit`   | 429                                                    | Provider quota exhausted. Retry tomorrow (cache covers ≥7 days, longer for malicious IOCs — see CLAUDE.md → Enrichment cache lifecycle). Consider trimming the IP set or upgrading the free tier. |
 | `timeout`      | TCP timeout                                            | Transient. The runner retries 3× with exponential backoff before recording. If sustained, check the collector's egress firewall. |
 | `http_4xx`     | Other 4xx — most commonly bad request / missing param  | Provider API contract changed. Check the upstream docs (linked from `integrations.md`) and the recent provider changelog. |
 | `http_5xx`     | Provider-side outage                                   | Wait it out. The runner retries 3× before giving up. Confirm with the probe script — if `probe-enrichment.py --provider <name>` also fails, it's not us. |

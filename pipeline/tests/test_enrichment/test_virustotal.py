@@ -9,6 +9,7 @@ import pytest
 
 from lantana.enrichment.providers.virustotal import (
     VirusTotalProvider,
+    compute_file_risk_score,
     compute_ip_risk_score,
 )
 
@@ -99,6 +100,7 @@ class TestVirusTotalHash:
         assert result.data["vt_file_undetected_count"] == 40
         assert result.data["vt_file_name"] == "evil.bin"
         assert result.data["vt_file_type"] == "elf"
+        assert result.data["vt_file_risk_score"] == 100.0
 
     @pytest.mark.asyncio()
     async def test_404_hash_returns_zeros_without_raising(
@@ -120,6 +122,7 @@ class TestVirusTotalHash:
         assert result.data["vt_file_undetected_count"] == 0
         assert result.data["vt_file_name"] == ""
         assert result.data["vt_file_type"] == ""
+        assert result.data["vt_file_risk_score"] == 0.0
 
     @pytest.mark.asyncio()
     async def test_200_ip_without_as_owner_returns_empty_string(
@@ -231,6 +234,37 @@ class TestVtIpRiskScore:
         """Defensive — VT shouldn't return negative but if it ever did
         (e.g., a malformed response), return 0 rather than raising."""
         assert compute_ip_risk_score(-1) == 0.0
+
+
+class TestVtFileRiskScore:
+    """Bucketed VT file score used for cache TTL classification.
+
+    File-scan FP rates are much lower than IP-list FP rates, so a
+    single engine flagging crosses the cache "malicious" threshold (50):
+      0       → 0   (clean / not seen)
+      1       → 50  (crosses cache threshold → 180-day TTL)
+      2-4     → 75
+      ≥5      → 100
+    """
+
+    @pytest.mark.parametrize(
+        ("malicious_count", "expected_score"),
+        [
+            (0, 0.0),
+            (1, 50.0),
+            (2, 75.0),
+            (3, 75.0),
+            (4, 75.0),
+            (5, 100.0),
+            (10, 100.0),
+            (50, 100.0),
+        ],
+    )
+    def test_bucket_boundaries(self, malicious_count: int, expected_score: float) -> None:
+        assert compute_file_risk_score(malicious_count) == expected_score
+
+    def test_negative_treated_as_zero(self) -> None:
+        assert compute_file_risk_score(-1) == 0.0
 
 
 class TestVtIpRiskScoreInResult:
