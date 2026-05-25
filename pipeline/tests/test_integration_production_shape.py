@@ -204,15 +204,28 @@ def _stub_reporting() -> ReportingConfig:
     )
 
 
-def _copy_bronze_fixtures(target_root: Path) -> None:
+def _copy_bronze_fixtures(
+    target_root: Path,
+    include_datasets: frozenset[str] | None = None,
+) -> None:
     """Copy the on-disk fixture tree into a writeable tmp root.
 
     `read_bronze_ndjson` reads NDJSON from a Hive-partitioned tree. The
     fixture is committed under a stable path; we copy it into tmp_path
     so the test never mutates the checked-in files.
+
+    When ``include_datasets`` is set, only those datasets' partitions are
+    copied — used by the data-presence regression test to simulate an
+    operation that doesn't deploy every honeypot.
     """
     for src in PROD_BRONZE_FIXTURES.rglob("events.json"):
         rel = src.relative_to(PROD_BRONZE_FIXTURES)
+        if include_datasets is not None:
+            # First path component is ``dataset=<name>``.
+            dataset_part = rel.parts[0]
+            dataset_name = dataset_part.removeprefix("dataset=")
+            if dataset_name not in include_datasets:
+                continue
         dest = target_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(src.read_bytes())
@@ -600,3 +613,187 @@ async def test_riot_signal_survives_bronze_to_gold(
     # would be (88 + 50 + 25 + 75) / 4 = 59.5. The 18.75-point gap is
     # exactly what RIOT pulls down.
     assert attacker_row["enrichment_risk_score"] == pytest.approx(40.75)
+
+
+# ---------------------------------------------------------------------------
+# Data-presence regression: pipeline must survive a missing honeypot dataset
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def prod_pipeline_no_cowrie(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    """Same setup as ``prod_pipeline`` but copies only suricata + nftables bronze.
+
+    Simulates an operation that deploys the honeywall + IDS stack without
+    any honeypot — cowrie + dionaea partitions are absent. The pipeline
+    must produce a coherent brief regardless: data-presence-aware sections
+    skip silently, honeywall-driven sections render normally.
+    """
+    bronze_root = tmp_path / "bronze"
+    silver_root = tmp_path / "silver"
+    gold_root = tmp_path / "gold"
+    cache_db = tmp_path / "cache.db"
+    sensor_dir = tmp_path / "sensor"
+    errors_path = tmp_path / "enrichment_errors.json"
+
+    sensor_dir.mkdir()
+    _copy_bronze_fixtures(bronze_root, include_datasets=frozenset({"suricata", "nftables"}))
+
+    monkeypatch.setattr(datalake_mod, "BRONZE_ROOT", bronze_root)
+    monkeypatch.setattr(datalake_mod, "SILVER_ROOT", silver_root)
+    monkeypatch.setattr(datalake_mod, "GOLD_ROOT", gold_root)
+
+    real_read_bronze = datalake_mod.read_bronze_ndjson
+    real_write_silver = datalake_mod.write_silver_partition
+
+    def _read_bronze(
+        target_date: date,
+        dataset: str | None = None,
+        bronze_root: Path = bronze_root,
+    ) -> pl.DataFrame:
+        return real_read_bronze(target_date, dataset=dataset, bronze_root=bronze_root)
+
+    def _write_silver(
+        df: pl.DataFrame,
+        target_date: date,
+        dataset: str,
+        server: str,
+        silver_root: Path = silver_root,
+    ) -> Path:
+        return real_write_silver(df, target_date, dataset, server, silver_root=silver_root)
+
+    monkeypatch.setattr(runner_mod, "read_bronze_ndjson", _read_bronze)
+    monkeypatch.setattr(runner_mod, "write_silver_partition", _write_silver)
+
+    monkeypatch.setattr(runner_mod, "load_secrets", _stub_secrets)
+    monkeypatch.setattr(runner_mod, "load_reporting", _stub_reporting)
+
+    monkeypatch.setattr(
+        runner_mod, "AbuseIPDBProvider",
+        _make_ip_provider_class("abuseipdb", _FULL_ENRICHMENT["abuseipdb"]),
+    )
+    monkeypatch.setattr(
+        runner_mod, "ShodanProvider",
+        _make_ip_provider_class("shodan", _FULL_ENRICHMENT["shodan"]),
+    )
+    monkeypatch.setattr(runner_mod, "VirusTotalProvider", _make_vt_provider_class())
+    monkeypatch.setattr(
+        runner_mod, "GreyNoiseProvider",
+        _make_ip_provider_class("greynoise", _FULL_ENRICHMENT["greynoise"]),
+    )
+
+    return {
+        "bronze": bronze_root,
+        "silver": silver_root,
+        "gold": gold_root,
+        "cache": cache_db,
+        "sensor": sensor_dir,
+        "errors": errors_path,
+        "provider_state": tmp_path / "provider_state.json",
+    }
+
+
+@pytest.mark.asyncio()
+async def test_pipeline_and_brief_survive_missing_cowrie(
+    prod_pipeline_no_cowrie: dict[str, Path],
+) -> None:
+    """When cowrie isn't deployed, the pipeline still produces a valid brief.
+
+    Cowrie-specific gold columns (``top_usernames``/``top_passwords``/
+    ``top_commands``/``top_download_*``) end up either absent from the
+    summary row or empty lists. The brief must:
+
+    * not crash trying to read those columns,
+    * omit the Top Credentials / Top Commands / Malware Captured sections,
+    * still render honeywall/suricata-driven sections (Geographic,
+      Top Attackers, Findings, Pipeline Health).
+
+    This is the load-bearing regression test for the data-presence rule
+    documented in CLAUDE.md ``Pipeline fail-safe principles §3``.
+    """
+    from lantana.notify.alerts import ErrorBuckets
+    from lantana.notify.report import generate_daily_brief
+
+    await run_enrichment(
+        target_date=FIXTURE_DATE,
+        cache_db_path=prod_pipeline_no_cowrie["cache"],
+        sensor_dir=prod_pipeline_no_cowrie["sensor"],
+        errors_path=prod_pipeline_no_cowrie["errors"],
+        provider_state_path=prod_pipeline_no_cowrie["provider_state"],
+    )
+
+    silver_root = prod_pipeline_no_cowrie["silver"]
+    gold_root = prod_pipeline_no_cowrie["gold"]
+    date_str = FIXTURE_DATE.isoformat()
+
+    # No cowrie/dionaea silver — only the honeywall datasets.
+    assert not (silver_root / "dataset=cowrie").exists(), (
+        "cowrie silver must not exist when bronze partition is absent"
+    )
+    assert (silver_root / "dataset=suricata" / f"date={date_str}").exists()
+    assert (silver_root / "dataset=nftables" / f"date={date_str}").exists()
+
+    run_transform(
+        target_date=FIXTURE_DATE,
+        silver_root=silver_root,
+        gold_root=gold_root,
+    )
+
+    def _gold_parquet(table: str) -> Path:
+        return gold_root / table / f"date={date_str}" / "summary.parquet"
+
+    # Honeywall-driven gold tables still produced.
+    for table in ("daily_summary", "ip_reputation", "geographic_summary", "detection_findings"):
+        path = _gold_parquet(table)
+        assert path.exists(), f"{table} should still be produced without cowrie"
+
+    summary = pl.read_parquet(_gold_parquet("daily_summary"))
+    reputation = pl.read_parquet(_gold_parquet("ip_reputation"))
+    progression_path = _gold_parquet("behavioral_progression")
+    progression = (
+        pl.read_parquet(progression_path) if progression_path.exists() else pl.DataFrame()
+    )
+    clusters_path = _gold_parquet("campaign_clusters")
+    clusters = (
+        pl.read_parquet(clusters_path) if clusters_path.exists() else pl.DataFrame()
+    )
+    geographic = pl.read_parquet(_gold_parquet("geographic_summary"))
+    detection = pl.read_parquet(_gold_parquet("detection_findings"))
+
+    # Sanity: cowrie-specific summary fields are either absent or empty.
+    row = summary.row(0, named=True)
+    for cowrie_field in ("top_usernames", "top_passwords", "top_commands",
+                          "top_download_urls", "top_download_hashes"):
+        value = row.get(cowrie_field)
+        assert value is None or value == [], (
+            f"{cowrie_field} should be absent / empty without cowrie, got {value!r}"
+        )
+    assert row.get("downloads_captured", 0) in (0, None)
+    assert row.get("commands_executed", 0) in (0, None)
+
+    # Generate the brief. Must not raise.
+    brief = generate_daily_brief(
+        FIXTURE_DATE,
+        summary,
+        reputation,
+        progression,
+        clusters,
+        "Test Op (no-cowrie)",
+        geographic=geographic,
+        detection=detection,
+        buckets=ErrorBuckets(critical=[], warning=[]),
+    )
+
+    # Cowrie-specific sections silently omitted.
+    assert "## Top Credentials" not in brief
+    assert "## Top Commands" not in brief
+    assert "## Malware Captured" not in brief
+
+    # Honeywall-driven sections still present.
+    assert "## Key Metrics" in brief
+    assert "## Pipeline Health" in brief
+    assert "## Geographic Origin" in brief or "## Top Attackers" in brief
+    # Detection highlights should land (suricata bronze had alerts).
+    assert "## Detection Highlights" in brief
