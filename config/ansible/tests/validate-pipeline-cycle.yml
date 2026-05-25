@@ -31,11 +31,13 @@
   gather_facts: false
   vars:
     target_date: "{{ lookup('pipe', 'date -u -d yesterday +%Y-%m-%d') }}"
+    # lantana-alert.timer was retired in 2026-05-25's brief consolidation;
+    # the .service unit stays for manual --force replays but is no longer
+    # scheduled, so its last Result lives outside the daily cycle.
     pipeline_units:
       - lantana-prune
       - lantana-enrich
       - lantana-transform
-      - lantana-alert
       - lantana-report
     expected_silver_datasets:
       - cowrie

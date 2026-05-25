@@ -212,9 +212,6 @@
     - { binary: "lantana-transform",
         description: "Lantana transform (silver→gold)",
         calendar: "*-*-* 04:00:00" }
-    - { binary: "lantana-alert",
-        description: "Lantana daily alerter (Discord, non-clean days only)",
-        calendar: "*-*-* 05:00:00" }
     - { binary: "lantana-report",
         description: "Lantana daily intel report (Discord, always posts)",
         calendar: "*-*-* 06:00:00" }
@@ -222,6 +219,31 @@
     job_binary: "{{ item.binary }}"
     job_description: "{{ item.description }}"
     on_calendar: "{{ item.calendar }}"
+  tags: [collector, pipeline]
+
+# lantana-alert.timer was retired when the daily brief absorbed the
+# alerter's role (single Discord message at 06:00). The .service unit
+# stays so `systemctl start lantana-alert.service` (or
+# `lantana-alert --force --date YYYY-MM-DD` for off-cycle replays) still
+# works. This task cleans up the timer file + disables it on hosts that
+# were deployed before the consolidation.
+- name: "Retire legacy lantana-alert.timer (consolidated into daily report)"
+  become: true
+  ansible.builtin.systemd:
+    name: lantana-alert.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  failed_when: false  # already-absent timer is fine
+  tags: [collector, pipeline]
+
+- name: "Remove legacy lantana-alert.timer unit file"
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/system/lantana-alert.timer
+    state: absent
+  # The next "Enable and start pipeline systemd timers" task uses
+  # daemon_reload: true, which is enough to drop the now-removed unit.
   tags: [collector, pipeline]
 
 - name: "Enable and start pipeline systemd timers"
@@ -235,7 +257,6 @@
     - lantana-prune
     - lantana-enrich
     - lantana-transform
-    - lantana-alert
     - lantana-report
   tags: [collector, pipeline]
 

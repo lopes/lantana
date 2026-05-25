@@ -149,6 +149,10 @@
         fail_msg: "Cron job {{ item.item }} is missing."
       loop: "{{ cron_check.results }}"
 
+    # lantana-alert.timer was retired when the daily brief absorbed the
+    # alerter's role (single Discord message at 06:00). Four timers now
+    # — prune / enrich / transform / report. The .service unit stays for
+    # manual `lantana-alert --force` replays and is asserted below.
     - name: "Check pipeline systemd timer units"
       ansible.builtin.stat:
         path: "/etc/systemd/system/{{ item }}.timer"
@@ -156,7 +160,6 @@
         - lantana-prune
         - lantana-enrich
         - lantana-transform
-        - lantana-alert
         - lantana-report
       register: pipeline_timer_check
 
@@ -172,11 +175,29 @@
         - lantana-prune
         - lantana-enrich
         - lantana-transform
-        - lantana-alert
         - lantana-report
       register: pipeline_timer_enabled
       changed_when: false
       failed_when: pipeline_timer_enabled.rc != 0 or pipeline_timer_enabled.stdout.strip() != "enabled"
+
+    - name: "Check lantana-alert.service still exists (for manual --force replays)"
+      ansible.builtin.stat:
+        path: /etc/systemd/system/lantana-alert.service
+      register: lantana_alert_service_check
+
+    - name: "Assert lantana-alert.service is installed"
+      ansible.builtin.assert:
+        that: "lantana_alert_service_check.stat.exists"
+        fail_msg: >-
+          lantana-alert.service is missing — manual `lantana-alert --force`
+          replays will fail. The .service unit must stay installed even
+          though the .timer was retired.
+
+    - name: "Assert legacy lantana-alert.timer is removed"
+      ansible.builtin.stat:
+        path: /etc/systemd/system/lantana-alert.timer
+      register: lantana_alert_timer_check
+      failed_when: lantana_alert_timer_check.stat.exists
 
     - name: "Check if Log Files are being created"
       ansible.builtin.stat:
