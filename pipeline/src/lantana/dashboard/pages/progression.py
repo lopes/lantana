@@ -8,11 +8,15 @@ import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
+from lantana.notify.explanations import BRIEF_SECTIONS
 
 
 def render(selected_date: date) -> None:
     """Render the behavioral progression page for the selected date."""
     st.header(f"Behavioral Progression — {selected_date.isoformat()}")
+    section = BRIEF_SECTIONS.get("Escalation Funnel")
+    if section:
+        st.caption(section.tooltip())
 
     df = read_gold_table("behavioral_progression", selected_date)
     if df.is_empty():
@@ -22,6 +26,12 @@ def render(selected_date: date) -> None:
     # Stage funnel metrics
     st.subheader("Escalation Funnel")
     cols = st.columns(4)
+    stage_help = {
+        "Scan": "IPs that produced any event (nftables drop, suricata alert, cowrie probe).",
+        "Credential": "IPs that submitted at least one auth attempt to cowrie or dionaea.",
+        "Authenticated": "IPs that the honeypot accepted (cowrie's permissive auth).",
+        "Interactive": "Authenticated IPs that ran shell commands after login.",
+    }
     for i, (stage, label) in enumerate(
         [
             (1, "Scan"),
@@ -31,7 +41,7 @@ def render(selected_date: date) -> None:
         ]
     ):
         count = df.filter(pl.col("max_stage") >= stage).height
-        cols[i].metric(label, count)
+        cols[i].metric(label, count, help=stage_help.get(label))
 
     st.divider()
 
@@ -39,8 +49,14 @@ def render(selected_date: date) -> None:
     auto_count = df.filter(pl.col("is_automated")).height
     manual_count = len(df) - auto_count
     a_col, m_col, _ = st.columns(3)
-    a_col.metric("Automated Bots", auto_count)
-    m_col.metric("Manual / Unknown", manual_count)
+    a_col.metric(
+        "Automated Bots", auto_count,
+        help="IPs flagged as automated by GreyNoise classification or timing heuristics.",
+    )
+    m_col.metric(
+        "Manual / Unknown", manual_count,
+        help="IPs without an automation signal — manual operators or unattributed bots.",
+    )
 
     st.divider()
 

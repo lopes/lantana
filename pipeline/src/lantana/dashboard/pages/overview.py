@@ -9,6 +9,23 @@ import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
+from lantana.notify.explanations import BRIEF_SECTIONS, METRICS
+
+
+def _metric_help(name: str) -> str | None:
+    """Look up the dashboard tooltip for a metric card.
+
+    Returns ``None`` if no explanation is registered — Streamlit's
+    ``help=None`` then renders the card without a tooltip, which is
+    preferable to a placeholder string."""
+    triplet = METRICS.get(name)
+    return triplet.tooltip() if triplet is not None else None
+
+
+def _section_caption(name: str) -> str | None:
+    """Look up the dashboard caption for a section heading."""
+    triplet = BRIEF_SECTIONS.get(name)
+    return triplet.tooltip() if triplet is not None else None
 
 
 def _render_top_n_table(entries: list[dict[str, Any]], label: str) -> None:
@@ -39,13 +56,15 @@ def render(selected_date: date) -> None:
 
     row = df.row(0, named=True)
 
-    # Metric cards
+    # Metric cards — hover tooltips explain what/why/how for each.
     cols = st.columns(5)
-    cols[0].metric("Total Events", f"{row['total_events']:,}")
-    cols[1].metric("Unique IPs", f"{row['unique_source_ips']:,}")
-    cols[2].metric("Auth Attempts", f"{row['auth_attempts']:,}")
-    cols[3].metric("Commands", f"{row['commands_executed']:,}")
-    cols[4].metric("Findings", f"{row['findings_detected']:,}")
+    cols[0].metric("Total Events", f"{row['total_events']:,}", help=_metric_help("Total Events"))
+    cols[1].metric("Unique IPs", f"{row['unique_source_ips']:,}", help=_metric_help("Unique IPs"))
+    cols[2].metric(
+        "Auth Attempts", f"{row['auth_attempts']:,}", help=_metric_help("Auth Attempts"),
+    )
+    cols[3].metric("Commands", f"{row['commands_executed']:,}", help=_metric_help("Commands"))
+    cols[4].metric("Findings", f"{row['findings_detected']:,}", help=_metric_help("Findings"))
 
     st.divider()
 
@@ -82,20 +101,29 @@ def render(selected_date: date) -> None:
     user_col, pass_col = st.columns(2)
     with user_col:
         st.subheader("Top Usernames")
-        _render_top_n_table(row.get("top_usernames", []), "Username")
+        caption = _section_caption("Top Credentials")
+        if caption:
+            st.caption(caption)
+        _render_top_n_table(row.get("top_usernames", []) or [], "Username")
 
     with pass_col:
         st.subheader("Top Passwords")
-        _render_top_n_table(row.get("top_passwords", []), "Password")
+        _render_top_n_table(row.get("top_passwords", []) or [], "Password")
 
     cmd_col, country_col = st.columns(2)
     with cmd_col:
         st.subheader("Top Commands")
-        _render_top_n_table(row.get("top_commands", []), "Command")
+        caption = _section_caption("Top Commands")
+        if caption:
+            st.caption(caption)
+        _render_top_n_table(row.get("top_commands", []) or [], "Command")
 
     with country_col:
         st.subheader("Top Source Countries")
-        _render_top_n_table(row.get("top_source_countries", []), "Country")
+        caption = _section_caption("Geographic Origin")
+        if caption:
+            st.caption(caption)
+        _render_top_n_table(row.get("top_source_countries", []) or [], "Country")
 
     st.divider()
 
@@ -106,6 +134,9 @@ def render(selected_date: date) -> None:
         asn_col, _ = st.columns(2)
         with asn_col:
             st.subheader("Top ASNs")
+            caption = _section_caption("Geographic Origin")
+            if caption:
+                st.caption(caption)
             asn_entries = geo_row.get("top_asns", [])
             if asn_entries:
                 asn_rows = []

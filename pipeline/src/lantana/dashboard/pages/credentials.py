@@ -9,6 +9,7 @@ import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
+from lantana.notify.explanations import BRIEF_SECTIONS
 
 
 def _render_top_n_table(entries: list[dict[str, Any]], label: str, empty_caption: str) -> None:
@@ -59,24 +60,34 @@ def render(selected_date: date) -> None:
     if not summary.is_empty():
         row = summary.row(0, named=True)
 
+        creds_caption = BRIEF_SECTIONS.get("Top Credentials")
+        if creds_caption:
+            st.caption(creds_caption.tooltip())
+
         user_col, pass_col, pair_col = st.columns(3)
         with user_col:
             st.subheader("Top Usernames")
-            _render_top_n_table(row.get("top_usernames", []), "Username", "No username data.")
+            _render_top_n_table(
+                row.get("top_usernames", []) or [], "Username", "No username data.",
+            )
 
         with pass_col:
             st.subheader("Top Passwords")
-            _render_top_n_table(row.get("top_passwords", []), "Password", "No password data.")
+            _render_top_n_table(
+                row.get("top_passwords", []) or [], "Password", "No password data.",
+            )
 
         with pair_col:
             st.subheader("Top Credential Pairs")
-            _render_credential_pairs(row.get("top_credential_pairs", []))
+            _render_credential_pairs(row.get("top_credential_pairs", []) or [])
 
         st.divider()
 
     # Campaign clusters
     st.subheader("Campaign Clusters")
-    st.caption("IPs sharing the same credential pair — likely botnets or coordinated attacks.")
+    clusters_caption = BRIEF_SECTIONS.get("Campaign Clusters")
+    if clusters_caption:
+        st.caption(clusters_caption.tooltip())
 
     if clusters.is_empty():
         st.info("No campaign clusters detected for this date.")

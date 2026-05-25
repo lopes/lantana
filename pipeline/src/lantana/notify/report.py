@@ -12,11 +12,26 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from lantana.notify.explanations import BRIEF_SECTIONS
+
 if TYPE_CHECKING:
     from lantana.notify.alerts import ErrorBuckets
     from lantana.notify.timing import StepTiming
 
 TOP_N: int = 10
+
+
+def _section_caption(key: str) -> str | None:
+    """Return the italic ``_What: …. Why: …. How: …._`` line for a section.
+
+    Returns ``None`` when no caption is registered — the renderer then
+    skips appending. Keeps every section header gated on the same lookup
+    so adding a new section is one entry in ``BRIEF_SECTIONS``.
+    """
+    triplet = BRIEF_SECTIONS.get(key)
+    if triplet is None:
+        return None
+    return triplet.italic_one_liner()
 """Brief sections cap top-N tables at this many rows so the markdown stays
 scannable. Matches the dashboard's ``_render_top_n_table`` width and the
 ``TOP_N`` constant in ``transform/metrics.py`` so brief and dashboard
@@ -175,10 +190,9 @@ def _render_ioc_inventory(silver: pl.DataFrame | None) -> list[str]:
         return []
 
     lines: list[str] = ["## Full IOC Inventory\n"]
-    lines.append(
-        "_Unique IOCs observed on this date. Collapsed by default; click to "
-        "expand. Rank/count/enrichment context is in the sections above._\n"
-    )
+    caption = _section_caption("Full IOC Inventory")
+    if caption:
+        lines.append(caption + "\n")
 
     if ips:
         lines.append(f"<details><summary>Source IPs ({len(ips)})</summary>\n")
@@ -213,6 +227,9 @@ def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
     from lantana.notify.alerts import _grouped_summary
 
     lines: list[str] = ["## Pipeline Health\n"]
+    caption = _section_caption("Pipeline Health")
+    if caption:
+        lines.append(caption + "\n")
 
     if buckets.is_clean and not buckets.info:
         lines.append("✅ No issues during the previous pipeline cycle.\n")
@@ -296,6 +313,9 @@ def generate_daily_brief(
 
     # Key metrics
     lines.append("## Key Metrics\n")
+    caption = _section_caption("Key Metrics")
+    if caption:
+        lines.append(caption + "\n")
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
     lines.append(f"| Total Events | {row['total_events']:,} |")
@@ -312,6 +332,9 @@ def generate_daily_brief(
     if geographic is not None and not geographic.is_empty():
         geo_row = geographic.row(0, named=True)
         lines.append("## Geographic Origin\n")
+        caption = _section_caption("Geographic Origin")
+        if caption:
+            lines.append(caption + "\n")
 
         countries = geo_row.get("top_countries", []) or []
         if countries:
@@ -346,6 +369,9 @@ def generate_daily_brief(
         inter_n = progression.filter(pl.col("max_stage") >= 4).height
 
         lines.append("## Escalation Funnel\n")
+        caption = _section_caption("Escalation Funnel")
+        if caption:
+            lines.append(caption + "\n")
         lines.append("```mermaid")
         lines.append("graph LR")
         lines.append(f'    S["Scan<br/>{scan_n} IPs"]')
@@ -362,6 +388,9 @@ def generate_daily_brief(
     # signals are firing).
     if not reputation.is_empty():
         lines.append("## Top Attackers\n")
+        caption = _section_caption("Top Attackers")
+        if caption:
+            lines.append(caption + "\n")
         top = reputation.sort("risk_score", descending=True).head(TOP_N)
         lines.append("| Rank | IP | Risk | Country | Events | Stage | A/V/S/G |")
         lines.append("|------|----|------|---------|--------|-------|---------|")
@@ -393,6 +422,9 @@ def generate_daily_brief(
         )
         if named.height > 0:
             lines.append("## Threat Actor Attribution\n")
+            caption = _section_caption("Threat Actor Attribution")
+            if caption:
+                lines.append(caption + "\n")
             lines.append("IPs with known threat actor labels (GreyNoise):\n")
             lines.append("| Rank | Actor | IP | Classification |")
             lines.append("|------|-------|----|---------------|")
@@ -409,6 +441,9 @@ def generate_daily_brief(
         escalated = progression.filter(pl.col("max_stage") >= 3).head(TOP_N)
         if escalated.height > 0:
             lines.append("## Notable Escalations\n")
+            caption = _section_caption("Notable Escalations")
+            if caption:
+                lines.append(caption + "\n")
             lines.append("IPs that achieved authentication or interactive access:\n")
             lines.append("| Rank | IP | Stage | Auth | Commands | Automated |")
             lines.append("|------|----|-------|------|----------|-----------|")
@@ -425,6 +460,9 @@ def generate_daily_brief(
     # Campaign clusters
     if not clusters.is_empty():
         lines.append("## Campaign Clusters\n")
+        caption = _section_caption("Campaign Clusters")
+        if caption:
+            lines.append(caption + "\n")
         lines.append("Credential pairs used by multiple IPs (likely botnets):\n")
         lines.append("| Rank | Credentials | IP Count | IPs |")
         lines.append("|------|-------------|----------|-----|")
@@ -441,6 +479,9 @@ def generate_daily_brief(
     # Detection highlights
     if detection is not None and not detection.is_empty():
         lines.append("## Detection Highlights\n")
+        caption = _section_caption("Detection Highlights")
+        if caption:
+            lines.append(caption + "\n")
         lines.append("Top Suricata rules triggered:\n")
         lines.append("| Rank | Rule | Events | Unique IPs |")
         lines.append("|------|------|--------|-----------|")
@@ -455,6 +496,9 @@ def generate_daily_brief(
     downloads = row.get("downloads_captured", 0)
     if downloads and downloads > 0:
         lines.append("## Malware Captured\n")
+        caption = _section_caption("Malware Captured")
+        if caption:
+            lines.append(caption + "\n")
         lines.append(f"**{downloads}** file(s) downloaded by attackers\n")
         download_hashes = row.get("top_download_hashes", []) or []
         if download_hashes:
@@ -507,6 +551,9 @@ def generate_daily_brief(
     passwords = row.get("top_passwords", []) or []
     if usernames or passwords:
         lines.append("## Top Credentials\n")
+        caption = _section_caption("Top Credentials")
+        if caption:
+            lines.append(caption + "\n")
         if usernames:
             lines.append("**Top Usernames:**\n")
             lines.append("| Rank | Username | Count |")
@@ -526,6 +573,9 @@ def generate_daily_brief(
     commands = row.get("top_commands", []) or []
     if commands:
         lines.append("## Top Commands\n")
+        caption = _section_caption("Top Commands")
+        if caption:
+            lines.append(caption + "\n")
         lines.append("| Rank | Command | Count |")
         lines.append("|------|---------|-------|")
         for rank, entry in enumerate(commands[:TOP_N], start=1):

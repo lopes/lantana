@@ -9,11 +9,15 @@ import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
+from lantana.notify.explanations import BRIEF_SECTIONS
 
 
 def render(selected_date: date) -> None:
     """Render the geography page for the selected date."""
     st.header(f"Geography — {selected_date.isoformat()}")
+    section = BRIEF_SECTIONS.get("Geographic Origin")
+    if section:
+        st.caption(section.tooltip())
 
     df = read_gold_table("ip_reputation", selected_date)
     if df.is_empty():

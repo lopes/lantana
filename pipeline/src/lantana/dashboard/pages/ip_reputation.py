@@ -8,6 +8,7 @@ import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
+from lantana.notify.explanations import BRIEF_SECTIONS
 
 
 def _risk_label(score: float) -> str:
@@ -22,6 +23,9 @@ def _risk_label(score: float) -> str:
 def render(selected_date: date) -> None:
     """Render the IP reputation page for the selected date."""
     st.header(f"IP Reputation — {selected_date.isoformat()}")
+    section = BRIEF_SECTIONS.get("Top Attackers")
+    if section:
+        st.caption(section.tooltip())
 
     df = read_gold_table("ip_reputation", selected_date)
     if df.is_empty():
@@ -30,13 +34,25 @@ def render(selected_date: date) -> None:
 
     # Summary metrics
     cols = st.columns(4)
-    cols[0].metric("Total IPs", len(df))
+    cols[0].metric(
+        "Total IPs", len(df),
+        help="Distinct source IPs scored on this date.",
+    )
     high = df.filter(pl.col("risk_score") >= 70).height
     med = df.filter((pl.col("risk_score") >= 40) & (pl.col("risk_score") < 70)).height
     low = df.filter(pl.col("risk_score") < 40).height
-    cols[1].metric("High Risk", high)
-    cols[2].metric("Medium Risk", med)
-    cols[3].metric("Low Risk", low)
+    cols[1].metric(
+        "High Risk", high,
+        help="IPs with risk_score ≥ 70 — STIX Indicator threshold and Discord top-5 source.",
+    )
+    cols[2].metric(
+        "Medium Risk", med,
+        help="IPs with risk_score in [40, 70) — worth a glance but not pageable.",
+    )
+    cols[3].metric(
+        "Low Risk", low,
+        help="IPs with risk_score < 40 — typically scanner noise or behavioral-only signal.",
+    )
 
     st.divider()
 
