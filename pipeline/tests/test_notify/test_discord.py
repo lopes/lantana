@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lantana.notify.discord import EMBED_COLORS, send_notification
+from lantana.notify.alerts import ErrorBuckets
+from lantana.notify.discord import EMBED_COLORS, max_severity, send_notification
 
 
 @pytest.fixture()
@@ -88,3 +89,39 @@ async def test_send_notification_with_attachment(
 
     call_kwargs = mock_httpx_client.post.call_args
     assert "files" in call_kwargs.kwargs or "files" in (call_kwargs[1] if len(call_kwargs) > 1 else {})
+
+
+# ---------------------------------------------------------------------------
+# max_severity — embed-color decision
+# ---------------------------------------------------------------------------
+
+
+class TestMaxSeverity:
+    def test_clean_returns_info(self) -> None:
+        """No errors at all → green embed via info level."""
+        assert max_severity(ErrorBuckets(critical=[], warning=[])) == "info"
+
+    def test_info_only_returns_info(self) -> None:
+        """Rate-limit-only day stays green; routine ops noise doesn't escalate."""
+        buckets = ErrorBuckets(
+            critical=[],
+            warning=[],
+            info=[{"provider": "abuseipdb", "error_type": "rate_limit", "count": 100}],
+        )
+        assert max_severity(buckets) == "info"
+
+    def test_warning_present_returns_warning(self) -> None:
+        buckets = ErrorBuckets(
+            critical=[],
+            warning=[{"provider": "shodan", "error_type": "timeout", "count": 1}],
+        )
+        assert max_severity(buckets) == "warning"
+
+    def test_critical_present_returns_critical(self) -> None:
+        """Critical wins over warning and info."""
+        buckets = ErrorBuckets(
+            critical=[{"provider": "pipeline", "error_type": "transform_failed", "count": 1}],
+            warning=[{"provider": "shodan", "error_type": "timeout", "count": 1}],
+            info=[{"provider": "abuseipdb", "error_type": "rate_limit", "count": 100}],
+        )
+        assert max_severity(buckets) == "critical"

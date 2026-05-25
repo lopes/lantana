@@ -8,9 +8,12 @@ as a .md file.
 from __future__ import annotations
 
 from datetime import date  # noqa: TC003 — runtime parameter type
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
+
+if TYPE_CHECKING:
+    from lantana.notify.alerts import ErrorBuckets
 
 
 def _fmt_provider_risk(row: dict[str, Any]) -> str:
@@ -58,6 +61,65 @@ def _fmt_risk_breakdown(row: dict[str, Any]) -> str:
     return f"{composite:.1f} ({e_str}+{b_str})/2"
 
 
+def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
+    """Render the Pipeline Health markdown section from a three-tier bucket.
+
+    Always emits a section header so the operator can verify the pipeline
+    self-check ran. Clean days produce a one-line ``✅ No issues.`` body;
+    non-clean days render per-tier aggregated tables grouped by
+    (provider, error_type, count) so the analyst can see degradation
+    patterns without opening logs.
+    """
+    from lantana.notify.alerts import _grouped_summary
+
+    lines: list[str] = ["## Pipeline Health\n"]
+
+    if buckets.is_clean and not buckets.info:
+        lines.append("✅ No issues during the previous pipeline cycle.\n")
+        return lines
+
+    crit_n = sum(int(r.get("count", 1)) for r in buckets.critical)
+    warn_n = sum(int(r.get("count", 1)) for r in buckets.warning)
+    info_n = sum(int(r.get("count", 1)) for r in buckets.info)
+    lines.append(
+        f"🔴 Critical: **{crit_n}** &nbsp;·&nbsp; "
+        f"🟡 Warning: **{warn_n}** &nbsp;·&nbsp; "
+        f"🔵 Info: **{info_n}**\n"
+    )
+
+    if buckets.critical:
+        lines.append("**Critical** — file creation failed:\n")
+        lines.append("| Provider | Error Type | Count | Message |")
+        lines.append("|----------|-----------|-------|---------|")
+        for row in sorted(
+            buckets.critical, key=lambda r: int(r.get("count", 1)), reverse=True
+        )[:10]:
+            provider = row.get("provider", "?")
+            etype = row.get("error_type", "?")
+            count = row.get("count", 1)
+            msg = str(row.get("message", ""))[:120]
+            lines.append(f"| `{provider}` | `{etype}` | {count} | {msg} |")
+        lines.append("")
+
+    if buckets.warning:
+        lines.append("**Warning** — provider degradation (non-routine):\n")
+        lines.append("| Provider | Error Type | Count |")
+        lines.append("|----------|-----------|-------|")
+        for provider, etype, count in _grouped_summary(buckets.warning, top_n=10):
+            lines.append(f"| `{provider}` | `{etype}` | {count} |")
+        lines.append("")
+
+    if buckets.info:
+        lines.append("**Info** — routine ops noise (rate-limit exhaustion):\n")
+        lines.append("| Provider | Error Type | Count |")
+        lines.append("|----------|-----------|-------|")
+        for provider, etype, count in _grouped_summary(buckets.info, top_n=10):
+            lines.append(f"| `{provider}` | `{etype}` | {count} |")
+        lines.append("")
+
+    return lines
+
+
 def generate_daily_brief(
     target_date: date,
     summary: pl.DataFrame,
@@ -67,6 +129,7 @@ def generate_daily_brief(
     operation_name: str,
     geographic: pl.DataFrame | None = None,
     detection: pl.DataFrame | None = None,
+    buckets: ErrorBuckets | None = None,
 ) -> str:
     """Generate a Markdown daily intelligence brief from gold tables."""
     if summary.is_empty():
@@ -78,6 +141,11 @@ def generate_daily_brief(
     # Header
     lines.append(f"# Daily Brief — {target_date.isoformat()}")
     lines.append(f"**Operation:** {operation_name}\n")
+
+    # Pipeline health — operators want this above the data so a critical
+    # failure isn't buried below the daily metrics.
+    if buckets is not None:
+        lines.extend(_render_pipeline_health(buckets))
 
     # Key metrics
     lines.append("## Key Metrics\n")
@@ -281,10 +349,13 @@ def generate_embed_summary(
     target_date: date,
     summary: pl.DataFrame,
     progression: pl.DataFrame,
+    buckets: ErrorBuckets | None = None,
 ) -> str:
     """Generate a short Discord embed summary (< 4096 chars).
 
     This is the embed description; the full report is attached as a file.
+    When ``buckets`` is provided, a 1-line health summary is appended so the
+    operator sees pipeline status without opening the attachment.
     """
     if summary.is_empty():
         return f"No data available for {target_date.isoformat()}."
@@ -314,5 +385,30 @@ def generate_embed_summary(
         if auto > 0:
             parts.append(f"Automated bots: {auto}")
 
+    if buckets is not None:
+        parts.append(_health_one_liner(buckets))
+
     parts.append("\nFull report attached.")
     return "\n".join(parts)
+
+
+def _health_one_liner(buckets: ErrorBuckets) -> str:
+    """One-line pipeline-health summary for the Discord embed description.
+
+    Always emits a single line so the operator can see at a glance whether
+    yesterday's pipeline was clean / had warnings / had a critical failure
+    without opening the markdown attachment.
+    """
+    if buckets.is_clean and not buckets.info:
+        return "✅ Pipeline clean — no issues."
+    crit_n = sum(int(r.get("count", 1)) for r in buckets.critical)
+    warn_n = sum(int(r.get("count", 1)) for r in buckets.warning)
+    info_n = sum(int(r.get("count", 1)) for r in buckets.info)
+    parts: list[str] = []
+    if crit_n:
+        parts.append(f"🔴 {crit_n} critical")
+    if warn_n:
+        parts.append(f"🟡 {warn_n} warning")
+    if info_n:
+        parts.append(f"🔵 {info_n} info")
+    return " · ".join(parts)

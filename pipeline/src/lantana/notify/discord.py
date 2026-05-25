@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import httpx
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+if TYPE_CHECKING:
+    from lantana.notify.alerts import ErrorBuckets
 
 logger = structlog.get_logger()
 
@@ -14,6 +19,21 @@ EMBED_COLORS: dict[str, int] = {
     "warning": 0xF39C12,  # Orange
     "critical": 0xE74C3C,  # Red
 }
+
+
+def max_severity(buckets: ErrorBuckets) -> str:
+    """Return the embed level matching the highest severity tier present.
+
+    Color rule (user-facing): green for clean or info-only days, yellow when
+    warnings exist, red when any critical row is present. Info-tier rows
+    (rate-limit exhaustion) are routine ops noise and don't escalate the
+    color; they're surfaced in the brief attachment for traceability.
+    """
+    if buckets.has_critical:
+        return "critical"
+    if buckets.has_warning:
+        return "warning"
+    return "info"
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
@@ -64,7 +84,14 @@ async def send_notification(
 
 
 def generate_and_send() -> None:
-    """CLI entry point for lantana-report: generate daily report and send to Discord."""
+    """CLI entry point for lantana-report.
+
+    Merged daily flow: loads yesterday's enrichment errors, classifies them
+    into critical/warning/info tiers, reads gold tables, and posts a single
+    Discord message whose embed color follows max severity. The full brief
+    (markdown) is attached. Replaces the previous split between
+    ``lantana-alert`` and ``lantana-report``.
+    """
     import asyncio
     import tempfile
     from datetime import date, timedelta
@@ -72,6 +99,7 @@ def generate_and_send() -> None:
 
     from lantana.common.config import load_reporting, load_secrets
     from lantana.common.datalake import read_gold_table
+    from lantana.notify.alerts import DEFAULT_ERRORS_PATH, categorize_errors, load_errors_for_date
     from lantana.notify.report import generate_daily_brief, generate_embed_summary
 
     yesterday = date.today() - timedelta(days=1)
@@ -81,6 +109,11 @@ def generate_and_send() -> None:
     if not secrets.discord_webhook:
         logger.warning("no_discord_webhook", hint="Set discord_webhook in secrets.json")
         return
+
+    # Pipeline-health classification — single source of truth for the embed
+    # color and the brief's Pipeline Health section.
+    error_rows = load_errors_for_date(DEFAULT_ERRORS_PATH, yesterday)
+    buckets = categorize_errors(error_rows)
 
     # Read gold tables. geographic_summary + detection_findings are
     # optional in generate_daily_brief (they gate the Geographic Origin
@@ -93,7 +126,7 @@ def generate_and_send() -> None:
     geographic = read_gold_table("geographic_summary", yesterday)
     detection = read_gold_table("detection_findings", yesterday)
 
-    # Generate report
+    # Generate report with health classification embedded.
     brief = generate_daily_brief(
         yesterday,
         summary,
@@ -103,8 +136,10 @@ def generate_and_send() -> None:
         reporting.operation.name,
         geographic=geographic,
         detection=detection,
+        buckets=buckets,
     )
-    embed_text = generate_embed_summary(yesterday, summary, progression)
+    embed_text = generate_embed_summary(yesterday, summary, progression, buckets=buckets)
+    level = max_severity(buckets)
 
     # Write report to temp file for attachment
     with tempfile.NamedTemporaryFile(
@@ -120,7 +155,7 @@ def generate_and_send() -> None:
         asyncio.run(
             send_notification(
                 webhook_url=secrets.discord_webhook,
-                level="info",
+                level=level,
                 title=f"Lantana Daily Brief — {yesterday.isoformat()}",
                 message=embed_text,
                 attachment_path=str(report_path),

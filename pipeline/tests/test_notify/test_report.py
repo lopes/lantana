@@ -291,3 +291,101 @@ class TestGenerateEmbedSummary:
             date(2026, 4, 25), pl.DataFrame(), pl.DataFrame(),
         )
         assert "No data" in summary
+
+    def test_clean_health_one_liner(self) -> None:
+        """No errors → '✅ Pipeline clean' visible in the embed."""
+        from lantana.notify.alerts import ErrorBuckets
+        summary = generate_embed_summary(
+            date(2026, 4, 25), _make_summary(), _make_progression(),
+            buckets=ErrorBuckets(critical=[], warning=[]),
+        )
+        assert "Pipeline clean" in summary
+
+    def test_critical_health_one_liner(self) -> None:
+        """Critical row → '🔴 N critical' visible in the embed."""
+        from lantana.notify.alerts import ErrorBuckets
+        summary = generate_embed_summary(
+            date(2026, 4, 25), _make_summary(), _make_progression(),
+            buckets=ErrorBuckets(
+                critical=[{"provider": "pipeline", "error_type": "transform_failed", "count": 1}],
+                warning=[],
+            ),
+        )
+        assert "critical" in summary.lower()
+
+    def test_info_only_health_one_liner(self) -> None:
+        """Info-only day still shows the info count, even though it stays green."""
+        from lantana.notify.alerts import ErrorBuckets
+        summary = generate_embed_summary(
+            date(2026, 4, 25), _make_summary(), _make_progression(),
+            buckets=ErrorBuckets(
+                critical=[],
+                warning=[],
+                info=[{"provider": "abuseipdb", "error_type": "rate_limit", "count": 100}],
+            ),
+        )
+        assert "100" in summary
+        assert "info" in summary.lower()
+
+
+class TestPipelineHealthSection:
+    def test_clean_renders_no_issues(self) -> None:
+        """Clean day: the brief still has a Pipeline Health section with a tick."""
+        from lantana.notify.alerts import ErrorBuckets
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            buckets=ErrorBuckets(critical=[], warning=[]),
+        )
+        assert "## Pipeline Health" in report
+        assert "No issues" in report
+
+    def test_critical_row_renders_in_table(self) -> None:
+        from lantana.notify.alerts import ErrorBuckets
+        buckets = ErrorBuckets(
+            critical=[{
+                "provider": "pipeline",
+                "error_type": "dataset_processing_failed",
+                "count": 1,
+                "message": "nft schema mismatch",
+            }],
+            warning=[],
+        )
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            buckets=buckets,
+        )
+        assert "## Pipeline Health" in report
+        assert "Critical" in report
+        assert "dataset_processing_failed" in report
+        assert "nft schema mismatch" in report
+
+    def test_three_tier_renders_all_sections(self) -> None:
+        from lantana.notify.alerts import ErrorBuckets
+        buckets = ErrorBuckets(
+            critical=[{
+                "provider": "pipeline", "error_type": "transform_failed",
+                "count": 1, "message": "boom",
+            }],
+            warning=[{"provider": "shodan", "error_type": "timeout", "count": 3}],
+            info=[{"provider": "abuseipdb", "error_type": "rate_limit", "count": 200}],
+        )
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            buckets=buckets,
+        )
+        assert "Critical" in report
+        assert "Warning" in report
+        assert "Info" in report
+        assert "rate_limit" in report
+        assert "timeout" in report
+
+    def test_section_omitted_when_buckets_none(self) -> None:
+        """Backwards-compat: when buckets isn't passed, the section is silent."""
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        assert "Pipeline Health" not in report

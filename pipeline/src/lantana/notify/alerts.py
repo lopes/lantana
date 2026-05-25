@@ -1,38 +1,36 @@
-"""Daily error-log alerter — scans the structured errors file and pages on critical.
+"""Daily error-log alerter — scans the structured errors file, classifies by severity.
 
 Severity model
 --------------
 
-The operator's foundational guarantee is that bronze data collected from
-honeypots gets turned into silver + gold files. Anything that prevents file
-creation is **critical** — the pipeline failed at its job, and the operator
-needs to know now (not from a quiet dashboard tomorrow). Third-party
-integrations (AbuseIPDB, VirusTotal, …) are optional decoration; they fail all
-the time (rate limits, transient outages), so their errors are **warnings** —
-visible in the daily embed but not page-worthy on their own.
+Three tiers, ranked by operator impact:
 
-Critical error types:
-  - ``dataset_processing_failed`` — a dataset's silver write was skipped
-    (defect #9 class)
-  - ``transform_failed``          — ``lantana-transform`` crashed (defect #10
-    class — wraps ``run_transform.main`` so the failure lands in the same
-    errors file even though it happens outside ``run_enrichment``)
+**Critical** = anything that prevented file creation. The pipeline failed at its
+job. Examples: ``dataset_processing_failed`` (defect #9 class), ``transform_failed``
+(defect #10 class).
 
-Warning error types:
-  - ``auth_failed``    — provider key broken; pipeline still produces files,
-    just that provider's columns are null
-  - ``rate_limit``, ``not_found``, ``timeout``, ``network_error``,
-    ``server_error``, ``http_4xx``, ``unknown`` — per-IOC degradation
+**Warning** = transient provider degradation that isn't routine. The pipeline still
+produces files but a column may be null or sparse. Examples: ``auth_failed``
+(provider key broken), ``not_found``, ``timeout``, ``network_error``,
+``server_error``, ``http_4xx``, ``unknown``.
+
+**Info** = routine ops noise the operator doesn't need a Discord message about
+on its own. Rate-limit exhaustion is expected daily on free tiers; it shows
+up in the daily brief for traceability but doesn't escalate the embed color.
 
 Run shape
 ---------
 
-Standalone cron at 05:00 UTC (post 01:00 enrich + 02:00 transform) reads the
-NDJSON errors file, filters to the target date (yesterday by default), and
-posts a Discord embed when ``critical_count`` or ``warning_count`` is non-zero.
-Clean days produce nothing — operators infer "no message = no issues". An
-idempotency marker (``.last_alerted``) prevents duplicate alerts on
-``lantana-alert`` re-runs; pass ``--force`` to override during debugging.
+Two consumers share this classification:
+
+1. The merged daily brief (``lantana-report``, see ``notify/discord.py``) always
+   runs at 06:00 UTC, embeds the day's brief, and surfaces all three tiers in
+   the attachment. Embed color follows max severity of {critical, warning} —
+   info-only days stay green.
+2. The standalone alerter CLI (``lantana-alert``) is retained for manual
+   ``--force`` replays of an off-cycle alert. It only fires on critical or
+   warning; info-only days are silent from the alerter (the daily brief still
+   shows them).
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -60,37 +58,53 @@ CRITICAL_ERROR_TYPES: frozenset[str] = frozenset({
     "transform_failed",
 })
 
+INFO_ERROR_TYPES: frozenset[str] = frozenset({
+    "rate_limit",
+})
+
 MESSAGE_TRUNCATE = 200
 TOP_N_CRITICAL = 5
 TOP_N_WARNING = 10
+TOP_N_INFO = 10
 
 
 @dataclass
 class ErrorBuckets:
-    """Result of categorising the day's error rows."""
+    """Result of categorising the day's error rows into three severity tiers."""
 
     critical: list[dict[str, Any]]
     warning: list[dict[str, Any]]
+    info: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def is_clean(self) -> bool:
+        """No critical or warning rows. Info-only days are clean from the
+        alerter's perspective (the daily brief still surfaces them)."""
         return not self.critical and not self.warning
 
     @property
     def has_critical(self) -> bool:
         return bool(self.critical)
 
+    @property
+    def has_warning(self) -> bool:
+        return bool(self.warning)
+
 
 def categorize_errors(rows: list[dict[str, Any]]) -> ErrorBuckets:
-    """Split error rows into critical and warning buckets by error_type."""
+    """Split error rows into critical/warning/info buckets by error_type."""
     critical: list[dict[str, Any]] = []
     warning: list[dict[str, Any]] = []
+    info: list[dict[str, Any]] = []
     for row in rows:
-        if row.get("error_type") in CRITICAL_ERROR_TYPES:
+        etype = row.get("error_type")
+        if etype in CRITICAL_ERROR_TYPES:
             critical.append(row)
+        elif etype in INFO_ERROR_TYPES:
+            info.append(row)
         else:
             warning.append(row)
-    return ErrorBuckets(critical=critical, warning=warning)
+    return ErrorBuckets(critical=critical, warning=warning, info=info)
 
 
 def load_errors_for_date(errors_path: Path, target_date: date) -> list[dict[str, Any]]:
@@ -124,11 +138,28 @@ def _truncate(value: str, limit: int = MESSAGE_TRUNCATE) -> str:
     return value[: limit - 1] + "…"
 
 
+def _grouped_summary(
+    rows: list[dict[str, Any]], top_n: int
+) -> list[tuple[str, str, int]]:
+    """Aggregate rows by ``(provider, error_type)``, return top-N by total count."""
+    by_key: dict[tuple[str, str], int] = {}
+    for row in rows:
+        key = (str(row.get("provider", "?")), str(row.get("error_type", "?")))
+        by_key[key] = by_key.get(key, 0) + int(row.get("count", 1))
+    return [
+        (provider, etype, count)
+        for (provider, etype), count in sorted(
+            by_key.items(), key=lambda kv: kv[1], reverse=True
+        )[:top_n]
+    ]
+
+
 def build_embed_body(target_date: date, buckets: ErrorBuckets) -> str:
     """Format a Markdown body for the Discord embed.
 
     Critical errors get individual bullets (top 5 by occurrence). Warnings
-    are aggregated by (provider, error_type) and sorted by total count.
+    and info rows are aggregated by (provider, error_type) and sorted by
+    total count.
     """
     lines: list[str] = [f"**Date:** `{target_date.isoformat()}`"]
 
@@ -147,13 +178,13 @@ def build_embed_body(target_date: date, buckets: ErrorBuckets) -> str:
     if buckets.warning:
         total_warnings = sum(int(r.get("count", 1)) for r in buckets.warning)
         lines.append(f"\n🟡 **Warnings: {total_warnings}** (deduped)")
-        buckets_map: dict[tuple[str, str], int] = {}
-        for row in buckets.warning:
-            key = (str(row.get("provider", "?")), str(row.get("error_type", "?")))
-            buckets_map[key] = buckets_map.get(key, 0) + int(row.get("count", 1))
-        for (provider, etype), count in sorted(
-            buckets_map.items(), key=lambda kv: kv[1], reverse=True
-        )[:TOP_N_WARNING]:
+        for provider, etype, count in _grouped_summary(buckets.warning, TOP_N_WARNING):
+            lines.append(f"• `{provider}` / `{etype}` (x{count})")
+
+    if buckets.info:
+        total_info = sum(int(r.get("count", 1)) for r in buckets.info)
+        lines.append(f"\n🔵 **Info: {total_info}** (deduped)")
+        for provider, etype, count in _grouped_summary(buckets.info, TOP_N_INFO):
             lines.append(f"• `{provider}` / `{etype}` (x{count})")
 
     return "\n".join(lines)

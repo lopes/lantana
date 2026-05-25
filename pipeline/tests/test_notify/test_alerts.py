@@ -12,6 +12,7 @@ import pytest
 
 from lantana.notify.alerts import (
     CRITICAL_ERROR_TYPES,
+    INFO_ERROR_TYPES,
     ErrorBuckets,
     build_embed_body,
     categorize_errors,
@@ -44,13 +45,17 @@ class TestCategorizeErrors:
         buckets = categorize_errors(rows)
         assert len(buckets.critical) == 1
 
-    def test_rate_limit_is_warning(self) -> None:
+    def test_rate_limit_is_info(self) -> None:
+        """Rate-limit exhaustion is routine ops noise — info tier, not warning."""
         rows = [
             {"error_type": "rate_limit", "provider": "abuseipdb", "count": 5},
         ]
         buckets = categorize_errors(rows)
         assert buckets.critical == []
-        assert len(buckets.warning) == 1
+        assert buckets.warning == []
+        assert len(buckets.info) == 1
+        # Info-only days are clean from the alerter's perspective.
+        assert buckets.is_clean is True
 
     def test_auth_failed_is_warning_not_critical(self) -> None:
         """Provider key broken = pipeline still produces files = warning, not critical."""
@@ -60,9 +65,19 @@ class TestCategorizeErrors:
         buckets = categorize_errors(rows)
         assert buckets.critical == []
         assert len(buckets.warning) == 1
+        assert buckets.info == []
         assert buckets.has_critical is False
 
-    def test_mixed_severities(self) -> None:
+    def test_timeout_is_warning(self) -> None:
+        """Non-rate-limit transient errors stay in warning."""
+        rows = [
+            {"error_type": "timeout", "provider": "shodan", "count": 3},
+        ]
+        buckets = categorize_errors(rows)
+        assert len(buckets.warning) == 1
+        assert buckets.info == []
+
+    def test_mixed_severities_three_tier(self) -> None:
         rows = [
             {"error_type": "rate_limit", "provider": "abuseipdb", "count": 5},
             {"error_type": "dataset_processing_failed", "provider": "pipeline", "count": 1},
@@ -70,12 +85,14 @@ class TestCategorizeErrors:
         ]
         buckets = categorize_errors(rows)
         assert len(buckets.critical) == 1
-        assert len(buckets.warning) == 2
+        assert len(buckets.warning) == 1  # timeout only — rate_limit moved to info
+        assert len(buckets.info) == 1
 
     def test_clean_day(self) -> None:
         buckets = categorize_errors([])
         assert buckets.is_clean is True
         assert buckets.has_critical is False
+        assert buckets.info == []
 
     def test_critical_set_contract(self) -> None:
         """Pin the critical error-type list so adding a new one is an explicit choice."""
@@ -83,6 +100,11 @@ class TestCategorizeErrors:
             "dataset_processing_failed",
             "transform_failed",
         }) == CRITICAL_ERROR_TYPES
+
+    def test_info_set_contract(self) -> None:
+        """Info tier is routine ops noise; new entries require explicit thought
+        about whether rate-limit-class signals are appropriate."""
+        assert frozenset({"rate_limit"}) == INFO_ERROR_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +216,46 @@ class TestBuildEmbedBody:
         assert "2026-05-20" in body
         assert "Critical" not in body
         assert "Warnings" not in body
+        assert "Info" not in body
+
+    def test_info_section_grouped(self) -> None:
+        """Info-tier rate-limit rows aggregate by (provider, error_type)."""
+        buckets = ErrorBuckets(
+            critical=[],
+            warning=[],
+            info=[
+                {"provider": "abuseipdb", "error_type": "rate_limit", "count": 100},
+                {"provider": "shodan", "error_type": "rate_limit", "count": 4},
+            ],
+        )
+        body = build_embed_body(date(2026, 5, 20), buckets)
+        assert "Info: 104" in body
+        assert "abuseipdb" in body
+        assert "shodan" in body
+        # No critical or warning sections rendered when those buckets are empty.
+        assert "Critical" not in body
+        assert "Warnings" not in body
+
+    def test_three_tier_body(self) -> None:
+        """All three sections render together on a mixed day."""
+        buckets = ErrorBuckets(
+            critical=[{
+                "provider": "pipeline",
+                "error_type": "dataset_processing_failed",
+                "count": 1,
+                "message": "nft schema mismatch",
+            }],
+            warning=[
+                {"provider": "virustotal", "error_type": "timeout", "count": 3},
+            ],
+            info=[
+                {"provider": "abuseipdb", "error_type": "rate_limit", "count": 200},
+            ],
+        )
+        body = build_embed_body(date(2026, 5, 20), buckets)
+        assert "Critical: 1" in body
+        assert "Warnings: 3" in body
+        assert "Info: 200" in body
 
 
 # ---------------------------------------------------------------------------
@@ -313,13 +375,14 @@ class TestRunAlerter:
 
     @pytest.mark.asyncio()
     async def test_warning_only_day_sends_orange_alert(self, tmp_path: Path) -> None:
+        """Warning-tier errors (non-rate-limit transient) fire the orange alert."""
         errors_path = tmp_path / "errors.json"
         errors_path.write_text(json.dumps({
             "date": "2026-05-20",
-            "provider": "abuseipdb",
-            "error_type": "rate_limit",
+            "provider": "virustotal",
+            "error_type": "timeout",
             "count": 5,
-            "message": "429",
+            "message": "Read timeout",
         }) + "\n")
         state_path = tmp_path / ".last_alerted"
 
@@ -334,6 +397,35 @@ class TestRunAlerter:
 
         mock_send.assert_called_once()
         assert mock_send.call_args.kwargs["level"] == "warning"
+
+    @pytest.mark.asyncio()
+    async def test_info_only_day_does_not_send(self, tmp_path: Path) -> None:
+        """Rate-limit-only days are info-tier — the alerter stays silent.
+
+        The merged daily report (lantana-report) still surfaces them in its
+        attachment, so traceability is preserved.
+        """
+        errors_path = tmp_path / "errors.json"
+        errors_path.write_text(json.dumps({
+            "date": "2026-05-20",
+            "provider": "abuseipdb",
+            "error_type": "rate_limit",
+            "count": 200,
+            "message": "429",
+        }) + "\n")
+        state_path = tmp_path / ".last_alerted"
+
+        with patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send:
+            await run_alerter(
+                date(2026, 5, 20),
+                errors_path=errors_path,
+                state_path=state_path,
+            )
+
+        mock_send.assert_not_called()
+        # Same as a clean day — no marker written so a future warning row picked
+        # up on a manual --force still alerts.
+        assert not state_path.exists()
 
     @pytest.mark.asyncio()
     async def test_idempotent_second_run(self, tmp_path: Path) -> None:
