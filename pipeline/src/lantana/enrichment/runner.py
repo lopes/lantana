@@ -644,6 +644,30 @@ def _merge_lookup(
     return df.join(enrich_df, left_on=join_col, right_on="_enrich_key", how="left")
 
 
+# Phase D.1 invariant: silver always carries all four IP-side
+# <provider>_risk_score columns so gold's mean_horizontal composite has
+# the same inputs every day. When a provider produces zero results
+# (skipped via _should_skip_provider, quota exhausted with no successes,
+# or unconfigured), _merge_lookup leaves the column absent — this helper
+# backfills typed-null columns so downstream consumers see a stable schema.
+_IP_RISK_SCORE_COLUMNS: tuple[str, ...] = (
+    "abuseipdb_risk_score",
+    "virustotal_risk_score",
+    "shodan_risk_score",
+    "greynoise_risk_score",
+)
+
+
+def _ensure_ip_score_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Add typed-null Float64 columns for any missing per-provider risk_score."""
+    if df.is_empty():
+        return df
+    missing = [c for c in _IP_RISK_SCORE_COLUMNS if c not in df.columns]
+    if not missing:
+        return df
+    return df.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+
+
 # -- Orchestration -----------------------------------------------------------
 
 
@@ -812,6 +836,7 @@ async def run_enrichment(
         for dataset, df in dfs.items():
             try:
                 enriched_df = _merge_lookup(df, "src_ip", ip_lookup)
+                enriched_df = _ensure_ip_score_columns(enriched_df)
                 if dataset == "cowrie":
                     enriched_df = _merge_lookup(enriched_df, "shasum", hash_lookup)
 

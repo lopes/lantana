@@ -33,6 +33,7 @@ from lantana.enrichment.runner import (
     _classify_ttl,
     _compute_ip_event_counts,
     _enrich_iocs_with_provider,
+    _ensure_ip_score_columns,
     _get_cached,
     _init_cache,
     _load_provider_state,
@@ -844,6 +845,66 @@ class TestMergeLookup:
         merged = _merge_lookup(df, "src_ip", lookup)
         scores = merged.get_column("score").to_list()
         assert scores == [1, None]
+
+
+class TestEnsureIpScoreColumns:
+    """Phase D.1 invariant: silver always carries all four per-provider risk_score columns.
+
+    When a provider is skipped (rate-limit window, unconfigured) or produces
+    zero successful enrichments, _merge_lookup leaves that provider's column
+    absent. _ensure_ip_score_columns backfills typed-null Float64 columns so
+    every cowrie/suricata/nftables/dionaea silver write carries the same
+    schema regardless of which providers happened to have budget that day.
+    """
+
+    def test_all_columns_present_passthrough(self) -> None:
+        df = pl.DataFrame({
+            "src_ip": ["203.0.113.50"],
+            "abuseipdb_risk_score": [88.0],
+            "virustotal_risk_score": [50.0],
+            "shodan_risk_score": [100.0],
+            "greynoise_risk_score": [75.0],
+        })
+        out = _ensure_ip_score_columns(df)
+        assert out.columns == df.columns
+        assert out.height == 1
+
+    def test_missing_columns_added_as_nulls(self) -> None:
+        """All four providers skipped — only src_ip present. Add all four columns."""
+        df = pl.DataFrame({"src_ip": ["203.0.113.50"]})
+        out = _ensure_ip_score_columns(df)
+        for col in (
+            "abuseipdb_risk_score",
+            "virustotal_risk_score",
+            "shodan_risk_score",
+            "greynoise_risk_score",
+        ):
+            assert col in out.columns
+            assert out.get_column(col).to_list() == [None]
+            assert out.schema[col] == pl.Float64
+
+    def test_partial_columns_filled(self) -> None:
+        """Shodan + GreyNoise skipped (production case 2026-05-25 after migration)."""
+        df = pl.DataFrame({
+            "src_ip": ["203.0.113.50"],
+            "abuseipdb_risk_score": [88.0],
+            "virustotal_risk_score": [50.0],
+        })
+        out = _ensure_ip_score_columns(df)
+        assert out.get_column("abuseipdb_risk_score").to_list() == [88.0]
+        assert out.get_column("virustotal_risk_score").to_list() == [50.0]
+        assert out.get_column("shodan_risk_score").to_list() == [None]
+        assert out.get_column("greynoise_risk_score").to_list() == [None]
+
+    def test_empty_df_unchanged(self) -> None:
+        df = pl.DataFrame({"src_ip": []})
+        out = _ensure_ip_score_columns(df)
+        assert out.height == 0
+        # Empty DF intentionally doesn't get columns backfilled — silver-write
+        # logic upstream skips empty datasets entirely via
+        # `silver_skipped_empty_after_normalize`, so adding columns here
+        # would be dead work.
+        assert "shodan_risk_score" not in out.columns
 
 
 class TestBuildLookup:
