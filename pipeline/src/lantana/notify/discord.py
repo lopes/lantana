@@ -97,8 +97,10 @@ def generate_and_send() -> None:
     from datetime import date, timedelta
     from pathlib import Path
 
+    import polars as pl
+
     from lantana.common.config import load_reporting, load_secrets
-    from lantana.common.datalake import read_gold_table
+    from lantana.common.datalake import read_gold_table, read_silver_partition
     from lantana.notify.alerts import DEFAULT_ERRORS_PATH, categorize_errors, load_errors_for_date
     from lantana.notify.report import generate_daily_brief, generate_embed_summary
     from lantana.notify.timing import collect_step_timings
@@ -135,6 +137,21 @@ def generate_and_send() -> None:
     geographic = read_gold_table("geographic_summary", yesterday)
     detection = read_gold_table("detection_findings", yesterday)
 
+    # Cowrie silver carries the file_hash_sha256 + vt_file_* fields the brief
+    # joins onto the top-N download hashes for the Malware Captured table.
+    # An empty/missing partition collapses to an empty DataFrame — the
+    # malware section's lookup falls through to "?" cells in that case.
+    try:
+        silver = read_silver_partition(yesterday, dataset="cowrie").collect()
+    except (FileNotFoundError, pl.exceptions.PolarsError) as exc:
+        logger.warning(
+            "silver_read_failed",
+            dataset="cowrie",
+            error_type=type(exc).__name__,
+            error=repr(exc),
+        )
+        silver = pl.DataFrame()
+
     # Generate report with health classification + per-step timing embedded.
     brief = generate_daily_brief(
         yesterday,
@@ -147,6 +164,7 @@ def generate_and_send() -> None:
         detection=detection,
         buckets=buckets,
         timing=timings,
+        silver=silver,
     )
     embed_text = generate_embed_summary(
         yesterday, summary, progression, buckets=buckets, timing=timings,

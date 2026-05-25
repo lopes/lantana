@@ -426,6 +426,132 @@ class TestPipelineTimingSection:
         assert "Pipeline Timing" not in report
 
 
+class TestTopNExpansion:
+    """Sections capped at top-10 (TOP_N constant) instead of pre-Phase-4's 5/3."""
+
+    def _summary_with_15_usernames(self) -> pl.DataFrame:
+        """daily_summary with 15 distinct usernames so the cap is observable."""
+        users = [{"value": f"user{i:02d}", "count": 100 - i} for i in range(15)]
+        passwords = [{"value": f"pwd{i:02d}", "count": 50 - i} for i in range(15)]
+        return _make_summary().with_columns(
+            pl.Series("top_usernames", [users]),
+            pl.Series("top_passwords", [passwords]),
+        )
+
+    def test_top_usernames_capped_at_ten(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), self._summary_with_15_usernames(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        # First 10 must appear; ranks 11+ must not.
+        for i in range(10):
+            assert f"user{i:02d}" in report
+        for i in (10, 11, 12, 13, 14):
+            assert f"user{i:02d}" not in report
+
+    def test_top_usernames_rendered_with_rank_table(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), self._summary_with_15_usernames(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        # New rank/item/count header (replaces the pre-Phase-4 inline list).
+        assert "| Rank | Username | Count |" in report
+
+    def test_top_attackers_table_has_rank_column(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        assert "| Rank | IP | Risk | Country | Events | Stage | A/V/S/G |" in report
+
+    def test_campaign_clusters_table_has_rank_column(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        assert "| Rank | Credentials | IP Count | IPs |" in report
+
+    def test_notable_escalations_table_has_rank_column(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        assert "| Rank | IP | Stage | Auth | Commands | Automated |" in report
+
+
+class TestMalwareSectionVTContext:
+    """Malware Captured table joins VT family/type/detections from silver
+    onto the gold top_download_hashes list."""
+
+    def _summary_with_hashes(self) -> pl.DataFrame:
+        return _make_summary().with_columns(
+            pl.Series("downloads_captured", [2]),
+            pl.Series("top_download_hashes", [[
+                {"value": "a" * 64, "count": 7},
+                {"value": "b" * 64, "count": 3},
+            ]]),
+        )
+
+    def _silver_with_vt(self) -> pl.DataFrame:
+        return pl.DataFrame({
+            "file_hash_sha256": ["a" * 64, "b" * 64],
+            "vt_file_family": ["mirai", ""],
+            "vt_file_type": ["elf", "shell"],
+            "vt_file_malicious_count": [42, 0],
+            "vt_file_risk_score": [100.0, 0.0],
+            "file_url": [
+                "http://192.0.2.5/loader.sh",
+                "http://198.51.100.7/files/payload.bin",
+            ],
+        })
+
+    def test_malware_table_includes_vt_columns(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), self._summary_with_hashes(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            silver=self._silver_with_vt(),
+        )
+        assert "## Malware Captured" in report
+        # New header shape: SHA256 + Family + Type + Detections + Risk + URL + Count.
+        assert "| Rank | SHA256 | Family | Type | VT Detections | VT Risk | URL | Count |" in report
+        # The first hash row carries its VT context.
+        assert "mirai" in report
+        assert "elf" in report
+        assert "42" in report  # detections count for first hash
+
+    def test_malware_table_unknown_hash_shows_question_marks(self) -> None:
+        """A top-N hash with no matching silver row falls back to '?' cells."""
+        summary = self._summary_with_hashes()
+        # Silver covers only 'a'*64; 'b'*64 has no metadata row.
+        silver = self._silver_with_vt().filter(pl.col("file_hash_sha256") == "a" * 64)
+        report = generate_daily_brief(
+            date(2026, 4, 25), summary, _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            silver=silver,
+        )
+        # The unenriched row must render with '?' family/type — not crash.
+        assert "?" in report
+
+    def test_malware_table_without_silver_still_renders(self) -> None:
+        """No silver passed (e.g. cowrie partition absent for the date)."""
+        report = generate_daily_brief(
+            date(2026, 4, 25), self._summary_with_hashes(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        # Table header is rendered; every metadata column collapses to '?'.
+        assert "## Malware Captured" in report
+        assert "| Rank | SHA256 | Family | Type" in report
+
+    def test_malware_section_omitted_when_no_downloads(self) -> None:
+        """Honeywall-only operation (no cowrie) → downloads_captured=0 → no section."""
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        # _make_summary has no downloads_captured key — section absent.
+        assert "## Malware Captured" not in report
+
+
 class TestEmbedTimingOneLiner:
     def test_timing_appended_when_provided(self) -> None:
         summary = generate_embed_summary(

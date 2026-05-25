@@ -16,6 +16,12 @@ if TYPE_CHECKING:
     from lantana.notify.alerts import ErrorBuckets
     from lantana.notify.timing import StepTiming
 
+TOP_N: int = 10
+"""Brief sections cap top-N tables at this many rows so the markdown stays
+scannable. Matches the dashboard's ``_render_top_n_table`` width and the
+``TOP_N`` constant in ``transform/metrics.py`` so brief and dashboard
+present the same depth."""
+
 
 def _fmt_provider_risk(row: dict[str, Any]) -> str:
     """Compact per-provider 0..100 risk-score quadruplet for the Top Attackers
@@ -60,6 +66,74 @@ def _fmt_risk_breakdown(row: dict[str, Any]) -> str:
     e_str = f"{enrichment:.0f}" if enrichment is not None else "—"
     b_str = f"{behavioral:.0f}" if behavioral is not None else "—"
     return f"{composite:.1f} ({e_str}+{b_str})/2"
+
+
+def _url_tail(url: str, max_len: int = 60) -> str:
+    """Shorten a download URL for the malware table.
+
+    Keeps the right-hand tail (path + filename) because that's where the
+    payload name and CVE hints live; the host is typically redundant once
+    you have the IOC inventory of full URLs below. Long tails are truncated
+    from the left with an ellipsis so the column stays narrow without
+    losing the filename.
+    """
+    if not url:
+        return ""
+    after_scheme = url.split("://", 1)[-1]
+    if len(after_scheme) <= max_len:
+        return after_scheme
+    return "…" + after_scheme[-max_len + 1:]
+
+
+def _build_vt_hash_lookup(
+    silver: pl.DataFrame | None,
+) -> dict[str, dict[str, Any]]:
+    """Index VT enrichment fields by SHA256 from silver for the malware table.
+
+    The malware section wants ``family``, ``type``, ``detections``,
+    ``risk_score`` and the original ``url`` next to each top-N hash. Those
+    fields live in silver alongside the file_hash_sha256 row; gold's
+    top_download_hashes only carries the hash itself + count. This helper
+    pre-joins them once per brief generation so the table-render loop is a
+    pure dict lookup.
+
+    Returns ``{sha256: {family, type, detections, risk_score, url_tail}}``.
+    Silver-absent / silver-empty / required-columns-missing all collapse to
+    an empty dict (data-presence rule — the malware table then renders
+    ``?`` cells for every metadata column rather than crashing).
+    """
+    if silver is None or silver.is_empty():
+        return {}
+    if "file_hash_sha256" not in silver.columns:
+        return {}
+
+    # Pick up only the columns we actually surface; tolerate any subset
+    # being missing (e.g. silver from before vt_file_family was added).
+    select_cols: list[str] = ["file_hash_sha256"]
+    for col in ("vt_file_family", "vt_file_type", "vt_file_malicious_count",
+                "vt_file_risk_score", "file_url"):
+        if col in silver.columns:
+            select_cols.append(col)
+
+    rows = (
+        silver.select(select_cols)
+        .filter(pl.col("file_hash_sha256").is_not_null())
+        .unique(subset=["file_hash_sha256"], keep="first")
+    )
+
+    lookup: dict[str, dict[str, Any]] = {}
+    for r in rows.iter_rows(named=True):
+        sha = r["file_hash_sha256"]
+        if not isinstance(sha, str):
+            continue
+        lookup[sha] = {
+            "family": r.get("vt_file_family"),
+            "type": r.get("vt_file_type"),
+            "detections": r.get("vt_file_malicious_count"),
+            "risk_score": r.get("vt_file_risk_score"),
+            "url_tail": _url_tail(r.get("file_url") or ""),
+        }
+    return lookup
 
 
 def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
@@ -132,6 +206,7 @@ def generate_daily_brief(
     detection: pl.DataFrame | None = None,
     buckets: ErrorBuckets | None = None,
     timing: list[StepTiming] | None = None,
+    silver: pl.DataFrame | None = None,
 ) -> str:
     """Generate a Markdown daily intelligence brief from gold tables."""
     if summary.is_empty():
@@ -173,29 +248,29 @@ def generate_daily_brief(
         geo_row = geographic.row(0, named=True)
         lines.append("## Geographic Origin\n")
 
-        countries = geo_row.get("top_countries", [])
+        countries = geo_row.get("top_countries", []) or []
         if countries:
             lines.append("**Top Countries:**\n")
-            lines.append("| Country | Unique IPs |")
-            lines.append("|---------|-----------|")
-            for entry in countries[:5]:
+            lines.append("| Rank | Country | Unique IPs |")
+            lines.append("|------|---------|-----------|")
+            for rank, entry in enumerate(countries[:TOP_N], start=1):
                 parts = entry.split(":")
-                lines.append(f"| {parts[0]} | {parts[1]} |")
+                lines.append(f"| {rank} | {parts[0]} | {parts[1]} |")
             lines.append("")
 
-        asns = geo_row.get("top_asns", [])
+        asns = geo_row.get("top_asns", []) or []
         if asns:
             lines.append("**Top ASNs:**\n")
-            lines.append("| ASN | ISP | Unique IPs |")
-            lines.append("|-----|-----|-----------|")
-            for entry in asns[:3]:
+            lines.append("| Rank | ASN | ISP | Unique IPs |")
+            lines.append("|------|-----|-----|-----------|")
+            for rank, entry in enumerate(asns[:TOP_N], start=1):
                 parts = entry.split(":")
                 asn_info = parts[0] if parts else ""
                 count = parts[1] if len(parts) > 1 else "0"
                 asn_parts = asn_info.split("|")
                 asn = asn_parts[0] if asn_parts else ""
                 isp = asn_parts[1] if len(asn_parts) > 1 else ""
-                lines.append(f"| {asn} | {isp} | {count} |")
+                lines.append(f"| {rank} | {asn} | {isp} | {count} |")
             lines.append("")
 
     # Escalation funnel (Mermaid)
@@ -222,17 +297,17 @@ def generate_daily_brief(
     # signals are firing).
     if not reputation.is_empty():
         lines.append("## Top Attackers\n")
-        top = reputation.sort("risk_score", descending=True).head(5)
-        lines.append("| IP | Risk | Country | Events | Stage | A/V/S/G |")
-        lines.append("|----|------|---------|--------|-------|---------|")
-        for r in top.iter_rows(named=True):
+        top = reputation.sort("risk_score", descending=True).head(TOP_N)
+        lines.append("| Rank | IP | Risk | Country | Events | Stage | A/V/S/G |")
+        lines.append("|------|----|------|---------|--------|-------|---------|")
+        for rank, r in enumerate(top.iter_rows(named=True), start=1):
             stage = ""
             if not progression.is_empty():
                 ip_prog = progression.filter(pl.col("src_endpoint_ip") == r["src_endpoint_ip"])
                 if ip_prog.height > 0:
                     stage = ip_prog.row(0, named=True)["stage_label"]
             lines.append(
-                f"| {r['src_endpoint_ip']} "
+                f"| {rank} | {r['src_endpoint_ip']} "
                 f"| {_fmt_risk_breakdown(r)} "
                 f"| {r.get('geo_country', '?')} "
                 f"| {r['total_events']:,} | {stage} "
@@ -254,11 +329,11 @@ def generate_daily_brief(
         if named.height > 0:
             lines.append("## Threat Actor Attribution\n")
             lines.append("IPs with known threat actor labels (GreyNoise):\n")
-            lines.append("| Actor | IP | Classification |")
-            lines.append("|-------|----|---------------|")
-            for r in named.head(5).iter_rows(named=True):
+            lines.append("| Rank | Actor | IP | Classification |")
+            lines.append("|------|-------|----|---------------|")
+            for rank, r in enumerate(named.head(TOP_N).iter_rows(named=True), start=1):
                 lines.append(
-                    f"| {r['greynoise_name']} "
+                    f"| {rank} | {r['greynoise_name']} "
                     f"| {r['src_endpoint_ip']} "
                     f"| {r.get('greynoise_class', '?')} |"
                 )
@@ -266,17 +341,19 @@ def generate_daily_brief(
 
     # Notable escalations (stage 3+)
     if not progression.is_empty():
-        escalated = progression.filter(pl.col("max_stage") >= 3)
+        escalated = progression.filter(pl.col("max_stage") >= 3).head(TOP_N)
         if escalated.height > 0:
             lines.append("## Notable Escalations\n")
             lines.append("IPs that achieved authentication or interactive access:\n")
-            for r in escalated.iter_rows(named=True):
-                auto = " (automated)" if r["is_automated"] else ""
+            lines.append("| Rank | IP | Stage | Auth | Commands | Automated |")
+            lines.append("|------|----|-------|------|----------|-----------|")
+            for rank, r in enumerate(escalated.iter_rows(named=True), start=1):
+                auto = "yes" if r["is_automated"] else "no"
                 lines.append(
-                    f"- **{r['src_endpoint_ip']}** — "
-                    f"stage: {r['stage_label']}{auto}, "
-                    f"auth: {r['auth_successes']}/{r['auth_attempts']}, "
-                    f"commands: {r['commands_executed']}"
+                    f"| {rank} | {r['src_endpoint_ip']} "
+                    f"| {r['stage_label']} "
+                    f"| {r['auth_successes']}/{r['auth_attempts']} "
+                    f"| {r['commands_executed']} | {auto} |"
                 )
             lines.append("")
 
@@ -284,12 +361,15 @@ def generate_daily_brief(
     if not clusters.is_empty():
         lines.append("## Campaign Clusters\n")
         lines.append("Credential pairs used by multiple IPs (likely botnets):\n")
-        for r in clusters.iter_rows(named=True):
+        lines.append("| Rank | Credentials | IP Count | IPs |")
+        lines.append("|------|-------------|----------|-----|")
+        for rank, r in enumerate(clusters.head(TOP_N).iter_rows(named=True), start=1):
             ips = r["ips"]
             ip_str = ", ".join(ips) if isinstance(ips, list) else str(ips)
             lines.append(
-                f"- **{r['shared_username']}:{r['shared_password']}** — "
-                f"{r['ip_count']} IPs ({ip_str})"
+                f"| {rank} "
+                f"| `{r['shared_username']}:{r['shared_password']}` "
+                f"| {r['ip_count']} | {ip_str} |"
             )
         lines.append("")
 
@@ -297,52 +377,94 @@ def generate_daily_brief(
     if detection is not None and not detection.is_empty():
         lines.append("## Detection Highlights\n")
         lines.append("Top Suricata rules triggered:\n")
-        lines.append("| Rule | Events | Unique IPs |")
-        lines.append("|------|--------|-----------|")
-        for r in detection.head(5).iter_rows(named=True):
+        lines.append("| Rank | Rule | Events | Unique IPs |")
+        lines.append("|------|------|--------|-----------|")
+        for rank, r in enumerate(detection.head(TOP_N).iter_rows(named=True), start=1):
             title = r.get("finding_title", "unknown")
             lines.append(
-                f"| {title} | {r['event_count']:,} | {r['unique_ips']:,} |"
+                f"| {rank} | {title} | {r['event_count']:,} | {r['unique_ips']:,} |"
             )
         lines.append("")
 
-    # Malware captured
+    # Malware captured — top-10 hashes with VT enrichment context
     downloads = row.get("downloads_captured", 0)
     if downloads and downloads > 0:
         lines.append("## Malware Captured\n")
         lines.append(f"**{downloads}** file(s) downloaded by attackers\n")
-        download_urls = row.get("top_download_urls", [])
-        if download_urls:
-            lines.append("**Top URLs:**")
-            for entry in download_urls[:5]:
-                lines.append(f"- `{entry['value']}` ({entry['count']:,})")
-            lines.append("")
-        download_hashes = row.get("top_download_hashes", [])
+        download_hashes = row.get("top_download_hashes", []) or []
         if download_hashes:
-            lines.append("**Top Hashes (SHA256):**")
-            for entry in download_hashes[:5]:
-                lines.append(f"- `{entry['value']}` ({entry['count']:,})")
+            vt_lookup = _build_vt_hash_lookup(silver)
+            lines.append("**Top Hashes (SHA256) with VirusTotal context:**\n")
+            lines.append(
+                "| Rank | SHA256 | Family | Type | VT Detections | VT Risk | URL | Count |"
+            )
+            lines.append(
+                "|------|--------|--------|------|---------------|---------|-----|-------|"
+            )
+            for rank, entry in enumerate(download_hashes[:TOP_N], start=1):
+                sha = str(entry["value"])
+                count = int(entry["count"])
+                meta = vt_lookup.get(sha, {})
+                family = meta.get("family") or "?"
+                ftype = meta.get("type") or "?"
+                detections = meta.get("detections")
+                detections_cell = "?" if detections is None else f"{detections}"
+                vt_risk = meta.get("risk_score")
+                vt_risk_cell = "?" if vt_risk is None else f"{vt_risk:.0f}"
+                url_path = meta.get("url_tail") or "?"
+                short_sha = f"`{sha[:16]}…`"
+                lines.append(
+                    f"| {rank} | {short_sha} | {family} | {ftype} "
+                    f"| {detections_cell} | {vt_risk_cell} | `{url_path}` | {count:,} |"
+                )
+            lines.append("")
+            lines.append(
+                "_VT Detections = number of AV engines flagging the file. "
+                "VT Risk = bucketed 0..100 score from `compute_file_risk_score`. "
+                "Family from VT's popular_threat_name (fallback: suggested_threat_label). "
+                "Full SHA256s appear in the IOC inventory below._"
+            )
             lines.append("")
 
-    # Top credentials
-    usernames = row.get("top_usernames", [])
-    passwords = row.get("top_passwords", [])
+        # Top download URLs — kept as a separate top-N table for cases where
+        # the same payload is fetched from many URLs.
+        download_urls = row.get("top_download_urls", []) or []
+        if download_urls:
+            lines.append("**Top Download URLs:**\n")
+            lines.append("| Rank | URL | Count |")
+            lines.append("|------|-----|-------|")
+            for rank, entry in enumerate(download_urls[:TOP_N], start=1):
+                lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
+            lines.append("")
+
+    # Top credentials — split into two rank/item/count tables (matches dashboard).
+    usernames = row.get("top_usernames", []) or []
+    passwords = row.get("top_passwords", []) or []
     if usernames or passwords:
         lines.append("## Top Credentials\n")
         if usernames:
-            entries = ", ".join(f"{u['value']} ({u['count']:,})" for u in usernames[:5])
-            lines.append(f"**Usernames:** {entries}")
+            lines.append("**Top Usernames:**\n")
+            lines.append("| Rank | Username | Count |")
+            lines.append("|------|----------|-------|")
+            for rank, entry in enumerate(usernames[:TOP_N], start=1):
+                lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
+            lines.append("")
         if passwords:
-            entries = ", ".join(f"{p['value']} ({p['count']:,})" for p in passwords[:5])
-            lines.append(f"**Passwords:** {entries}")
-        lines.append("")
+            lines.append("**Top Passwords:**\n")
+            lines.append("| Rank | Password | Count |")
+            lines.append("|------|----------|-------|")
+            for rank, entry in enumerate(passwords[:TOP_N], start=1):
+                lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
+            lines.append("")
 
     # Top commands
-    commands = row.get("top_commands", [])
+    commands = row.get("top_commands", []) or []
     if commands:
         lines.append("## Top Commands\n")
-        for entry in commands[:5]:
-            lines.append(f"- `{entry['value']}` ({entry['count']:,})")
+        lines.append("| Rank | Command | Count |")
+        lines.append("|------|---------|-------|")
+        for rank, entry in enumerate(commands[:TOP_N], start=1):
+            lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
         lines.append("")
 
     # Footer

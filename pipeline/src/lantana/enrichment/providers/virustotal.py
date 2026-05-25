@@ -7,6 +7,7 @@ Free public-tier rate limit: 4 requests per minute, 500 per day.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -84,10 +85,47 @@ def _empty_hash_result(sha256: str) -> EnrichmentResult:
             "vt_file_undetected_count": 0,
             "vt_file_name": "",
             "vt_file_type": "",
+            "vt_file_family": "",
             "vt_file_risk_score": 0.0,
         },
         queried_at=datetime.now(tz=UTC),
     )
+
+
+def _extract_threat_family(attributes: dict[str, Any]) -> str:
+    """Pull a malware family/category from VT's ``popular_threat_classification``.
+
+    VT exposes two related fields under ``popular_threat_classification``:
+
+    * ``popular_threat_name`` — a list of ``{count, value}`` objects ordered by
+      AV-engine consensus (e.g. ``[{"count": 14, "value": "mirai"}, …]``). The
+      top entry is the strongest signal.
+    * ``suggested_threat_label`` — a single string like
+      ``"trojan.mirai/cloudbot"`` synthesised by VT from the engine results.
+
+    Preference order matches what an analyst would scan first:
+    ``popular_threat_name[0].value`` (single canonical family) →
+    ``suggested_threat_label`` (richer hierarchy) → ``""`` (no consensus).
+
+    Empty string rather than ``None`` so the silver schema stays Utf8-typed.
+    """
+    classification = attributes.get("popular_threat_classification") or {}
+    if not isinstance(classification, dict):
+        return ""
+
+    names = classification.get("popular_threat_name") or []
+    if isinstance(names, list) and names:
+        first = names[0]
+        if isinstance(first, dict):
+            value = first.get("value")
+            if isinstance(value, str) and value:
+                return value
+
+    label = classification.get("suggested_threat_label")
+    if isinstance(label, str) and label:
+        return label
+
+    return ""
 
 
 class VirusTotalProvider:
@@ -161,9 +199,9 @@ class VirusTotalProvider:
             return _empty_hash_result(sha256)
 
         response.raise_for_status()
-        payload: dict[str, dict[str, dict[str, int | str]]] = response.json()
-        attributes = payload["data"]["attributes"]
-        last_analysis: dict[str, int] = attributes.get("last_analysis_stats", {})  # type: ignore[assignment]
+        payload: dict[str, Any] = response.json()
+        attributes: dict[str, Any] = payload["data"]["attributes"]
+        last_analysis: dict[str, int] = attributes.get("last_analysis_stats", {})
 
         malicious = int(last_analysis.get("malicious", 0))
         return EnrichmentResult(
@@ -174,6 +212,7 @@ class VirusTotalProvider:
                 "vt_file_undetected_count": int(last_analysis.get("undetected", 0)),
                 "vt_file_name": str(attributes.get("meaningful_name") or ""),
                 "vt_file_type": str(attributes.get("type_tag") or ""),
+                "vt_file_family": _extract_threat_family(attributes),
                 "vt_file_risk_score": compute_file_risk_score(malicious),
             },
             queried_at=datetime.now(tz=UTC),

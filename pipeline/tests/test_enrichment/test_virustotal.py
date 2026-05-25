@@ -44,6 +44,13 @@ def _ok_hash_response() -> httpx.Response:
                     "last_analysis_stats": {"malicious": 30, "undetected": 40},
                     "meaningful_name": "evil.bin",
                     "type_tag": "elf",
+                    "popular_threat_classification": {
+                        "popular_threat_name": [
+                            {"count": 14, "value": "mirai"},
+                            {"count": 9, "value": "gafgyt"},
+                        ],
+                        "suggested_threat_label": "trojan.mirai/cloudbot",
+                    },
                 },
             },
         },
@@ -100,6 +107,7 @@ class TestVirusTotalHash:
         assert result.data["vt_file_undetected_count"] == 40
         assert result.data["vt_file_name"] == "evil.bin"
         assert result.data["vt_file_type"] == "elf"
+        assert result.data["vt_file_family"] == "mirai"
         assert result.data["vt_file_risk_score"] == 100.0
 
     @pytest.mark.asyncio()
@@ -122,7 +130,62 @@ class TestVirusTotalHash:
         assert result.data["vt_file_undetected_count"] == 0
         assert result.data["vt_file_name"] == ""
         assert result.data["vt_file_type"] == ""
+        assert result.data["vt_file_family"] == ""
         assert result.data["vt_file_risk_score"] == 0.0
+
+    @pytest.mark.asyncio()
+    async def test_family_falls_back_to_suggested_label(
+        self, provider: VirusTotalProvider,
+    ) -> None:
+        """When ``popular_threat_name`` is empty but ``suggested_threat_label``
+        is present, the suggested label is the family. Saw this on op_alpha
+        samples that lacked an AV-consensus name but had a VT-synthesised label."""
+        response = httpx.Response(
+            200,
+            json={
+                "data": {
+                    "attributes": {
+                        "last_analysis_stats": {"malicious": 8, "undetected": 50},
+                        "popular_threat_classification": {
+                            "popular_threat_name": [],
+                            "suggested_threat_label": "downloader.coinminer/xmrig",
+                        },
+                    },
+                },
+            },
+            request=httpx.Request("GET", "https://www.virustotal.com/api/v3/files/abc"),
+        )
+        with patch.object(
+            provider._client, "get", new_callable=AsyncMock, return_value=response,
+        ):
+            result = await provider.enrich_hash("a" * 64)
+        assert result.data["vt_file_family"] == "downloader.coinminer/xmrig"
+
+    @pytest.mark.asyncio()
+    async def test_family_empty_when_classification_absent(
+        self, provider: VirusTotalProvider,
+    ) -> None:
+        """Hash with no consensus and no synthesised label → empty string.
+
+        Common for hashes VT has seen but few engines flagged. The empty
+        string keeps the silver schema Utf8-typed (vs None), letting Polars
+        treat it uniformly with other absent-family rows."""
+        response = httpx.Response(
+            200,
+            json={
+                "data": {
+                    "attributes": {
+                        "last_analysis_stats": {"malicious": 1, "undetected": 60},
+                    },
+                },
+            },
+            request=httpx.Request("GET", "https://www.virustotal.com/api/v3/files/abc"),
+        )
+        with patch.object(
+            provider._client, "get", new_callable=AsyncMock, return_value=response,
+        ):
+            result = await provider.enrich_hash("a" * 64)
+        assert result.data["vt_file_family"] == ""
 
     @pytest.mark.asyncio()
     async def test_200_ip_without_as_owner_returns_empty_string(
