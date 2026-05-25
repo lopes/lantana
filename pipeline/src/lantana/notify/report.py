@@ -136,6 +136,71 @@ def _build_vt_hash_lookup(
     return lookup
 
 
+def _render_ioc_inventory(silver: pl.DataFrame | None) -> list[str]:
+    """Markdown ``## Full IOC Inventory`` section with collapsed details blocks.
+
+    Per IOC type (IPs, file hashes, download URLs), render a ``<details>``
+    block listing all unique non-null values for the date. Discord shows
+    them collapsed by default so the brief stays scannable; the analyst
+    expands a block when they want to copy IOCs into another tool.
+
+    Source: the diagonal-concat silver DataFrame (IPs from every dataset,
+    hashes/URLs from cowrie rows). Each block is gated independently —
+    when the underlying column is absent or all-null, the block is
+    omitted (data-presence rule). When *all* blocks would be empty, the
+    section header itself is skipped.
+
+    No rank, no count, no enrichment — that's the brief's job above. This
+    section is a flat IOC dump for downstream tooling.
+
+    Domain IOCs are intentionally out of scope (per ``enrichment/ioc.py``
+    they're deferred until Suricata HTTP fields surface in bronze).
+    """
+    if silver is None or silver.is_empty():
+        return []
+
+    def _unique_strings(column: str) -> list[str]:
+        if column not in silver.columns:
+            return []
+        return sorted(
+            v for v in silver.get_column(column).drop_nulls().unique().to_list()
+            if isinstance(v, str) and v
+        )
+
+    ips = _unique_strings("src_endpoint_ip")
+    hashes = _unique_strings("file_hash_sha256")
+    urls = _unique_strings("file_url")
+
+    if not (ips or hashes or urls):
+        return []
+
+    lines: list[str] = ["## Full IOC Inventory\n"]
+    lines.append(
+        "_Unique IOCs observed on this date. Collapsed by default; click to "
+        "expand. Rank/count/enrichment context is in the sections above._\n"
+    )
+
+    if ips:
+        lines.append(f"<details><summary>Source IPs ({len(ips)})</summary>\n")
+        for ip in ips:
+            lines.append(f"- `{ip}`")
+        lines.append("\n</details>\n")
+
+    if hashes:
+        lines.append(f"<details><summary>File Hashes — SHA256 ({len(hashes)})</summary>\n")
+        for sha in hashes:
+            lines.append(f"- `{sha}`")
+        lines.append("\n</details>\n")
+
+    if urls:
+        lines.append(f"<details><summary>Download URLs ({len(urls)})</summary>\n")
+        for url in urls:
+            lines.append(f"- `{url}`")
+        lines.append("\n</details>\n")
+
+    return lines
+
+
 def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
     """Render the Pipeline Health markdown section from a three-tier bucket.
 
@@ -466,6 +531,12 @@ def generate_daily_brief(
         for rank, entry in enumerate(commands[:TOP_N], start=1):
             lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
         lines.append("")
+
+    # Full IOC inventory — collapsed lists of unique IPs / hashes / URLs.
+    # Comes last so the brief's narrative flow stays on top; analysts
+    # expand the blocks only when they want a raw IOC dump.
+    if silver is not None:
+        lines.extend(_render_ioc_inventory(silver))
 
     # Footer
     lines.append("---")

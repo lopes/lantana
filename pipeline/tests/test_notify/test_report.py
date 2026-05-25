@@ -552,6 +552,93 @@ class TestMalwareSectionVTContext:
         assert "## Malware Captured" not in report
 
 
+class TestIOCInventorySection:
+    """Full IOC Inventory: collapsed <details> blocks for IPs/hashes/URLs."""
+
+    def _silver_with_all_iocs(self) -> pl.DataFrame:
+        return pl.DataFrame({
+            "src_endpoint_ip": ["203.0.113.50", "203.0.113.50", "198.51.100.22"],
+            "file_hash_sha256": ["a" * 64, None, "b" * 64],
+            "file_url": ["http://example.com/x.sh", None, "http://test.net/y.bin"],
+        })
+
+    def test_section_rendered_with_all_three_blocks(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            silver=self._silver_with_all_iocs(),
+        )
+        assert "## Full IOC Inventory" in report
+        # Each block uses a <details>/<summary> wrapper that Discord renders collapsed.
+        assert "<details><summary>Source IPs (2)" in report
+        assert "<details><summary>File Hashes — SHA256 (2)" in report
+        assert "<details><summary>Download URLs (2)" in report
+        # The IPs themselves appear inside the blocks.
+        assert "`203.0.113.50`" in report
+        assert "`198.51.100.22`" in report
+
+    def test_only_ips_block_when_no_cowrie_columns(self) -> None:
+        """Honeywall-only silver has src_endpoint_ip but no file_hash/file_url."""
+        silver = pl.DataFrame({
+            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
+        })
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            silver=silver,
+        )
+        assert "## Full IOC Inventory" in report
+        assert "Source IPs (2)" in report
+        assert "File Hashes" not in report
+        assert "Download URLs" not in report
+
+    def test_section_omitted_when_silver_is_none(self) -> None:
+        """Backwards-compat: no silver kwarg → no section."""
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        assert "Full IOC Inventory" not in report
+
+    def test_section_omitted_when_silver_empty(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            silver=pl.DataFrame(),
+        )
+        assert "Full IOC Inventory" not in report
+
+    def test_section_omitted_when_all_columns_absent(self) -> None:
+        """Silver exists but has only non-IOC columns — section silently skips."""
+        silver = pl.DataFrame({"some_other_field": ["x", "y"]})
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            silver=silver,
+        )
+        assert "Full IOC Inventory" not in report
+
+    def test_iocs_deduplicated_and_sorted(self) -> None:
+        """Each IOC appears once in the inventory; values are sorted for stable diffs."""
+        silver = pl.DataFrame({
+            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22", "203.0.113.50"],
+        })
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            silver=silver,
+        )
+        # Scope to the inventory section (the IPs also appear in Top Attackers above).
+        inventory_section = report[report.index("## Full IOC Inventory"):]
+        assert "Source IPs (2)" in inventory_section
+        # Sorted ascending → 198... appears before 203...
+        idx_198 = inventory_section.index("198.51.100.22")
+        idx_203 = inventory_section.index("203.0.113.50")
+        assert idx_198 < idx_203
+        # Dedupe: 203.0.113.50 appears once even though silver had it twice.
+        assert inventory_section.count("`203.0.113.50`") == 1
+
+
 class TestEmbedTimingOneLiner:
     def test_timing_appended_when_provided(self) -> None:
         summary = generate_embed_summary(

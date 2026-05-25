@@ -137,16 +137,20 @@ def generate_and_send() -> None:
     geographic = read_gold_table("geographic_summary", yesterday)
     detection = read_gold_table("detection_findings", yesterday)
 
-    # Cowrie silver carries the file_hash_sha256 + vt_file_* fields the brief
-    # joins onto the top-N download hashes for the Malware Captured table.
-    # An empty/missing partition collapses to an empty DataFrame — the
-    # malware section's lookup falls through to "?" cells in that case.
+    # Silver feeds two brief sections:
+    #   - Malware Captured: VT family/type/detections looked up by SHA256
+    #     (only cowrie rows have file_hash_sha256 populated)
+    #   - Full IOC Inventory: unique IPs across all datasets + unique
+    #     hashes/URLs from cowrie rows
+    # Diagonal concat across datasets gives us both — cowrie-only columns
+    # are null on suricata/nftables rows, which the section renderers
+    # already tolerate. An empty/missing partition collapses to an empty
+    # DataFrame and both sections degrade gracefully.
     try:
-        silver = read_silver_partition(yesterday, dataset="cowrie").collect()
+        silver = read_silver_partition(yesterday).collect()
     except (FileNotFoundError, pl.exceptions.PolarsError) as exc:
         logger.warning(
             "silver_read_failed",
-            dataset="cowrie",
             error_type=type(exc).__name__,
             error=repr(exc),
         )

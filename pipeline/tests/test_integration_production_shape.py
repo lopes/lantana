@@ -797,3 +797,33 @@ async def test_pipeline_and_brief_survive_missing_cowrie(
     assert "## Geographic Origin" in brief or "## Top Attackers" in brief
     # Detection highlights should land (suricata bronze had alerts).
     assert "## Detection Highlights" in brief
+
+    # IOC inventory: pass the all-dataset silver and check that the IPs block
+    # renders without crashing on missing cowrie columns. Hashes/URLs blocks
+    # must NOT render — no cowrie partition = no file_hash_sha256 column.
+    all_silver = pl.concat(
+        [
+            pl.read_parquet(silver_root / "dataset=suricata" / f"date={date_str}"
+                            / "server=sn-01" / "events.parquet"),
+            pl.read_parquet(silver_root / "dataset=nftables" / f"date={date_str}"
+                            / "server=sn-01" / "events.parquet"),
+        ],
+        how="diagonal",
+    )
+    brief_with_silver = generate_daily_brief(
+        FIXTURE_DATE,
+        summary,
+        reputation,
+        progression,
+        clusters,
+        "Test Op (no-cowrie)",
+        geographic=geographic,
+        detection=detection,
+        buckets=ErrorBuckets(critical=[], warning=[]),
+        silver=all_silver,
+    )
+    assert "## Full IOC Inventory" in brief_with_silver
+    assert "Source IPs" in brief_with_silver
+    # No file_hash_sha256 or file_url columns when cowrie is absent → blocks skipped.
+    assert "File Hashes" not in brief_with_silver
+    assert "Download URLs" not in brief_with_silver
