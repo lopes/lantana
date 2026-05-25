@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
 
 from lantana.common.redact import RedactionConfig
-
-if TYPE_CHECKING:
-    from pathlib import Path
 from lantana.enrichment.ioc import (
     extract_hashes_from_bronze,
     extract_hashes_from_disk,
     extract_ips,
     filter_internal_ips,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _config() -> RedactionConfig:
@@ -77,6 +78,54 @@ class TestExtractHashesFromDisk:
 
     def test_missing_dirs_treated_as_empty(self, tmp_path: Path) -> None:
         assert extract_hashes_from_disk(tmp_path / "nonexistent") == set()
+
+    def test_unreadable_file_skipped(self, tmp_path: Path) -> None:
+        """Permission-denied on a file is logged and skipped, not raised.
+
+        Production defect 2026-05-25: cowrie writes downloads as stigma;
+        the enrichment runner runs as nectar; nectar can iterdir the
+        parent but cannot read individual payload files.
+        """
+        sensor_dir = tmp_path / "sensor"
+        (sensor_dir / "cowrie" / "downloads").mkdir(parents=True)
+
+        readable = sensor_dir / "cowrie" / "downloads" / "readable.bin"
+        readable.write_bytes(b"ok")
+        expected = hashlib.sha256(b"ok").hexdigest()
+
+        unreadable = sensor_dir / "cowrie" / "downloads" / "unreadable.bin"
+        unreadable.write_bytes(b"secret")
+        unreadable.chmod(0o000)
+        try:
+            result = extract_hashes_from_disk(sensor_dir)
+        finally:
+            # Restore so tmp_path cleanup doesn't error
+            unreadable.chmod(0o644)
+
+        assert result == {expected}
+
+    def test_file_vanishes_mid_scan_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If cowrie deletes a file between iterdir() and read_bytes(),
+        treat as a benign race and continue.
+        """
+        sensor_dir = tmp_path / "sensor"
+        (sensor_dir / "cowrie" / "downloads").mkdir(parents=True)
+        (sensor_dir / "cowrie" / "downloads" / "missing.bin").write_bytes(b"data")
+
+        original_read_bytes = Path.read_bytes
+
+        def _vanishing_read(self: Path) -> bytes:
+            raise FileNotFoundError(self)
+
+        monkeypatch.setattr(Path, "read_bytes", _vanishing_read)
+        try:
+            result = extract_hashes_from_disk(sensor_dir)
+        finally:
+            monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+
+        assert result == set()
 
 
 class TestFilterInternalIps:

@@ -16,11 +16,14 @@ import ipaddress
 from typing import TYPE_CHECKING
 
 import polars as pl
+import structlog
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from lantana.common.redact import RedactionConfig
+
+logger = structlog.get_logger()
 
 
 def extract_ips(df: pl.DataFrame) -> set[str]:
@@ -52,6 +55,12 @@ def extract_hashes_from_disk(sensor_dir: Path) -> set[str]:
     Used as a defensive sweep for any file the bronze event pipeline
     may have missed. Files larger than 100 MiB are skipped to keep the
     daily run bounded.
+
+    Skips unreadable files: cowrie writes downloaded payloads under the
+    stigma user and the pipeline runs as nectar, so individual files
+    may not be readable across the zone boundary. The bronze
+    ``file_download`` event path remains the primary source for hashes;
+    this disk scan is a best-effort backstop.
     """
     download_dirs = list(sensor_dir.glob("*/downloads")) + list(sensor_dir.glob("*/binaries"))
     hashes: set[str] = set()
@@ -59,8 +68,16 @@ def extract_hashes_from_disk(sensor_dir: Path) -> set[str]:
         if not download_dir.exists():
             continue
         for file_path in download_dir.iterdir():
-            if file_path.is_file() and file_path.stat().st_size <= 100 * 1024 * 1024:
+            try:
+                if not file_path.is_file() or file_path.stat().st_size > 100 * 1024 * 1024:
+                    continue
                 hashes.add(hashlib.sha256(file_path.read_bytes()).hexdigest())
+            except (PermissionError, FileNotFoundError) as exc:
+                logger.warning(
+                    "disk_hash_skipped",
+                    path=str(file_path),
+                    reason=type(exc).__name__,
+                )
     return hashes
 
 
