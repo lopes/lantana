@@ -12,6 +12,7 @@ from lantana.notify.report import (
     generate_daily_brief,
     generate_embed_summary,
 )
+from lantana.notify.timing import StepTiming
 
 
 def _ts(minute: int = 0) -> datetime:
@@ -389,3 +390,56 @@ class TestPipelineHealthSection:
             _make_progression(), _make_clusters(), "Test Op",
         )
         assert "Pipeline Health" not in report
+
+
+def _st(unit: str, dur: float | None, result: str = "success") -> StepTiming:
+    """Compact StepTiming builder for tests — keeps fixture lines under 100 chars."""
+    return StepTiming(unit=unit, duration_seconds=dur, result=result, finished_at=None)
+
+
+class TestPipelineTimingSection:
+    def test_renders_when_timing_passed(self) -> None:
+        timings = [_st("lantana-prune", 24.0), _st("lantana-enrich", 1110.0)]
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            timing=timings,
+        )
+        assert "## Pipeline Timing" in report
+        assert "prune" in report
+        assert "18.5" in report  # enrich minutes
+
+    def test_section_omitted_when_timing_none(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+        )
+        assert "Pipeline Timing" not in report
+
+    def test_empty_timing_list_omits_section(self) -> None:
+        """Same rule as data-presence: empty input → silent skip."""
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            timing=[],
+        )
+        assert "Pipeline Timing" not in report
+
+
+class TestEmbedTimingOneLiner:
+    def test_timing_appended_when_provided(self) -> None:
+        summary = generate_embed_summary(
+            date(2026, 4, 25), _make_summary(), _make_progression(),
+            timing=[_st("lantana-enrich", 1110.0)],
+        )
+        assert "enrich" in summary
+        assert "18.5m" in summary
+
+    def test_timing_omitted_when_all_unknown(self) -> None:
+        """All-unknown timing (e.g. no systemctl) → no timing line in embed."""
+        summary = generate_embed_summary(
+            date(2026, 4, 25), _make_summary(), _make_progression(),
+            timing=[_st("lantana-enrich", None, result="unknown")],
+        )
+        # The clock emoji is the timing line's prefix — absent means line was skipped.
+        assert "⏱" not in summary

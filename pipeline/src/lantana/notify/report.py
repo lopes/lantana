@@ -14,6 +14,7 @@ import polars as pl
 
 if TYPE_CHECKING:
     from lantana.notify.alerts import ErrorBuckets
+    from lantana.notify.timing import StepTiming
 
 
 def _fmt_provider_risk(row: dict[str, Any]) -> str:
@@ -130,6 +131,7 @@ def generate_daily_brief(
     geographic: pl.DataFrame | None = None,
     detection: pl.DataFrame | None = None,
     buckets: ErrorBuckets | None = None,
+    timing: list[StepTiming] | None = None,
 ) -> str:
     """Generate a Markdown daily intelligence brief from gold tables."""
     if summary.is_empty():
@@ -146,6 +148,11 @@ def generate_daily_brief(
     # failure isn't buried below the daily metrics.
     if buckets is not None:
         lines.extend(_render_pipeline_health(buckets))
+
+    # Pipeline timing — sits next to health since both are ops-self-checks.
+    if timing is not None:
+        from lantana.notify.timing import render_timing_section
+        lines.extend(render_timing_section(timing))
 
     # Key metrics
     lines.append("## Key Metrics\n")
@@ -350,12 +357,15 @@ def generate_embed_summary(
     summary: pl.DataFrame,
     progression: pl.DataFrame,
     buckets: ErrorBuckets | None = None,
+    timing: list[StepTiming] | None = None,
 ) -> str:
     """Generate a short Discord embed summary (< 4096 chars).
 
     This is the embed description; the full report is attached as a file.
     When ``buckets`` is provided, a 1-line health summary is appended so the
-    operator sees pipeline status without opening the attachment.
+    operator sees pipeline status without opening the attachment. When
+    ``timing`` is provided, a 1-line per-step duration summary is appended
+    too.
     """
     if summary.is_empty():
         return f"No data available for {target_date.isoformat()}."
@@ -387,6 +397,12 @@ def generate_embed_summary(
 
     if buckets is not None:
         parts.append(_health_one_liner(buckets))
+
+    if timing is not None:
+        from lantana.notify.timing import render_timing_one_liner
+        timing_line = render_timing_one_liner(timing)
+        if timing_line is not None:
+            parts.append(timing_line)
 
     parts.append("\nFull report attached.")
     return "\n".join(parts)

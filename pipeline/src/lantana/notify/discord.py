@@ -101,6 +101,7 @@ def generate_and_send() -> None:
     from lantana.common.datalake import read_gold_table
     from lantana.notify.alerts import DEFAULT_ERRORS_PATH, categorize_errors, load_errors_for_date
     from lantana.notify.report import generate_daily_brief, generate_embed_summary
+    from lantana.notify.timing import collect_step_timings
 
     yesterday = date.today() - timedelta(days=1)
     secrets = load_secrets()
@@ -115,6 +116,14 @@ def generate_and_send() -> None:
     error_rows = load_errors_for_date(DEFAULT_ERRORS_PATH, yesterday)
     buckets = categorize_errors(error_rows)
 
+    # Per-step duration from systemd. Report self-timing is intentionally
+    # skipped (see notify/timing.py).
+    timings = collect_step_timings([
+        "lantana-prune",
+        "lantana-enrich",
+        "lantana-transform",
+    ])
+
     # Read gold tables. geographic_summary + detection_findings are
     # optional in generate_daily_brief (they gate the Geographic Origin
     # and Detection Highlights sections); the prior code omitted them
@@ -126,7 +135,7 @@ def generate_and_send() -> None:
     geographic = read_gold_table("geographic_summary", yesterday)
     detection = read_gold_table("detection_findings", yesterday)
 
-    # Generate report with health classification embedded.
+    # Generate report with health classification + per-step timing embedded.
     brief = generate_daily_brief(
         yesterday,
         summary,
@@ -137,8 +146,11 @@ def generate_and_send() -> None:
         geographic=geographic,
         detection=detection,
         buckets=buckets,
+        timing=timings,
     )
-    embed_text = generate_embed_summary(yesterday, summary, progression, buckets=buckets)
+    embed_text = generate_embed_summary(
+        yesterday, summary, progression, buckets=buckets, timing=timings,
+    )
     level = max_severity(buckets)
 
     # Write report to temp file for attachment
