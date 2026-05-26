@@ -349,4 +349,20 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         why="each cluster groups >= 2 IPs reusing the same credentials — likely botnet activity.",
         how="row count of campaign_clusters gold for the date.",
     ),
+    "Authentication Outcome": WhatWhyHow(
+        what="proportion of auth attempts the honeypot accepted vs rejected.",
+        why=(
+            "success rate exposes attacker wordlist quality — "
+            "high % = lucky guesses or weak creds list."
+        ),
+        how=(
+            "auth_successes / auth_attempts on daily_summary, "
+            "rendered as a donut with the rate centered."
+        ),
+    ),
+    "Events by Type": WhatWhyHow(
+        what="event count split across Auth, Commands, Findings, and Network classes.",
+        why="reveals where today's activity sits — credential stuffing vs hands-on vs L3/L4 scans.",
+        how="horizontal stacked bar over the four OCSF class counts from daily_summary.",
+    ),
 }

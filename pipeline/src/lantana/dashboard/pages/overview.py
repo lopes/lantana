@@ -5,11 +5,97 @@ from __future__ import annotations
 from datetime import date  # noqa: TC003 — runtime parameter type
 from typing import Any
 
+import plotly.graph_objects as go
 import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
 from lantana.notify.explanations import BRIEF_SECTIONS, METRICS
+
+# Stacked-bar palette for the Events by Type chart — Plotly's qualitative
+# default mapped explicitly so each event class gets a stable colour even
+# when one of them has zero count for the day (and would otherwise be
+# skipped from the trace iteration).
+_EVENT_TYPE_COLOURS: dict[str, str] = {
+    "Auth": "#1f77b4",
+    "Commands": "#ff7f0e",
+    "Findings": "#d62728",
+    "Network": "#2ca02c",
+}
+
+
+def _auth_donut(successes: int, failures: int) -> go.Figure:
+    """Success/failure donut with the success rate written in the centre.
+
+    Two slices (Success in green, Failure in red) over a 0.6 hole. Centre
+    annotation shows the success rate as a percentage to one decimal —
+    the headline an analyst wants from this widget. Total auth attempts
+    is the hover detail on each slice.
+    """
+    total = successes + failures
+    rate = (100.0 * successes / total) if total > 0 else 0.0
+    fig = go.Figure(
+        data=[
+            go.Pie(
+                labels=["Success", "Failure"],
+                values=[successes, failures],
+                hole=0.6,
+                marker={"colors": ["#2ca02c", "#d62728"]},
+                textinfo="label+value",
+                hovertemplate="%{label}: %{value:,} (%{percent})<extra></extra>",
+                sort=False,
+            )
+        ]
+    )
+    fig.update_layout(
+        annotations=[
+            {
+                "text": f"<b>{rate:.1f}%</b><br><span style='font-size:0.7em'>success</span>",
+                "x": 0.5, "y": 0.5,
+                "font": {"size": 24},
+                "showarrow": False,
+            },
+        ],
+        height=320,
+        margin={"l": 10, "r": 10, "t": 10, "b": 10},
+        legend={"orientation": "h", "y": -0.05},
+        showlegend=True,
+    )
+    return fig
+
+
+def _events_by_type_stacked_bar(counts: dict[str, int]) -> go.Figure:
+    """Horizontal stacked bar over event-class counts.
+
+    One trace per category so each carries its own colour + legend entry.
+    Stacked horizontally means asymmetric magnitudes (auth >> commands)
+    still leave the small segments visible at the right edge — a pie
+    chart would collapse them to invisible slivers. Total is shown on
+    hover so the segment-widths read as proportions, not raw counts.
+    """
+    total = sum(counts.values())
+    fig = go.Figure()
+    for label, value in counts.items():
+        pct = (100.0 * value / total) if total > 0 else 0.0
+        fig.add_bar(
+            y=["Events"],
+            x=[value],
+            name=label,
+            orientation="h",
+            marker_color=_EVENT_TYPE_COLOURS.get(label, "#888"),
+            hovertemplate=(
+                f"{label}: %{{x:,}} ({pct:.1f}%)<extra></extra>"
+            ),
+        )
+    fig.update_layout(
+        barmode="stack",
+        height=180,
+        margin={"l": 10, "r": 10, "t": 10, "b": 40},
+        legend={"orientation": "h", "y": -0.4},
+        xaxis={"title": "Events", "tickformat": ","},
+        yaxis={"showticklabels": False, "title": ""},
+    )
+    return fig
 
 
 def _metric_help(name: str) -> str | None:
@@ -68,32 +154,38 @@ def render(selected_date: date) -> None:
 
     st.divider()
 
-    # Auth breakdown
+    # Authentication + Events by Type. Both widgets show proportions of a
+    # whole, so we use chart types tuned for that question rather than
+    # generic bar charts: a donut (with the success rate in the centre)
+    # for the binary auth outcome, and a horizontal stacked bar for the
+    # 4-class event split (the latter handles asymmetric magnitudes —
+    # auth typically dwarfs commands by 1-2 orders of magnitude — without
+    # collapsing the small categories to invisible slivers).
     auth_col, net_col = st.columns(2)
     with auth_col:
         st.subheader("Authentication")
-        auth_data = pl.DataFrame(
-            {
-                "Status": ["Success", "Failure"],
-                "Count": [row["auth_successes"], row["auth_failures"]],
-            }
+        auth_caption = BRIEF_SECTIONS.get("Authentication Outcome")
+        if auth_caption:
+            st.caption(auth_caption.tooltip())
+        st.plotly_chart(
+            _auth_donut(int(row["auth_successes"]), int(row["auth_failures"])),
+            use_container_width=True,
         )
-        st.bar_chart(auth_data, x="Status", y="Count")
 
     with net_col:
         st.subheader("Events by Type")
-        type_data = pl.DataFrame(
-            {
-                "Type": ["Auth", "Commands", "Findings", "Network"],
-                "Count": [
-                    row["auth_attempts"],
-                    row["commands_executed"],
-                    row["findings_detected"],
-                    row["network_events"],
-                ],
-            }
+        events_caption = BRIEF_SECTIONS.get("Events by Type")
+        if events_caption:
+            st.caption(events_caption.tooltip())
+        st.plotly_chart(
+            _events_by_type_stacked_bar({
+                "Auth": int(row["auth_attempts"]),
+                "Commands": int(row["commands_executed"]),
+                "Findings": int(row["findings_detected"]),
+                "Network": int(row["network_events"]),
+            }),
+            use_container_width=True,
         )
-        st.bar_chart(type_data, x="Type", y="Count")
 
     st.divider()
 
