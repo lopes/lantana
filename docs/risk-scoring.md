@@ -147,12 +147,15 @@ The `fill_null(0)` on the enrichment side is deliberate: an IP with zero enrichm
 
 ## Downstream consumers
 
+The threshold values live as module-level constants in [`intel/stix.py`](../pipeline/src/lantana/intel/stix.py) — `RISK_THRESHOLD = 40.0` (STIX indicator gate, also the dashboard's Medium-bucket floor) and `RISK_HIGH_THRESHOLD = 70.0` (dashboard's High bucket). Every consumer below imports those constants rather than hardcoding the numbers, so a future re-tune is a single edit.
+
 | Consumer | Field read | Threshold / behaviour |
 |---|---|---|
-| `intel/stix.py:62` | `risk_score >= 40.0` | Gate for STIX Indicator emission. Pre-Phase-D.2 calibration; subject to re-tuning once we see the new distribution. |
-| `intel/stix.py:142` | `risk_score` | STIX `confidence` field = `min(int(risk_score), 100)`. |
-| `dashboard/pages/ip_reputation.py:34-36` | `risk_score` | High (≥70) / Medium (≥40) / Low buckets; subject to re-tuning. |
-| `dashboard/pages/geography.py` | `risk_score` | Map color dimension. |
+| `intel/stix.py:_make_indicators` | `risk_score >= RISK_THRESHOLD` | Gate for STIX Indicator emission. Pre-Phase-D.2 calibration; subject to re-tuning once we see the new distribution. |
+| `intel/stix.py:_make_indicators` | `risk_score` | STIX `confidence` field = `min(int(risk_score), 100)`. |
+| `dashboard/pages/ip_reputation.py:_risk_label` + bucket counts | `risk_score` | High (`>= RISK_HIGH_THRESHOLD`) / Medium (`>= RISK_THRESHOLD`) / Low buckets. Explainer expander on the page documents the formula and links back here. |
+| `dashboard/pages/stix_export.py` | `risk_score >= RISK_THRESHOLD` | "IP Indicators" metric on the Bundle Composition preview; mirrors the STIX gate. |
+| `dashboard/pages/geography.py` | `risk_score` | Map color dimension (Plasma scale 0–100). |
 | `notify/report.py` | `risk_score` (sort) + `enrichment_risk_score` + `behavioral_risk_score` + 4 per-provider scores | Top Attackers table with decomposition column. |
 
 ## Worked examples

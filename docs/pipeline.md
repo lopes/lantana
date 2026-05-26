@@ -169,7 +169,9 @@ Available via the Streamlit dashboard (download button) or programmatic API.
 
 #### Discord Intel Reports
 
-Generated from gold data via [`notify/report.py`](../pipeline/src/lantana/notify/report.py), sent via `lantana-report`. The daily brief covers key metrics, geographic origin, escalation funnel, top attackers, threat actor attribution (GreyNoise-named actors), notable escalations, campaign clusters, detection highlights (top IDS rules), malware captured, and top credentials/commands. The Discord embed contains a short summary; the full Markdown report is attached as a `.md` file.
+Generated from gold data via [`notify/report.py`](../pipeline/src/lantana/notify/report.py), sent via `lantana-report` (06:00 UTC daily, merged with the legacy `lantana-alert` flow — embed colour follows max enrichment-error severity, brief always posts). The daily brief covers pipeline health + timing (operator self-check), key metrics, geographic origin, escalation funnel with stage legend, top attackers (with the `(enrichment+behavioral)/2` decomposition and per-provider risk quadruplet), threat actor attribution, notable escalations, campaign clusters with a rank-numbered IPs list, detection highlights, malware captured (top hashes + VT context), and top credentials/commands. The brief footer points at the dashboard's **STIX Export** page for the curated STIX 2.1 bundle and the raw IOC CSV — the long-tail IOC inventory lives there, not inline. The Discord embed itself is a short summary; the full Markdown report is attached as a `.md` file.
+
+Section captions and dashboard widget tooltips share one source — `WhatWhyHow` triplets in [`notify/explanations.py`](../pipeline/src/lantana/notify/explanations.py) (`BRIEF_SECTIONS` + `METRICS`). Adding inline `help=` or `st.caption()` literals on a dashboard page is drift; route through the registry so the brief can reuse the same text.
 
 #### Streamlit Dashboard
 
@@ -269,8 +271,7 @@ The pipeline is deployed by Ansible as part of the `profile_collector` role:
 | 00:15 daily | `lantana-prune.service` | Retention + disk monitoring |
 | 01:00 daily | `lantana-enrich.service` | Bronze → silver (yesterday) |
 | 04:00 daily | `lantana-transform.service` | Silver → gold (yesterday) — 3h margin after enrich because VT throttle can stretch it |
-| 05:00 daily | `lantana-alert.service` | Discord alert on non-clean days; silent on clean |
-| 06:00 daily | `lantana-report.service` | Daily Discord intel brief, always posts |
+| 06:00 daily | `lantana-report.service` | Merged daily flow: enrichment-error severity classification (replaces the retired `lantana-alert.timer`) + full intel brief, always posts |
 | 02:30 monthly (1st) | `lantana-geoip-update` (cron) | Refresh MaxMind City + ASN MMDBs |
 
 All pipeline services run as the `nectar` user (UID 2002), which owns the datalake directories. The GeoIP refresh runs as root (writes the MMDBs and restarts Vector). The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`. Query a service's last run via `journalctl -u <name>.service`; see next-fire times via `systemctl list-timers`.

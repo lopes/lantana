@@ -508,13 +508,12 @@ The platform runs itself from here. Pipeline jobs are systemd `oneshot` services
 | 00:15 daily | `lantana-prune` | Enforces 180-day retention; emergency prune at >80% disk |
 | 01:00 daily | `lantana-enrich` | Bronze → silver: OCSF normalisation, redaction, Parquet |
 | 04:00 daily | `lantana-transform` | Silver → gold: aggregated intelligence, STIX bundles |
-| 05:00 daily | `lantana-alert` | Posts Discord alert on non-clean days (silent on clean) |
-| 06:00 daily | `lantana-report` | Posts Discord daily intel brief regardless of clean state |
+| 06:00 daily | `lantana-report` | Merged daily flow (absorbed the retired `lantana-alert.timer`): enrichment-error severity classification drives the embed colour, full intel brief attached; always posts |
 | 02:30 (1st of month) | `lantana-geoip-update` | Refreshes MaxMind City + ASN databases |
 
 **Day one** — bronze accumulates from live traffic. Enrichment has nothing to process yet (it runs against yesterday's data).
 
-**Day two morning** — first full pipeline cycle. By ~06:00 UTC the entire chain (prune → enrich → transform → alert → report) has run. Walk through [§11 Post-deploy first-cycle verification](#11-post-deploy-first-cycle-verification) below to confirm everything fired cleanly.
+**Day two morning** — first full pipeline cycle. By ~06:00 UTC the entire chain (prune → enrich → transform → report) has run. Walk through [§11 Post-deploy first-cycle verification](#11-post-deploy-first-cycle-verification) below to confirm everything fired cleanly.
 
 **Ongoing** — run the validation playbook periodically to confirm all services are healthy and the datalake is growing as expected:
 
@@ -585,7 +584,7 @@ The 13 checks map to the architectural pieces:
 **Common non-issues** (don't panic, don't roll back):
 - GreyNoise columns missing or all-null in silver — the 50/week quota is tight; days where GN never returned a 200 are normal
 - `enrichment_errors.json` has rate-limit entries for VT or Shodan — expected on busy days; the dual circuit-breaker design means these are *handled*, not failures
-- `lantana-alert.service` shows `Result: success` but no Discord post — alerter is silent on clean days by design (it only posts on non-clean days)
+- `lantana-alert.timer` missing from `list-timers` — it was retired when `lantana-report` absorbed the daily flow; the `lantana-alert.service` unit and CLI stay installed for off-cycle replay only
 - Day-1 silver/gold partitions don't exist yet — the pipeline runs against *yesterday's* bronze, so on day-1 morning there's no upstream data to process
 
 **Real failures** (these need attention):
@@ -619,7 +618,7 @@ ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake -maxdepth 2 -t
 
 ```bash
 # (5) Each systemd unit shows last-run success.
-ssh -p <PORT> lantana@<SN01> "for u in lantana-prune lantana-enrich lantana-transform lantana-alert lantana-report; do
+ssh -p <PORT> lantana@<SN01> "for u in lantana-prune lantana-enrich lantana-transform lantana-report; do
   echo == \$u ==; sudo systemctl status \$u.service --no-pager | head -10
 done"
 # Expect each: Loaded: loaded, ActiveState: inactive (dead), Result: success.
@@ -713,13 +712,13 @@ Then on your workstation, open <http://localhost:8501>. Pages to walk:
 
 | Page | What to verify |
 |---|---|
-| **Overview** | Metric cards populated (events, IPs, auth attempts, commands, findings); top-N tables for IPs/usernames/passwords |
-| **Geography** | World map with attacker origins; top countries + ASNs match what's in the Discord report |
-| **IP Reputation** | High/Medium/Low risk metric cards; three side-by-side distribution charts (composite, enrichment, behavioral); per-provider risk_score columns (`abuseipdb_risk_score` etc.) in the IP table |
-| **Behavioral Progression** | Escalation funnel; stage scatter; automated-vs-manual breakdown; multi-day slow-burn section |
-| **Detection Findings** | Top Suricata rules; IPs per rule |
-| **Credentials** | Campaign cluster table (shared user:password pairs ≥ 2 IPs) |
-| **STIX Export** | Bundle preview metrics → **Generate STIX 2.1 Bundle** button → **Download** button |
+| **Overview** | Metric cards (events / IPs / auth / commands / findings); Plotly Authentication donut with success-rate centre + Events by Type stacked bar; top-N tables for usernames, passwords, commands, source countries (aligned in two-column rows) |
+| **Geography** | World map (size = log10 events, colour = risk_score); top countries + cities + ASNs each with a section caption |
+| **IP Reputation** | "How risk_score is calculated" expander above the metric cards; High / Medium / Low / Total IPs cards; three-pane Risk Score Distribution; per-provider `*_risk_score` columns in the IP table; slider help= notes 40 mirrors the STIX gate |
+| **Behavioral Progression** | Escalation funnel cards with stage tooltips; Plotly Stage vs Time scatter (categorical stage labels y-axis, Automated/Manual colour split); Automated vs Manual cards; selectbox stage decoder; Plotly Progression Velocity histogram |
+| **Detection Findings** | Plotly Top Rules horizontal bar with full Suricata titles (colour by `unique_ips`); Pareto Rule Concentration chart with 80% reference |
+| **Credentials** | Top Usernames + Top Passwords + Top Credential Pairs (3 columns with one shared caption); Active Clusters metric; Campaign Clusters table |
+| **STIX Export** | Typed Bundle Composition tiles (IP / Hash / Network-rule Indicators + Campaigns) → **Generate STIX 2.1 Bundle** button → **Download** button → **Raw IOC Export** section with a `.csv.gz` download covering the long tail STIX drops |
 
 **Exporting a STIX bundle** (for sharing with peers):
 

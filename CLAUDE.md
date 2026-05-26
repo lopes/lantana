@@ -209,15 +209,18 @@ A broken VRL fragment renders fine via Ansible's `template` module, the `Restart
 
 This is `shell:` (not `command:`) because `vector validate` doesn't accept directory arguments — the glob must be shell-expanded. `firewall/tasks/main.yml` and `profile_collector/tasks/main.yml` already have this task; new roles that render Vector configs must add their own. If the validate fails, the play stops, Vector keeps running on whatever config was previously loaded, and the operator gets the VRL compile error in Ansible output rather than discovering it from a silently-stopped pipeline hours later.
 
-## Daily alerter
+## Daily Discord report
 
-`lantana-alert` (CLI + cron at 05:00 UTC) reads `/var/lib/lantana/datalake/enrichment_errors.json`, classifies rows by severity, and posts a Discord embed when the target date is non-clean. Idempotent via `/var/lib/lantana/datalake/.last_alerted` (one date per line); `--force` overrides for debugging. CLI accepts `--date YYYY-MM-DD` for replay.
+`lantana-report` (systemd timer at 06:00 UTC, also runnable on demand) is the **merged daily flow** that absorbed the previous `lantana-alert` step. It reads gold tables for yesterday's date, loads `/var/lib/lantana/datalake/enrichment_errors.json` and classifies rows by severity, then posts a single Discord embed whose color follows the maximum severity (red=critical, yellow=warning, green=clean) with the full Markdown brief attached as a `.md` file. The brief always posts — there's no longer a separate "silent on clean days" alerter step.
 
-Severity:
+Pipeline-health severity (driven by `notify/alerts.py`):
 - **Critical** = anything that prevented file creation: `dataset_processing_failed`, `transform_failed` (the latter is appended by `lantana-transform`'s `main()` wrapper when `run_transform` raises).
-- **Warning** = everything else — provider degradation, transient errors, rate-limits. Visible in the embed's grouped warning section.
+- **Warning** = provider degradation: timeouts, parse errors, transient HTTP errors.
+- **Info** = routine rate-limit exhaustion (`rate_limit`); kept grouped but doesn't turn the embed yellow on its own.
 
-Clean days produce no Discord output. The pipeline never takes a Discord dependency in the hot path — alerter reads the existing NDJSON file the runners already write.
+The `lantana-alert` CLI still exists (`lantana.notify.alerts:main`) for off-cycle replay/debug — `sudo systemctl start lantana-alert.service` or `lantana-alert --force --date YYYY-MM-DD` — but its timer was retired when the daily brief absorbed the flow. The pipeline never takes a Discord dependency in the hot path; the report runner reads the NDJSON file the runners already write.
+
+The brief itself is a **reading document, not an IOC dump.** The long-tail IOC inventory was lifted to the dashboard's STIX Export page in 2026-05-26 (one Plotly metric breakdown + a Raw IOC CSV.gz button); the brief footer now points to it. Brief and dashboard widgets share their explanation strings via `notify/explanations.py` (`BRIEF_SECTIONS` + `METRICS` dicts of `WhatWhyHow` triplets) — never add inline `help=` or `st.caption()` literals on a dashboard page when the brief might surface the same widget.
 
 ## Enrichment cache lifecycle
 

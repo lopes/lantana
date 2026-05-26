@@ -154,11 +154,12 @@ ls /etc/vector/conf.d/
 ```bash
 ls /opt/lantana/pipeline/venv/bin/lantana-*
 # lantana-enrich, lantana-transform, lantana-prune, lantana-alert, lantana-notify, lantana-report, lantana-dashboard
+# (lantana-alert CLI stays installed for off-cycle replay; its timer was retired
+# when lantana-report absorbed the daily flow.)
 sudo systemctl list-timers --all | grep lantana
 # lantana-prune.timer      next fire 00:15 UTC
 # lantana-enrich.timer     next fire 01:00 UTC
 # lantana-transform.timer  next fire 04:00 UTC
-# lantana-alert.timer      next fire 05:00 UTC
 # lantana-report.timer     next fire 06:00 UTC
 ```
 
@@ -394,15 +395,21 @@ If `discord_webhook` is configured in `secrets.json`:
 
 Check your Discord channel for:
 
-- **Embed**: short summary with event count, unique IPs, stage breakdown
+- **Embed**: short summary with event count, unique IPs, stage breakdown, plus a one-line pipeline-health summary (✅ clean / 🔴 N critical / 🟡 N warning / 🔵 N info) and per-step timing.
 - **Attached .md file**: full daily brief with:
+  - **Pipeline Health** section (severity-tiered table of yesterday's enrichment errors)
+  - **Pipeline Timing** section (systemd duration per step)
   - Key Metrics table
-  - Mermaid escalation funnel
-  - Top Attackers table
+  - Geographic Origin (top countries + ASNs)
+  - Mermaid Escalation Funnel + stage-definition legend
+  - Top Attackers table with `(enrichment+behavioral)/2` decomposition and `A/V/S/G` per-provider quadruplet
+  - Threat Actor Attribution (GreyNoise-named)
   - Notable Escalations (stage 3+)
-  - Campaign Clusters
-  - Malware Captured (download count, top URLs, top hashes)
+  - Campaign Clusters table + rank-numbered IP list
+  - Detection Highlights (top Suricata rules)
+  - Malware Captured (top hashes with VT family / type / detections, top URLs)
   - Top Credentials and Commands
+  - Footer pointer to the dashboard's **STIX Export** page for the curated bundle and the raw IOC CSV — the long-tail IOC inventory lives there, not inline.
 
 ### 7.2 STIX bundles
 
@@ -475,33 +482,42 @@ Then on your workstation, open <http://localhost:8501> and verify each page:
 
 **Overview page:**
 
-- Metric cards (events, IPs, auth, commands, findings)
-- Event type distribution
-- Top-N tables (IPs, usernames, passwords, commands)
+- Metric cards (events, IPs, auth, commands, findings) — each with a `WhatWhyHow` tooltip from `METRICS`.
+- **Authentication donut** — two-slice Plotly donut (Success green / Failure red) with the success rate written in the centre.
+- **Events by Type stacked bar** — horizontal Plotly stacked bar across Auth / Commands / Findings / Network with hover proportions.
+- Top-N tables aligned in two-column rows (Usernames + Passwords; Commands + Source Countries); each row's shared caption sits above the column pair so the tables top-align.
 
 **IP Reputation page:**
 
-- Risk score distribution
-- Filterable IP table with enrichment details
-- Risk slider filter
+- `st.expander("How risk_score is calculated")` below the page caption — formula, bucket thresholds (sourced from `intel/stix.py:RISK_THRESHOLD` and `RISK_HIGH_THRESHOLD`), RIOT short-circuit note, link to [`docs/risk-scoring.md`](risk-scoring.md).
+- High / Medium / Low / Total IPs metric cards with registry-sourced tooltips.
+- Risk Score Distribution — three side-by-side histograms (composite, enrichment, behavioral).
+- Filterable IP table; slider help= notes that `min_risk=40` mirrors the STIX gate.
+
+**Detection Findings page:**
+
+- Three metric cards (Total Rules / Total Events / Total Unique IPs).
+- **Top Rules by Event Count** — Plotly horizontal bar with `yaxis.automargin` (full Suricata titles visible), colour-encoded by `unique_ips`.
+- **Rule Concentration (Pareto)** — bars + cumulative-% line with a dashed 80% reference. Answers "is today's IDS noise dominated by a few rules?".
 
 **Behavioral Progression page:**
 
-- Escalation funnel (scan -> credential -> authenticated -> interactive)
-- Stage scatter plot (stage vs time, colored by automated/manual)
-- Automated vs manual breakdown
-- **Multi-day progression section**: slow-burn IPs count, velocity distribution, slow-burn details table
+- Escalation funnel cards (Scan / Credential / Authenticated / Interactive) — each with a stage-definition tooltip.
+- **Stage vs Time** — Plotly scatter with categorical stage labels on y, Automated (red) vs Manual (blue) colour split, rich hover (IP / stage label / event count).
+- Automated vs Manual metric cards.
+- IP Progression Details table with a `Minimum stage` selectbox + stage-number decoder.
+- **Multi-day progression section**: Slow-Burn IPs + Total IPs (7-day) cards; Plotly histogram of progression_velocity_days; slow-burn details table.
 
 **Credentials page:**
 
-- Campaign cluster table (shared username:password pairs, IP count)
-- Top username/password pairs
+- Three columns (Top Usernames, Top Passwords, Top Credential Pairs) with a shared `Top Credentials` caption.
+- Active Clusters metric card + Campaign Clusters table (shared username:password pairs, IP count, IPs).
 
 **STIX Export page:**
 
-- Bundle preview
-- Generate button
-- JSON download
+- Bundle Composition tiles — typed indicator breakdown (IP / Hash / Network-rule Indicators + Campaigns), each tile's count mirrors the filter in `intel/stix.py`. Footnote about Domain indicators being deferred.
+- **Generate STIX 2.1 Bundle** button → JSON download + preview.
+- **Raw IOC Export** section — gzipped CSV of every IP / hash / URL observed on the date with `risk_score` joined for IPs; covers the long tail STIX threshold drops.
 
 ### 7.4 Multi-day progression
 
