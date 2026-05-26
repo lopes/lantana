@@ -45,7 +45,14 @@ def _stage_scatter(df: pl.DataFrame) -> go.Figure:
             pl.col("max_stage").alias("StageNum"),
             "stage_label",
             "is_automated",
-            "total_events",
+            # behavioral_progression gold table doesn't carry a pre-summed
+            # total — derive it. auth_successes is a subset of auth_attempts,
+            # so adding it would double-count.
+            (
+                pl.col("scan_events")
+                + pl.col("auth_attempts")
+                + pl.col("commands_executed")
+            ).alias("total_events"),
         )
         .with_columns(
             pl.col("is_automated")
