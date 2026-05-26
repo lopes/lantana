@@ -469,7 +469,11 @@ class TestTopNExpansion:
             date(2026, 4, 25), _make_summary(), _make_reputation(),
             _make_progression(), _make_clusters(), "Test Op",
         )
-        assert "| Rank | Credentials | IP Count | IPs |" in report
+        assert "| Rank | Credentials | IP Count |" in report
+        # IPs no longer crammed into a table column — they live in a
+        # rank-numbered list below the table for scannability.
+        assert "**IPs by rank:**" in report
+        assert "1. 203.0.113.50, 198.51.100.22" in report
 
     def test_notable_escalations_table_has_rank_column(self) -> None:
         report = generate_daily_brief(
@@ -553,7 +557,8 @@ class TestMalwareSectionVTContext:
 
 
 class TestIOCInventorySection:
-    """Full IOC Inventory: collapsed <details> blocks for IPs/hashes/URLs."""
+    """Per-IOC-type H2 sections (`## IP Addresses`, `## File Hashes`,
+    `## Download URLs`) — flat bullet lists, no <details>, no backticks."""
 
     def _silver_with_all_iocs(self) -> pl.DataFrame:
         return pl.DataFrame({
@@ -568,14 +573,16 @@ class TestIOCInventorySection:
             _make_progression(), _make_clusters(), "Test Op",
             silver=self._silver_with_all_iocs(),
         )
-        assert "## Full IOC Inventory" in report
-        # Each block uses a <details>/<summary> wrapper that Discord renders collapsed.
-        assert "<details><summary>Source IPs (2)" in report
-        assert "<details><summary>File Hashes — SHA256 (2)" in report
-        assert "<details><summary>Download URLs (2)" in report
-        # The IPs themselves appear inside the blocks.
-        assert "`203.0.113.50`" in report
-        assert "`198.51.100.22`" in report
+        # Each IOC type is its own H2 with a (count) suffix.
+        assert "## IP Addresses (2)" in report
+        assert "## File Hashes — SHA256 (2)" in report
+        assert "## Download URLs (2)" in report
+        # Bullet items are raw values — no surrounding backticks.
+        assert "- 203.0.113.50" in report
+        assert "- 198.51.100.22" in report
+        # And the legacy <details> wrappers are gone.
+        assert "<details" not in report
+        assert "## Full IOC Inventory" not in report
 
     def test_only_ips_block_when_no_cowrie_columns(self) -> None:
         """Honeywall-only silver has src_endpoint_ip but no file_hash/file_url."""
@@ -587,18 +594,19 @@ class TestIOCInventorySection:
             _make_progression(), _make_clusters(), "Test Op",
             silver=silver,
         )
-        assert "## Full IOC Inventory" in report
-        assert "Source IPs (2)" in report
-        assert "File Hashes" not in report
-        assert "Download URLs" not in report
+        assert "## IP Addresses (2)" in report
+        assert "## File Hashes" not in report
+        assert "## Download URLs" not in report
 
     def test_section_omitted_when_silver_is_none(self) -> None:
-        """Backwards-compat: no silver kwarg → no section."""
+        """Backwards-compat: no silver kwarg → no inventory sections."""
         report = generate_daily_brief(
             date(2026, 4, 25), _make_summary(), _make_reputation(),
             _make_progression(), _make_clusters(), "Test Op",
         )
-        assert "Full IOC Inventory" not in report
+        assert "## IP Addresses" not in report
+        assert "## File Hashes" not in report
+        assert "## Download URLs" not in report
 
     def test_section_omitted_when_silver_empty(self) -> None:
         report = generate_daily_brief(
@@ -606,17 +614,21 @@ class TestIOCInventorySection:
             _make_progression(), _make_clusters(), "Test Op",
             silver=pl.DataFrame(),
         )
-        assert "Full IOC Inventory" not in report
+        assert "## IP Addresses" not in report
+        assert "## File Hashes" not in report
+        assert "## Download URLs" not in report
 
     def test_section_omitted_when_all_columns_absent(self) -> None:
-        """Silver exists but has only non-IOC columns — section silently skips."""
+        """Silver exists but has only non-IOC columns — sections silently skip."""
         silver = pl.DataFrame({"some_other_field": ["x", "y"]})
         report = generate_daily_brief(
             date(2026, 4, 25), _make_summary(), _make_reputation(),
             _make_progression(), _make_clusters(), "Test Op",
             silver=silver,
         )
-        assert "Full IOC Inventory" not in report
+        assert "## IP Addresses" not in report
+        assert "## File Hashes" not in report
+        assert "## Download URLs" not in report
 
     def test_iocs_deduplicated_and_sorted(self) -> None:
         """Each IOC appears once in the inventory; values are sorted for stable diffs."""
@@ -629,14 +641,40 @@ class TestIOCInventorySection:
             silver=silver,
         )
         # Scope to the inventory section (the IPs also appear in Top Attackers above).
-        inventory_section = report[report.index("## Full IOC Inventory"):]
-        assert "Source IPs (2)" in inventory_section
+        inventory_section = report[report.index("## IP Addresses"):]
+        assert "## IP Addresses (2)" in inventory_section
         # Sorted ascending → 198... appears before 203...
         idx_198 = inventory_section.index("198.51.100.22")
         idx_203 = inventory_section.index("203.0.113.50")
         assert idx_198 < idx_203
         # Dedupe: 203.0.113.50 appears once even though silver had it twice.
-        assert inventory_section.count("`203.0.113.50`") == 1
+        assert inventory_section.count("- 203.0.113.50") == 1
+
+    def test_unspecified_and_loopback_ips_filtered_out(self) -> None:
+        """Parser-noise (0.0.0.0, 127.0.0.1, ::) and pseudonyms must not
+        leak into the IOC inventory — they're useless to downstream tooling
+        and risk disclosing internal naming."""
+        silver = pl.DataFrame({
+            "src_endpoint_ip": [
+                "0.0.0.0",
+                "::",
+                "127.0.0.1",
+                "honeypot-sensor-01",  # pseudonym — fails ip_address parse
+                "203.0.113.50",
+            ],
+        })
+        report = generate_daily_brief(
+            date(2026, 4, 25), _make_summary(), _make_reputation(),
+            _make_progression(), _make_clusters(), "Test Op",
+            silver=silver,
+        )
+        inventory_section = report[report.index("## IP Addresses"):]
+        # Only the real attacker IP survives the filter.
+        assert "## IP Addresses (1)" in inventory_section
+        assert "- 203.0.113.50" in inventory_section
+        assert "0.0.0.0" not in inventory_section
+        assert "127.0.0.1" not in inventory_section
+        assert "honeypot-sensor-01" not in inventory_section
 
 
 class TestEmbedTimingOneLiner:

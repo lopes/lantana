@@ -822,8 +822,7 @@ async def test_pipeline_and_brief_survive_missing_cowrie(
         buckets=ErrorBuckets(critical=[], warning=[]),
         silver=all_silver,
     )
-    assert "## Full IOC Inventory" in brief_with_silver
-    assert "Source IPs" in brief_with_silver
-    # No file_hash_sha256 or file_url columns when cowrie is absent → blocks skipped.
-    assert "File Hashes" not in brief_with_silver
-    assert "Download URLs" not in brief_with_silver
+    assert "## IP Addresses" in brief_with_silver
+    # No file_hash_sha256 or file_url columns when cowrie is absent → sections skipped.
+    assert "## File Hashes" not in brief_with_silver
+    assert "## Download URLs" not in brief_with_silver

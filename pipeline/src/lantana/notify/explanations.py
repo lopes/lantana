@@ -106,11 +106,6 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         why="post-login behaviour reveals attacker intent (recon, persistence, drop).",
         how="silver cowrie command events grouped by actor_process_cmd_line.",
     ),
-    "Full IOC Inventory": WhatWhyHow(
-        what="every unique IP/hash/URL observed on the day.",
-        why="flat IOC dump for downstream tooling and threat-feed export.",
-        how="distinct non-null values from silver, sorted, deduplicated.",
-    ),
 }
 
 

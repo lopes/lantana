@@ -54,7 +54,6 @@ class TestBriefSectionsCoverage:
             "Malware Captured",
             "Top Credentials",
             "Top Commands",
-            "Full IOC Inventory",
         ):
             assert name in BRIEF_SECTIONS, f"section {name!r} missing from BRIEF_SECTIONS"
 
