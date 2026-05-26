@@ -7,7 +7,6 @@ as a .md file.
 
 from __future__ import annotations
 
-import ipaddress
 from datetime import date  # noqa: TC003 — runtime parameter type
 from typing import TYPE_CHECKING, Any
 
@@ -150,89 +149,6 @@ def _build_vt_hash_lookup(
             "url_tail": _url_tail(r.get("file_url") or ""),
         }
     return lookup
-
-
-def _is_real_attacker_ip(ip: str) -> bool:
-    """Drop parser-noise and pseudonyms from the IOC inventory.
-
-    Unspecified (``0.0.0.0``, ``::``), loopback, multicast, and link-local
-    addresses appear when a parser couldn't extract a real source IP from
-    a log line — listing them in a threat-feed export is misleading.
-    Strings that don't parse as an IP literal (e.g. pseudonyms like
-    ``honeypot-sensor-01`` that may leak from earlier OPSEC redaction)
-    fail the same gate by virtue of the ``ipaddress.ip_address`` raise.
-    """
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    return not (
-        addr.is_unspecified
-        or addr.is_loopback
-        or addr.is_multicast
-        or addr.is_link_local
-    )
-
-
-def _render_ioc_inventory(silver: pl.DataFrame | None) -> list[str]:
-    """Per-type ``## IP Addresses`` / ``## File Hashes`` / ``## Download URLs``
-    H2 sections — one flat list of unique IOCs per type.
-
-    Discord renders ``<details>`` HTML as literal text (no fold-out), so the
-    previous collapsed-block layout looked broken. Each IOC type now stands
-    as its own H2 section. IPs pass through ``_is_real_attacker_ip`` so
-    parser-noise (``0.0.0.0`` and friends) and pseudonyms don't reach the
-    export. Items are bare bullets — no backticks — so the inventory reads
-    as a flat dump for downstream tooling rather than a code block.
-
-    Source: the diagonal-concat silver DataFrame (IPs from every dataset,
-    hashes/URLs from cowrie rows). Each section is gated independently —
-    when the underlying column is absent or all-null after filtering, the
-    section is omitted (data-presence rule). When *all* lists would be
-    empty, the renderer emits nothing.
-
-    Domain IOCs are intentionally out of scope (per ``enrichment/ioc.py``
-    they're deferred until Suricata HTTP fields surface in bronze).
-    """
-    if silver is None or silver.is_empty():
-        return []
-
-    def _unique_strings(column: str) -> list[str]:
-        if column not in silver.columns:
-            return []
-        return sorted(
-            v for v in silver.get_column(column).drop_nulls().unique().to_list()
-            if isinstance(v, str) and v
-        )
-
-    ips = [ip for ip in _unique_strings("src_endpoint_ip") if _is_real_attacker_ip(ip)]
-    hashes = _unique_strings("file_hash_sha256")
-    urls = _unique_strings("file_url")
-
-    if not (ips or hashes or urls):
-        return []
-
-    lines: list[str] = []
-
-    if ips:
-        lines.append(f"## IP Addresses ({len(ips)})\n")
-        for ip in ips:
-            lines.append(f"- {ip}")
-        lines.append("")
-
-    if hashes:
-        lines.append(f"## File Hashes — SHA256 ({len(hashes)})\n")
-        for sha in hashes:
-            lines.append(f"- {sha}")
-        lines.append("")
-
-    if urls:
-        lines.append(f"## Download URLs ({len(urls)})\n")
-        for url in urls:
-            lines.append(f"- {url}")
-        lines.append("")
-
-    return lines
 
 
 def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
@@ -615,11 +531,14 @@ def generate_daily_brief(
             lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
         lines.append("")
 
-    # IOC inventory — three H2 sections (IPs / hashes / URLs).
-    # Comes last so the brief's narrative flow stays on top; the flat
-    # lists are a raw IOC dump for downstream tooling.
-    if silver is not None:
-        lines.extend(_render_ioc_inventory(silver))
+    # IOC export pointer — STIX bundle and raw IOC CSV both live on the
+    # dashboard's STIX Export page. The brief stays a reading document.
+    lines.append("---")
+    lines.append(
+        "_Full IOC export (STIX 2.1 bundle and raw CSV with the long tail) "
+        "is available from the **STIX Export** page on the Lantana dashboard._"
+    )
+    lines.append("")
 
     # Footer
     lines.append("---")

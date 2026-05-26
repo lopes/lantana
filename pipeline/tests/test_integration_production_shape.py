@@ -822,7 +822,11 @@ async def test_pipeline_and_brief_survive_missing_cowrie(
         buckets=ErrorBuckets(critical=[], warning=[]),
         silver=all_silver,
     )
-    assert "## IP Addresses" in brief_with_silver
-    # No file_hash_sha256 or file_url columns when cowrie is absent → sections skipped.
+    # Phase 0: IOC inventory moved to the dashboard's STIX Export page.
+    # The brief carries only a pointer line — none of the legacy inline
+    # H2 sections must appear, regardless of which silver datasets are
+    # present.
+    assert "## IP Addresses" not in brief_with_silver
     assert "## File Hashes" not in brief_with_silver
     assert "## Download URLs" not in brief_with_silver
+    assert "STIX Export" in brief_with_silver
