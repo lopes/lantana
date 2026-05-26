@@ -177,7 +177,7 @@ def render(selected_date: date) -> None:
     if scatter_caption:
         st.caption(scatter_caption)
     if "first_seen" in df.columns and "max_stage" in df.columns:
-        st.plotly_chart(_stage_scatter(df), use_container_width=True)
+        st.plotly_chart(_stage_scatter(df), width="stretch")
 
     st.divider()
 
@@ -255,7 +255,7 @@ def render(selected_date: date) -> None:
             pl.col("progression_velocity_days").alias("Days"),
         )
         if not velocity_df.is_empty():
-            st.plotly_chart(_velocity_histogram(velocity_df), use_container_width=True)
+            st.plotly_chart(_velocity_histogram(velocity_df), width="stretch")
 
     st.divider()
 

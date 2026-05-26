@@ -169,7 +169,7 @@ def render(selected_date: date) -> None:
             st.caption(auth_caption.tooltip())
         st.plotly_chart(
             _auth_donut(int(row["auth_successes"]), int(row["auth_failures"])),
-            use_container_width=True,
+            width="stretch",
         )
 
     with net_col:
@@ -184,7 +184,7 @@ def render(selected_date: date) -> None:
                 "Findings": int(row["findings_detected"]),
                 "Network": int(row["network_events"]),
             }),
-            use_container_width=True,
+            width="stretch",
         )
 
     st.divider()

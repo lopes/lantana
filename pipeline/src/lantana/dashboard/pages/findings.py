@@ -174,7 +174,7 @@ def render(selected_date: date) -> None:
     top_rules_section = BRIEF_SECTIONS.get("Top Rules by Event Count")
     if top_rules_section:
         st.caption(top_rules_section.tooltip())
-    st.plotly_chart(_top_rules_bar(df), use_container_width=True)
+    st.plotly_chart(_top_rules_bar(df), width="stretch")
 
     st.divider()
 
@@ -183,7 +183,7 @@ def render(selected_date: date) -> None:
     pareto_section = BRIEF_SECTIONS.get("Rule Concentration")
     if pareto_section:
         st.caption(pareto_section.tooltip())
-    st.plotly_chart(_pareto_concentration(df), use_container_width=True)
+    st.plotly_chart(_pareto_concentration(df), width="stretch")
 
     st.divider()
 
