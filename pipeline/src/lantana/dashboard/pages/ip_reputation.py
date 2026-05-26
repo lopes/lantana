@@ -8,13 +8,17 @@ import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
-from lantana.intel.stix import RISK_THRESHOLD
+from lantana.intel.stix import RISK_HIGH_THRESHOLD, RISK_THRESHOLD
 from lantana.notify.explanations import BRIEF_SECTIONS, METRICS
 
 # Long-form risk_score explainer rendered inside an st.expander. The
 # canonical reference is ``docs/risk-scoring.md`` — this block is the
 # scannable summary an analyst needs without leaving the dashboard.
-_RISK_FORMULA_MD: str = """
+# Threshold values come from ``intel/stix.py`` so the docstring table,
+# ``_risk_label``, and the bucket filters in ``render`` can't drift.
+_HIGH: int = int(RISK_HIGH_THRESHOLD)
+_MED: int = int(RISK_THRESHOLD)
+_RISK_FORMULA_MD: str = f"""
 **Scale:** 0-100, higher = worse. The same number drives the STIX
 indicator gate, Discord top-N sorting, and the dashboard buckets.
 
@@ -22,9 +26,9 @@ indicator gate, Discord top-N sorting, and the dashboard buckets.
 
 | Level | Threshold | Meaning |
 |-------|-----------|---------|
-| High | >= 70 | Pageable; drives Discord top-N and OpenCTI feed |
-| Medium | 40 - 70 | At/above STIX Indicator threshold (40), worth review |
-| Low | < 40 | Typically scanner noise or behavioral-only signal |
+| High | >= {_HIGH} | Pageable; drives Discord top-N and OpenCTI feed |
+| Medium | {_MED} - {_HIGH} | At/above STIX Indicator threshold ({_MED}), worth review |
+| Low | < {_MED} | Typically scanner noise or behavioral-only signal |
 
 **Formula** (`pipeline/src/lantana/transform/metrics.py`):
 
@@ -49,7 +53,7 @@ row stays in silver with full enrichment context; only the score is
 overridden. This is the *only* place in the formula where one signal
 can subtract from another.
 
-**STIX gate.** IPs with `risk_score ≥ 40` become STIX 2.1 Indicators
+**STIX gate.** IPs with `risk_score >= {_MED}` become STIX 2.1 Indicators
 in the daily bundle (`intel/stix.py:RISK_THRESHOLD`).
 
 Full per-provider formulas, worked examples, and the FAQ live in
@@ -68,15 +72,11 @@ def _section_caption(name: str) -> str | None:
 
 
 def _risk_label(score: float) -> str:
-    """Map composite risk score to High / Medium / Low.
-
-    Thresholds are mirrored in ``_RISK_FORMULA_MD`` above and in the
-    ``METRICS["High|Medium|Low Risk IPs"]`` triplets — keep them in sync
-    if you ever shift the buckets.
-    """
-    if score >= 70:
+    """Map composite risk score to High / Medium / Low using the same
+    thresholds that drive the bucket filters and the explainer table."""
+    if score >= RISK_HIGH_THRESHOLD:
         return "High"
-    if score >= 40:
+    if score >= RISK_THRESHOLD:
         return "Medium"
     return "Low"
 
@@ -103,9 +103,12 @@ def render(selected_date: date) -> None:
         "Total IPs", len(df),
         help=_metric_help("Total Scored IPs"),
     )
-    high = df.filter(pl.col("risk_score") >= 70).height
-    med = df.filter((pl.col("risk_score") >= 40) & (pl.col("risk_score") < 70)).height
-    low = df.filter(pl.col("risk_score") < 40).height
+    high = df.filter(pl.col("risk_score") >= RISK_HIGH_THRESHOLD).height
+    med = df.filter(
+        (pl.col("risk_score") >= RISK_THRESHOLD)
+        & (pl.col("risk_score") < RISK_HIGH_THRESHOLD)
+    ).height
+    low = df.filter(pl.col("risk_score") < RISK_THRESHOLD).height
     cols[1].metric("High Risk", high, help=_metric_help("High Risk IPs"))
     cols[2].metric("Medium Risk", med, help=_metric_help("Medium Risk IPs"))
     cols[3].metric("Low Risk", low, help=_metric_help("Low Risk IPs"))

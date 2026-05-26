@@ -17,8 +17,14 @@ import stix2
 
 from lantana.common.config import ReportingConfig  # noqa: TC001 — runtime parameter type
 
-# IPs with risk_score >= this threshold become STIX Indicators
+# Risk-score level thresholds. ``RISK_THRESHOLD`` is the STIX Indicator
+# gate (IPs at or above this become Indicators in the daily bundle); it
+# also marks the floor of the dashboard's Medium-risk bucket so the two
+# views can't drift. ``RISK_HIGH_THRESHOLD`` marks the dashboard's High
+# bucket — pageable signal, drives Discord top-N. Both are floats so a
+# future fractional reweight (e.g. 67.5) doesn't need a type change.
 RISK_THRESHOLD: float = 40.0
+RISK_HIGH_THRESHOLD: float = 70.0
 
 # TLP marking definition IDs (predefined by STIX)
 _TLP_MAP: dict[str, stix2.MarkingDefinition] = {

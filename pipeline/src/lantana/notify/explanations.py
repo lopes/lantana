@@ -11,12 +11,21 @@ it via ``st.caption()``.
 Each entry is a ``WhatWhyHow`` dataclass — keep the three clauses short
 (target ~120 chars total) so the italic line under a heading stays on one
 visual row and the metric tooltip doesn't overflow Streamlit's hover popup.
+
+Risk-threshold numbers embedded in any triplet (40, 70, ...) are
+f-string interpolated from ``intel/stix.py`` so the registry can't drift
+from ``_risk_label`` / the bucket filters / the dashboard explainer.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final
+
+from lantana.intel.stix import RISK_HIGH_THRESHOLD, RISK_THRESHOLD
+
+_HIGH: Final[int] = int(RISK_HIGH_THRESHOLD)
+_MED: Final[int] = int(RISK_THRESHOLD)
 
 
 @dataclass(frozen=True)
@@ -142,7 +151,7 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         what="counts of each indicator/object type the STIX bundle will contain.",
         why="mirrors the filters in intel/stix.py so the analyst can preview what ships.",
         how=(
-            "IP indicators apply risk_score >= RISK_THRESHOLD; network-rule "
+            f"IP indicators apply risk_score >= {_MED}; network-rule "
             "indicators apply unique_ips >= 5."
         ),
     ),
@@ -258,19 +267,19 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         how="row count of ip_reputation gold for the date.",
     ),
     "High Risk IPs": WhatWhyHow(
-        what="IPs with risk_score ≥ 70.",
+        what=f"IPs with risk_score >= {_HIGH}.",
         why="drives the Discord top-N and the OpenCTI feed; pageable signal.",
-        how="reputation.filter(risk_score >= 70).",
+        how=f"reputation.filter(risk_score >= {_HIGH}).",
     ),
     "Medium Risk IPs": WhatWhyHow(
-        what="IPs with risk_score in [40, 70).",
-        why="STIX Indicator threshold sits at 40 — worth a glance, not pageable.",
-        how="reputation.filter(40 <= risk_score < 70).",
+        what=f"IPs with risk_score in [{_MED}, {_HIGH}).",
+        why=f"STIX Indicator threshold sits at {_MED} — worth a glance, not pageable.",
+        how=f"reputation.filter({_MED} <= risk_score < {_HIGH}).",
     ),
     "Low Risk IPs": WhatWhyHow(
-        what="IPs with risk_score < 40.",
+        what=f"IPs with risk_score < {_MED}.",
         why="typically scanner noise or behavioral-only signal below the STIX cut.",
-        how="reputation.filter(risk_score < 40).",
+        how=f"reputation.filter(risk_score < {_MED}).",
     ),
     # Behavioral Progression page metric cards
     "Stage Scan": WhatWhyHow(
@@ -315,9 +324,9 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
     ),
     # STIX Export page metric cards
     "IP Indicators": WhatWhyHow(
-        what="attacker IPs above the STIX risk threshold (default 40).",
+        what=f"attacker IPs above the STIX risk threshold ({_MED}).",
         why="become STIX [ipv4-addr:value = ...] Indicators; drive the OpenCTI feed.",
-        how="reputation.filter(risk_score >= RISK_THRESHOLD).",
+        how=f"reputation.filter(risk_score >= {_MED}).",
     ),
     "Hash Indicators": WhatWhyHow(
         what="file SHA256s captured from cowrie downloads.",

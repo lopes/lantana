@@ -4,11 +4,20 @@ from __future__ import annotations
 
 from datetime import date  # noqa: TC003 — runtime parameter type
 
+import plotly.express as px
+import plotly.graph_objects as go
 import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
 from lantana.notify.explanations import BRIEF_SECTIONS, METRICS
+
+_STAGE_LABELS_BY_NUM: dict[int, str] = {
+    1: "Scan",
+    2: "Credential",
+    3: "Authenticated",
+    4: "Interactive",
+}
 
 
 def _metric_help(name: str) -> str | None:
@@ -19,6 +28,97 @@ def _metric_help(name: str) -> str | None:
 def _section_caption(name: str) -> str | None:
     triplet = BRIEF_SECTIONS.get(name)
     return triplet.tooltip() if triplet is not None else None
+
+
+def _stage_scatter(df: pl.DataFrame) -> go.Figure:
+    """Per-IP scatter: x = first_seen, y = labeled stage, colour = automation.
+
+    Plotly upgrade over the previous ``st.scatter_chart`` — categorical
+    y-axis with stage names instead of bare 1-4 numbers, rich hover
+    showing IP / stage_label / event count, and an Automated/Manual
+    colour split that survives Streamlit's dark theme.
+    """
+    chart_df = (
+        df.select(
+            "src_endpoint_ip",
+            "first_seen",
+            pl.col("max_stage").alias("StageNum"),
+            "stage_label",
+            "is_automated",
+            "total_events",
+        )
+        .with_columns(
+            pl.col("is_automated")
+              .map_elements(
+                  lambda x: "Automated" if x else "Manual",
+                  return_dtype=pl.Utf8,
+              )
+              .alias("Type"),
+            pl.col("StageNum")
+              .map_elements(
+                  lambda n: _STAGE_LABELS_BY_NUM.get(int(n), str(n)),
+                  return_dtype=pl.Utf8,
+              )
+              .alias("Stage"),
+        )
+        .to_pandas()
+    )
+    fig = px.scatter(
+        chart_df,
+        x="first_seen",
+        y="Stage",
+        color="Type",
+        category_orders={
+            "Stage": ["Scan", "Credential", "Authenticated", "Interactive"],
+        },
+        color_discrete_map={"Automated": "#d62728", "Manual": "#1f77b4"},
+        hover_data={
+            "src_endpoint_ip": True,
+            "stage_label": True,
+            "total_events": ":,",
+            "first_seen": True,
+            "Type": False,
+            "Stage": False,
+            "StageNum": False,
+        },
+        labels={
+            "first_seen": "First seen (UTC)",
+            "Stage": "Max stage reached",
+        },
+        height=420,
+    )
+    fig.update_traces(marker={"size": 8, "opacity": 0.75})
+    fig.update_layout(
+        margin={"l": 10, "r": 10, "t": 10, "b": 40},
+        legend={"orientation": "h", "y": -0.15, "title": ""},
+    )
+    return fig
+
+
+def _velocity_histogram(velocity_df: pl.DataFrame) -> go.Figure:
+    """Distribution of progression_velocity_days.
+
+    Plotly upgrade over ``st.bar_chart``: explicit binning by integer
+    day (one bin per distinct value), tooltips, and a more readable
+    aspect ratio for skewed distributions.
+    """
+    pdf = velocity_df.to_pandas()
+    max_days = int(pdf["Days"].max()) if not pdf.empty else 1
+    nbins = max(max_days, 2)
+    fig = px.histogram(
+        pdf,
+        x="Days",
+        nbins=nbins,
+        labels={"Days": "Days to max stage", "count": "IPs"},
+        height=350,
+    )
+    fig.update_traces(marker_color="indianred")
+    fig.update_layout(
+        margin={"l": 10, "r": 10, "t": 10, "b": 40},
+        bargap=0.1,
+        yaxis={"title": "IPs"},
+    )
+    return fig
 
 
 def render(selected_date: date) -> None:
@@ -70,14 +170,7 @@ def render(selected_date: date) -> None:
     if scatter_caption:
         st.caption(scatter_caption)
     if "first_seen" in df.columns and "max_stage" in df.columns:
-        chart_df = df.select(
-            pl.col("first_seen").cast(pl.Utf8).alias("First Seen"),
-            pl.col("max_stage").alias("Stage"),
-            pl.col("is_automated")
-            .map_elements(lambda x: "Automated" if x else "Manual", return_dtype=pl.Utf8)
-            .alias("Type"),
-        ).to_pandas()
-        st.scatter_chart(chart_df, x="First Seen", y="Stage", color="Type")
+        st.plotly_chart(_stage_scatter(df), use_container_width=True)
 
     st.divider()
 
@@ -155,11 +248,7 @@ def render(selected_date: date) -> None:
             pl.col("progression_velocity_days").alias("Days"),
         )
         if not velocity_df.is_empty():
-            st.bar_chart(
-                velocity_df.group_by("Days").len().sort("Days").to_pandas(),
-                x="Days",
-                y="len",
-            )
+            st.plotly_chart(_velocity_histogram(velocity_df), use_container_width=True)
 
     st.divider()
 

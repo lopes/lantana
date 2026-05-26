@@ -108,7 +108,7 @@ lantana/
 - **Functional programming style**: pure functions for data transforms, Pydantic models for structured data, push IO to the edges. Prefer Polars expression chains over imperative loops. Minimize side effects.
 - **Boring, reliable tooling only**: Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly. No exotic or trendy dependencies.
 - **Linting/formatting**: `ruff` for linting + formatting, `mypy` strict for type checking, `pytest` for tests
-- **Package manager**: `uv`
+- **Package manager**: `uv`. **Local sync**: `cd pipeline && uv sync --frozen --extra dev` — the `--extra dev` is required because pytest/ruff/mypy live in `[project.optional-dependencies.dev]` and a bare `uv sync --frozen` strips them. The Ansible deploy on the collector intentionally omits `--extra dev`; production runtime deps (polars, plotly, httpx, stix2, …) sit in `[project.dependencies]` and install unconditionally.
 
 ## Shell Script Standards
 
