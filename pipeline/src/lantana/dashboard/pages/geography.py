@@ -12,12 +12,17 @@ from lantana.common.datalake import read_gold_table
 from lantana.notify.explanations import BRIEF_SECTIONS
 
 
+def _section_caption(name: str) -> str | None:
+    triplet = BRIEF_SECTIONS.get(name)
+    return triplet.tooltip() if triplet is not None else None
+
+
 def render(selected_date: date) -> None:
     """Render the geography page for the selected date."""
     st.header(f"Geography — {selected_date.isoformat()}")
-    section = BRIEF_SECTIONS.get("Geographic Origin")
-    if section:
-        st.caption(section.tooltip())
+    page_caption = _section_caption("Geographic Origin")
+    if page_caption:
+        st.caption(page_caption)
 
     df = read_gold_table("ip_reputation", selected_date)
     if df.is_empty():
@@ -34,6 +39,9 @@ def render(selected_date: date) -> None:
     )
 
     if not geo_df.is_empty():
+        map_caption = _section_caption("World Map")
+        if map_caption:
+            st.caption(map_caption)
         fig = px.scatter_geo(
             geo_df.to_pandas(),
             lat="geo_latitude",
@@ -88,6 +96,9 @@ def render(selected_date: date) -> None:
 
     with country_col:
         st.subheader("Top Countries")
+        countries_caption = _section_caption("Top Countries")
+        if countries_caption:
+            st.caption(countries_caption)
         countries = (
             df.filter(pl.col("geo_country").is_not_null())
             .group_by("geo_country")
@@ -105,6 +116,9 @@ def render(selected_date: date) -> None:
 
     with city_col:
         st.subheader("Top Cities")
+        cities_caption = _section_caption("Top Cities")
+        if cities_caption:
+            st.caption(cities_caption)
         cities = (
             df.filter(
                 pl.col("geo_city").is_not_null() & pl.col("geo_country").is_not_null()
@@ -124,6 +138,9 @@ def render(selected_date: date) -> None:
 
     # Top ASNs/ISPs
     st.subheader("Top ASNs / ISPs")
+    asn_caption = _section_caption("Top ASNs")
+    if asn_caption:
+        st.caption(asn_caption)
     asns = (
         df.filter(pl.col("geo_asn").is_not_null() & pl.col("geo_isp").is_not_null())
         .group_by("geo_asn", "geo_isp")

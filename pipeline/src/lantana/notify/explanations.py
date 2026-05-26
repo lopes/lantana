@@ -132,6 +132,46 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         ),
         how="multiday rows where is_slow_burn flag is set, ranked by velocity_days.",
     ),
+    # STIX Export page
+    "STIX Export": WhatWhyHow(
+        what="curated indicators ready for OpenCTI / MISP, plus a long-tail raw IOC CSV.",
+        why="machine-readable export for downstream threat-intel platforms and retro-hunting.",
+        how="generate_bundle() in intel/stix.py + build_raw_ioc_export() in intel/iocs.py.",
+    ),
+    "Bundle Composition": WhatWhyHow(
+        what="counts of each indicator/object type the STIX bundle will contain.",
+        why="mirrors the filters in intel/stix.py so the analyst can preview what ships.",
+        how=(
+            "IP indicators apply risk_score >= RISK_THRESHOLD; network-rule "
+            "indicators apply unique_ips >= 5."
+        ),
+    ),
+    "Raw IOC Export": WhatWhyHow(
+        what="every IP/hash/URL observed on the date, including the long tail STIX drops.",
+        why="threshold-free dump for retro-hunting, IDS rule seeding, and lake correlation.",
+        how="build_raw_ioc_export() aggregates silver and joins risk_score for IPs.",
+    ),
+    # Geography page widgets
+    "World Map": WhatWhyHow(
+        what="one marker per attacker IP, plotted by MaxMind lat/long.",
+        why="reveals geographic concentration and hosting-region patterns at a glance.",
+        how="size = log10(events+1); colour = risk_score (Plasma scale).",
+    ),
+    "Top Countries": WhatWhyHow(
+        what="top-10 countries by distinct attacker IPs, with total event count for context.",
+        why="separates hosting-concentrated traffic (one country, many IPs) from broad noise.",
+        how="ip_reputation grouped by geo_country, sorted by unique IPs descending.",
+    ),
+    "Top Cities": WhatWhyHow(
+        what="top-10 (city, country) pairs by distinct attacker IPs.",
+        why="city granularity helps spot specific hosting providers or campaign origins.",
+        how="ip_reputation grouped by (geo_city, geo_country), sorted by unique IPs.",
+    ),
+    "Top ASNs": WhatWhyHow(
+        what="top-10 ASN/ISP pairs by distinct attacker IPs.",
+        why="shared ASN across many IPs hints at compromised hosting or VPN exit nodes.",
+        how="ip_reputation grouped by (geo_asn, geo_isp), sorted by unique IPs.",
+    ),
     "Malware Captured": WhatWhyHow(
         what="files downloaded by attackers with VT family/type context.",
         why="connects raw hashes to known malware families for fast triage.",
@@ -272,5 +312,32 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         what="distinct IPs seen at least once in the trailing 7-day window.",
         why="cardinality of the multi-day surface — the universe slow-burn divides.",
         how="row count of behavioral_progression_multiday.",
+    ),
+    # STIX Export page metric cards
+    "IP Indicators": WhatWhyHow(
+        what="attacker IPs above the STIX risk threshold (default 40).",
+        why="become STIX [ipv4-addr:value = ...] Indicators; drive the OpenCTI feed.",
+        how="reputation.filter(risk_score >= RISK_THRESHOLD).",
+    ),
+    "Hash Indicators": WhatWhyHow(
+        what="file SHA256s captured from cowrie downloads.",
+        why="each emits a STIX [file:hashes.'SHA-256' = ...] Indicator + matching Malware SDO.",
+        how="length of summary.top_download_hashes.",
+    ),
+    "Network-rule Indicators": WhatWhyHow(
+        what="Suricata rules triggered by >= 5 unique source IPs.",
+        why="broad enough to be worth sharing as intel; one STIX Indicator per rule.",
+        how="detection_findings.filter(unique_ips >= 5).",
+    ),
+    "Campaigns": WhatWhyHow(
+        what="credential-stuffing clusters: username:password pairs reused by >= 2 IPs.",
+        why="become STIX Campaign SDOs linking shared-credential botnets together.",
+        how="row count of campaign_clusters gold for the date.",
+    ),
+    # Credentials page metric cards
+    "Active Clusters": WhatWhyHow(
+        what="number of credential-stuffing clusters detected today.",
+        why="each cluster groups >= 2 IPs reusing the same credentials — likely botnet activity.",
+        how="row count of campaign_clusters gold for the date.",
     ),
 }

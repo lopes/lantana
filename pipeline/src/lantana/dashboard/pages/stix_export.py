@@ -22,6 +22,17 @@ import streamlit as st
 
 from lantana.common.datalake import read_gold_table, read_silver_partition
 from lantana.intel.stix import RISK_THRESHOLD
+from lantana.notify.explanations import BRIEF_SECTIONS, METRICS
+
+
+def _metric_help(name: str) -> str | None:
+    triplet = METRICS.get(name)
+    return triplet.tooltip() if triplet is not None else None
+
+
+def _section_caption(name: str) -> str | None:
+    triplet = BRIEF_SECTIONS.get(name)
+    return triplet.tooltip() if triplet is not None else None
 
 
 def _ip_indicator_count(reputation: pl.DataFrame) -> int:
@@ -49,10 +60,9 @@ def _network_rule_indicator_count(detection: pl.DataFrame) -> int:
 def render(selected_date: date) -> None:
     """Render the STIX export page for the selected date."""
     st.header(f"STIX Export — {selected_date.isoformat()}")
-    st.caption(
-        "Curated indicators ready for OpenCTI / MISP, plus a long-tail raw "
-        "IOC dump for retro-hunting and lake correlation."
-    )
+    page_caption = _section_caption("STIX Export")
+    if page_caption:
+        st.caption(page_caption)
 
     summary = read_gold_table("daily_summary", selected_date)
     reputation = read_gold_table("ip_reputation", selected_date)
@@ -66,12 +76,9 @@ def render(selected_date: date) -> None:
 
     # --- Bundle composition preview ---
     st.subheader("Bundle Composition")
-    st.caption(
-        "What the STIX 2.1 bundle will contain when generated. Counts mirror "
-        f"the filters in ``intel/stix.py``: IP indicators apply ``risk_score "
-        f"≥ {RISK_THRESHOLD:.0f}``; network-rule indicators apply "
-        "``unique_ips ≥ 5``."
-    )
+    bundle_caption = _section_caption("Bundle Composition")
+    if bundle_caption:
+        st.caption(bundle_caption)
 
     ip_n = _ip_indicator_count(reputation)
     hash_n = _hash_indicator_count(summary)
@@ -79,38 +86,17 @@ def render(selected_date: date) -> None:
     campaign_n = clusters.height if not clusters.is_empty() else 0
 
     cols = st.columns(4)
-    cols[0].metric(
-        "IP Indicators", ip_n,
-        help=(
-            f"Attacker IPs with risk_score ≥ {RISK_THRESHOLD:.0f} that become "
-            "STIX `[ipv4-addr:value = …]` Indicator objects. Drives the "
-            "Discord top-N and the OpenCTI feed."
-        ),
-    )
-    cols[1].metric(
-        "Hash Indicators", hash_n,
-        help=(
-            "File SHA256s captured from cowrie downloads. Each emits a "
-            "STIX `[file:hashes.'SHA-256' = …]` Indicator plus a matching "
-            "Malware SDO."
-        ),
-    )
+    cols[0].metric("IP Indicators", ip_n, help=_metric_help("IP Indicators"))
+    cols[1].metric("Hash Indicators", hash_n, help=_metric_help("Hash Indicators"))
     cols[2].metric(
         "Network-rule Indicators", rule_n,
-        help=(
-            "Suricata rules triggered by ≥ 5 unique source IPs — broad enough "
-            "to be worth sharing as intel. Each emits one STIX Indicator "
-            "with a `network-traffic` pattern."
-        ),
+        help=_metric_help("Network-rule Indicators"),
     )
-    cols[3].metric(
-        "Campaigns", campaign_n,
-        help=(
-            "Credential-stuffing clusters: distinct username:password pairs "
-            "reused by ≥ 2 source IPs. Become STIX Campaign SDOs."
-        ),
-    )
+    cols[3].metric("Campaigns", campaign_n, help=_metric_help("Campaigns"))
 
+    # Domain-indicator footnote stays inline — it's a defer-status note,
+    # not an explanation of an existing widget. References enrichment/ioc.py
+    # so promoting it to the registry would lose the file pointer.
     st.caption(
         "_Domain indicators are not yet emitted — deferred until Suricata "
         "HTTP fields surface in bronze (see ``enrichment/ioc.py``)._"
@@ -156,11 +142,9 @@ def render(selected_date: date) -> None:
 
     # --- Raw IOC export ---
     st.subheader("Raw IOC Export")
-    st.caption(
-        "Every IP / hash / URL observed on the date — including the long "
-        "tail STIX drops. Use for retro-hunting, IDS rule seeding, and lake "
-        "correlation. Output is gzipped CSV."
-    )
+    raw_caption = _section_caption("Raw IOC Export")
+    if raw_caption:
+        st.caption(raw_caption)
 
     from lantana.intel.iocs import build_raw_ioc_export
 

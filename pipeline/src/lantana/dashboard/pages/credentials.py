@@ -9,7 +9,12 @@ import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
-from lantana.notify.explanations import BRIEF_SECTIONS
+from lantana.notify.explanations import BRIEF_SECTIONS, METRICS
+
+
+def _metric_help(name: str) -> str | None:
+    triplet = METRICS.get(name)
+    return triplet.tooltip() if triplet is not None else None
 
 
 def _render_top_n_table(entries: list[dict[str, Any]], label: str, empty_caption: str) -> None:
@@ -93,7 +98,10 @@ def render(selected_date: date) -> None:
         st.info("No campaign clusters detected for this date.")
         return
 
-    st.metric("Active Clusters", len(clusters))
+    st.metric(
+        "Active Clusters", len(clusters),
+        help=_metric_help("Active Clusters"),
+    )
 
     display_cols = [
         "shared_username",
