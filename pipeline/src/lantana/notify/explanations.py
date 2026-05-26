@@ -101,6 +101,11 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         why="answers 'is today's IDS noise dominated by a handful of signatures?'.",
         how="bars sorted by event_count, cumulative % computed against the capped total.",
     ),
+    "Risk Score Distribution": WhatWhyHow(
+        what="three side-by-side histograms — composite risk and its two halves.",
+        why="reveals whether today's risk is enrichment-driven, behavioral-driven, or both.",
+        how="bar_chart over risk_score / enrichment_risk_score / behavioral_risk_score.",
+    ),
     "Malware Captured": WhatWhyHow(
         what="files downloaded by attackers with VT family/type context.",
         why="connects raw hashes to known malware families for fast triage.",
@@ -179,5 +184,26 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         what="sum of unique source IPs per rule (not deduped across rules).",
         why="an IP triggering N rules counts N times — measures rule breadth.",
         how="sum(unique_ips) over detection_findings.",
+    ),
+    # IP Reputation page metric cards
+    "Total Scored IPs": WhatWhyHow(
+        what="distinct source IPs that received a risk_score on this date.",
+        why="cardinality of today's scoring pass — the universe the buckets divide.",
+        how="row count of ip_reputation gold for the date.",
+    ),
+    "High Risk IPs": WhatWhyHow(
+        what="IPs with risk_score ≥ 70.",
+        why="drives the Discord top-N and the OpenCTI feed; pageable signal.",
+        how="reputation.filter(risk_score >= 70).",
+    ),
+    "Medium Risk IPs": WhatWhyHow(
+        what="IPs with risk_score in [40, 70).",
+        why="STIX Indicator threshold sits at 40 — worth a glance, not pageable.",
+        how="reputation.filter(40 <= risk_score < 70).",
+    ),
+    "Low Risk IPs": WhatWhyHow(
+        what="IPs with risk_score < 40.",
+        why="typically scanner noise or behavioral-only signal below the STIX cut.",
+        how="reputation.filter(risk_score < 40).",
     ),
 }
