@@ -91,6 +91,16 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         why="surfaces what IDS signatures fired most across the day.",
         how="silver suricata events grouped by finding_title, ordered by count.",
     ),
+    "Top Rules by Event Count": WhatWhyHow(
+        what="horizontal bar of the top-20 firing Suricata rules with full titles.",
+        why="long rule names need automargin; the native Streamlit chart truncates them.",
+        how="px.bar over detection_findings, colour-encoded by unique_ips.",
+    ),
+    "Rule Concentration": WhatWhyHow(
+        what="Pareto chart over the top-50 rules: bars + cumulative-% line.",
+        why="answers 'is today's IDS noise dominated by a handful of signatures?'.",
+        how="bars sorted by event_count, cumulative % computed against the capped total.",
+    ),
     "Malware Captured": WhatWhyHow(
         what="files downloaded by attackers with VT family/type context.",
         why="connects raw hashes to known malware families for fast triage.",
@@ -153,5 +163,21 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         what="connection-level events from nftables and network sensors.",
         why="L3/L4 picture of reconnaissance traffic.",
         how="silver events with class_uid=4001 (Network Activity).",
+    ),
+    # Detection-findings page metric cards
+    "Total Rules": WhatWhyHow(
+        what="number of distinct Suricata rules that fired today.",
+        why="cardinality of the IDS signature space — broad vs targeted.",
+        how="row count of detection_findings gold for the date.",
+    ),
+    "Total Detection Events": WhatWhyHow(
+        what="sum of all rule-match events across every firing rule.",
+        why="overall IDS pressure — a few rules firing thousands of times.",
+        how="sum(event_count) over detection_findings.",
+    ),
+    "Total Detection IPs": WhatWhyHow(
+        what="sum of unique source IPs per rule (not deduped across rules).",
+        why="an IP triggering N rules counts N times — measures rule breadth.",
+        how="sum(unique_ips) over detection_findings.",
     ),
 }

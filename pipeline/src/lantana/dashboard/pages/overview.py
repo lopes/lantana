@@ -97,15 +97,16 @@ def render(selected_date: date) -> None:
 
     st.divider()
 
-    # Top-N tables: Rank | <Item> | Count
+    # Top-N tables: Rank | <Item> | Count. The caption sits ABOVE the
+    # column row, not inside the left column — otherwise the left table
+    # is pushed one line down and the two tables top-misalign.
+    creds_caption = _section_caption("Top Credentials")
+    if creds_caption:
+        st.caption(creds_caption)
     user_col, pass_col = st.columns(2)
     with user_col:
         st.subheader("Top Usernames")
-        caption = _section_caption("Top Credentials")
-        if caption:
-            st.caption(caption)
         _render_top_n_table(row.get("top_usernames", []) or [], "Username")
-
     with pass_col:
         st.subheader("Top Passwords")
         _render_top_n_table(row.get("top_passwords", []) or [], "Password")
@@ -113,16 +114,16 @@ def render(selected_date: date) -> None:
     cmd_col, country_col = st.columns(2)
     with cmd_col:
         st.subheader("Top Commands")
-        caption = _section_caption("Top Commands")
-        if caption:
-            st.caption(caption)
+        cmd_caption = _section_caption("Top Commands")
+        if cmd_caption:
+            st.caption(cmd_caption)
         _render_top_n_table(row.get("top_commands", []) or [], "Command")
 
     with country_col:
         st.subheader("Top Source Countries")
-        caption = _section_caption("Geographic Origin")
-        if caption:
-            st.caption(caption)
+        country_caption = _section_caption("Geographic Origin")
+        if country_caption:
+            st.caption(country_caption)
         _render_top_n_table(row.get("top_source_countries", []) or [], "Country")
 
     st.divider()
