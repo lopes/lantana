@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
@@ -17,6 +17,9 @@ from lantana.common.datalake import (
     write_gold_table,
     write_silver_partition,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture()

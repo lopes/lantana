@@ -88,7 +88,8 @@ async def test_send_notification_with_attachment(
         )
 
     call_kwargs = mock_httpx_client.post.call_args
-    assert "files" in call_kwargs.kwargs or "files" in (call_kwargs[1] if len(call_kwargs) > 1 else {})
+    positional_kwargs = call_kwargs[1] if len(call_kwargs) > 1 else {}
+    assert "files" in call_kwargs.kwargs or "files" in positional_kwargs
 
 
 # ---------------------------------------------------------------------------

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
 from lantana.common.config import (
     ReportingConfig,
@@ -14,6 +15,9 @@ from lantana.common.config import (
     load_secrets,
     load_secrets_tolerant,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture()
@@ -86,7 +90,7 @@ def test_load_secrets_missing_key(tmp_path: Path) -> None:
     """Missing required API key raises validation error."""
     path = tmp_path / "bad.json"
     path.write_text('{"vault_apikey_virustotal": "x"}', encoding="utf-8")
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         load_secrets(path)
 
 
