@@ -1,4 +1,4 @@
-"""Behavioral Progression page — escalation analysis."""
+"""Behavioral Progression page — escalation funnel + multi-day rollup."""
 
 from __future__ import annotations
 
@@ -8,40 +8,42 @@ import polars as pl
 import streamlit as st
 
 from lantana.common.datalake import read_gold_table
-from lantana.notify.explanations import BRIEF_SECTIONS
+from lantana.notify.explanations import BRIEF_SECTIONS, METRICS
+
+
+def _metric_help(name: str) -> str | None:
+    triplet = METRICS.get(name)
+    return triplet.tooltip() if triplet is not None else None
+
+
+def _section_caption(name: str) -> str | None:
+    triplet = BRIEF_SECTIONS.get(name)
+    return triplet.tooltip() if triplet is not None else None
 
 
 def render(selected_date: date) -> None:
     """Render the behavioral progression page for the selected date."""
     st.header(f"Behavioral Progression — {selected_date.isoformat()}")
-    section = BRIEF_SECTIONS.get("Escalation Funnel")
-    if section:
-        st.caption(section.tooltip())
+    page_caption = _section_caption("Escalation Funnel")
+    if page_caption:
+        st.caption(page_caption)
 
     df = read_gold_table("behavioral_progression", selected_date)
     if df.is_empty():
         st.info("No data available for this date.")
         return
 
-    # Stage funnel metrics
+    # --- Single-day funnel ---
     st.subheader("Escalation Funnel")
     cols = st.columns(4)
-    stage_help = {
-        "Scan": "IPs that produced any event (nftables drop, suricata alert, cowrie probe).",
-        "Credential": "IPs that submitted at least one auth attempt to cowrie or dionaea.",
-        "Authenticated": "IPs that the honeypot accepted (cowrie's permissive auth).",
-        "Interactive": "Authenticated IPs that ran shell commands after login.",
-    }
-    for i, (stage, label) in enumerate(
-        [
-            (1, "Scan"),
-            (2, "Credential"),
-            (3, "Authenticated"),
-            (4, "Interactive"),
-        ]
-    ):
+    for i, (stage, label, metric_key) in enumerate([
+        (1, "Scan", "Stage Scan"),
+        (2, "Credential", "Stage Credential"),
+        (3, "Authenticated", "Stage Authenticated"),
+        (4, "Interactive", "Stage Interactive"),
+    ]):
         count = df.filter(pl.col("max_stage") >= stage).height
-        cols[i].metric(label, count, help=stage_help.get(label))
+        cols[i].metric(label, count, help=_metric_help(metric_key))
 
     st.divider()
 
@@ -51,17 +53,22 @@ def render(selected_date: date) -> None:
     a_col, m_col, _ = st.columns(3)
     a_col.metric(
         "Automated Bots", auto_count,
-        help="IPs flagged as automated by GreyNoise classification or timing heuristics.",
+        help=_metric_help("Automated Bots"),
     )
     m_col.metric(
         "Manual / Unknown", manual_count,
-        help="IPs without an automation signal — manual operators or unattributed bots.",
+        help=_metric_help("Manual or Unknown"),
     )
 
     st.divider()
 
-    # Stage scatter plot (stage vs first_seen, colored by automated)
+    # Stage scatter plot (stage vs first_seen, colored by automated).
+    # The caption is the load-bearing explanation here — without it the
+    # axes encode three dimensions but read as a blob of dots.
     st.subheader("Stage vs Time")
+    scatter_caption = _section_caption("Stage vs Time")
+    if scatter_caption:
+        st.caption(scatter_caption)
     if "first_seen" in df.columns and "max_stage" in df.columns:
         chart_df = df.select(
             pl.col("first_seen").cast(pl.Utf8).alias("First Seen"),
@@ -76,6 +83,10 @@ def render(selected_date: date) -> None:
 
     # Detailed table
     st.subheader("IP Progression Details")
+    st.caption(
+        "Per-IP escalation row. `seconds_to_*` columns surface how fast each "
+        "stage was reached — fast = automated, slow = manual / staged."
+    )
 
     display_cols = [
         "src_endpoint_ip",
@@ -94,8 +105,13 @@ def render(selected_date: date) -> None:
     ]
     available_cols = [c for c in display_cols if c in df.columns]
 
-    # Stage filter
-    min_stage = st.selectbox("Minimum stage", [1, 2, 3, 4], index=0)
+    min_stage = st.selectbox(
+        "Minimum stage", [1, 2, 3, 4], index=0,
+        help=(
+            "Filter the table to IPs that reached at least this stage. "
+            "1=Scan · 2=Credential · 3=Authenticated · 4=Interactive."
+        ),
+    )
     filtered = df.filter(pl.col("max_stage") >= min_stage)
 
     st.dataframe(
@@ -104,26 +120,37 @@ def render(selected_date: date) -> None:
         width="stretch",
     )
 
-    # --- Multi-day progression ---
+    # --- Multi-day rollup (7-day lookback) ---
     st.divider()
     st.header("Multi-Day Progression (7-day lookback)")
+    md_caption = _section_caption("Multi-Day Progression")
+    if md_caption:
+        st.caption(md_caption)
 
     multiday = read_gold_table("behavioral_progression_multiday", selected_date)
     if multiday.is_empty():
         st.info("No multi-day progression data available for this date.")
         return
 
-    # Slow-burn IPs
     slow_burn = multiday.filter(pl.col("is_slow_burn"))
     sb_col, total_col, _ = st.columns(3)
-    sb_col.metric("Slow-Burn IPs", slow_burn.height)
-    total_col.metric("Total IPs (7-day)", multiday.height)
+    sb_col.metric(
+        "Slow-Burn IPs", slow_burn.height,
+        help=_metric_help("Slow-Burn IPs"),
+    )
+    total_col.metric(
+        "Total IPs (7-day)", multiday.height,
+        help=_metric_help("Total Multi-Day IPs"),
+    )
 
     st.divider()
 
     # Velocity distribution
     if "progression_velocity_days" in multiday.columns:
         st.subheader("Progression Velocity (days to max stage)")
+        velocity_caption = _section_caption("Progression Velocity")
+        if velocity_caption:
+            st.caption(velocity_caption)
         velocity_df = multiday.filter(pl.col("progression_velocity_days") > 0).select(
             pl.col("progression_velocity_days").alias("Days"),
         )
@@ -139,6 +166,9 @@ def render(selected_date: date) -> None:
     # Slow-burn details table
     if not slow_burn.is_empty():
         st.subheader("Slow-Burn Attackers")
+        slow_burn_caption = _section_caption("Slow-Burn Attackers")
+        if slow_burn_caption:
+            st.caption(slow_burn_caption)
         multiday_cols = [
             "src_endpoint_ip",
             "max_stage",

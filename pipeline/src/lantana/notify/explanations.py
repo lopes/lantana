@@ -106,6 +106,32 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         why="reveals whether today's risk is enrichment-driven, behavioral-driven, or both.",
         how="bar_chart over risk_score / enrichment_risk_score / behavioral_risk_score.",
     ),
+    "Stage vs Time": WhatWhyHow(
+        what="scatter of per-IP max_stage (y) versus first_seen timestamp (x).",
+        why=(
+            "reveals when stage-N attackers landed — clusters at y=4 early in the day "
+            "= morning interactive sessions; flat y=1 spread = scanner background."
+        ),
+        how="behavioral_progression rows, coloured by is_automated (bot vs manual).",
+    ),
+    "Progression Velocity": WhatWhyHow(
+        what="distribution of days-to-max-stage across the 7-day window.",
+        why="long-tail to the right = slow-burn attackers building access over multiple days.",
+        how="multiday progression_velocity_days bucketed and counted; only IPs with velocity > 0.",
+    ),
+    "Multi-Day Progression": WhatWhyHow(
+        what="7-day-lookback rollup of every IP's deepest stage reached.",
+        why="catches attackers who spread reconnaissance across days to evade per-day rate limits.",
+        how="behavioral_progression_multiday gold table, computed over the trailing 7 days.",
+    ),
+    "Slow-Burn Attackers": WhatWhyHow(
+        what="IPs whose progression spanned multiple days before reaching max stage.",
+        why=(
+            "contrasts with same-day burst behaviour — these are the "
+            "patient ones worth a deeper look."
+        ),
+        how="multiday rows where is_slow_burn flag is set, ranked by velocity_days.",
+    ),
     "Malware Captured": WhatWhyHow(
         what="files downloaded by attackers with VT family/type context.",
         why="connects raw hashes to known malware families for fast triage.",
@@ -205,5 +231,46 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         what="IPs with risk_score < 40.",
         why="typically scanner noise or behavioral-only signal below the STIX cut.",
         how="reputation.filter(risk_score < 40).",
+    ),
+    # Behavioral Progression page metric cards
+    "Stage Scan": WhatWhyHow(
+        what="IPs that produced any event (nftables drop, suricata alert, cowrie probe).",
+        why="floor of the funnel — the entire attacker population for the day.",
+        how="behavioral_progression.filter(max_stage >= 1).",
+    ),
+    "Stage Credential": WhatWhyHow(
+        what="IPs that submitted at least one auth attempt to cowrie or dionaea.",
+        why="separates scanners from credential-stuffing tools.",
+        how="behavioral_progression.filter(max_stage >= 2).",
+    ),
+    "Stage Authenticated": WhatWhyHow(
+        what="IPs the honeypot accepted (cowrie's permissive auth).",
+        why="signals a working credential or a bot guessing right.",
+        how="behavioral_progression.filter(max_stage >= 3).",
+    ),
+    "Stage Interactive": WhatWhyHow(
+        what="authenticated IPs that ran shell commands after login.",
+        why="hands-on-keyboard or scripted post-exploitation — the highest-intent signal.",
+        how="behavioral_progression.filter(max_stage >= 4).",
+    ),
+    "Automated Bots": WhatWhyHow(
+        what="IPs flagged as automated by GreyNoise classification or timing heuristics.",
+        why="separates known scanner infrastructure from manual operators.",
+        how="behavioral_progression.filter(is_automated).",
+    ),
+    "Manual or Unknown": WhatWhyHow(
+        what="IPs without an automation signal — manual operators or unattributed bots.",
+        why="the higher-effort attacker bucket; worth focused review.",
+        how="behavioral_progression.filter(~is_automated).",
+    ),
+    "Slow-Burn IPs": WhatWhyHow(
+        what="IPs whose progression spanned multiple days before hitting max stage.",
+        why="patient attackers evading per-day rate limits and chunked detection logic.",
+        how="multiday.filter(is_slow_burn).",
+    ),
+    "Total Multi-Day IPs": WhatWhyHow(
+        what="distinct IPs seen at least once in the trailing 7-day window.",
+        why="cardinality of the multi-day surface — the universe slow-burn divides.",
+        how="row count of behavioral_progression_multiday.",
     ),
 }
