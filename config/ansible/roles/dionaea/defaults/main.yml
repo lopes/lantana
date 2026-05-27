@@ -1,15 +1,20 @@
 ---
 # Dionaea service catalog — single source of truth for ports, transport,
 # and which narrative.services.<key> each service draws banners from.
+#
+# Every service listed here is ALWAYS deployed and ALWAYS enabled.
+# There is intentionally no inventory-level toggle: disabling a specific
+# protocol is a manual, on-server operation by design — see
+# docs/honeypots.md ("Disabling a Dionaea service") for the procedure.
+#
 # Three rendered artefacts iterate this catalog:
+#   - templates/services/<svc>.yaml.j2 — per-service Dionaea config
+#   - templates/dionaea.container.j2   — Quadlet PublishPort lines
+#   - templates/dionaea.nft.j2         — nftables DNAT + accept rules
 #
-#   - templates/dionaea.yaml.j2     — Dionaea config (services block)
-#   - templates/dionaea.container.j2 — Quadlet PublishPort lines
-#   - templates/dionaea.nft.j2       — nftables DNAT + accept rules
-#
-# To add a new service: add a catalog entry here, list it in
-# dionaea_services (or in an inventory override), and ensure
-# templates/dionaea.yaml.j2 has a conditional block that renders it.
+# To add a new service permanently: add a catalog entry here, drop a
+# matching templates/services/<svc>.yaml.j2 file, and the next deploy
+# picks it up.
 #
 # Fields:
 #   ext_port:      external port attackers hit (e.g. 21 for FTP)
@@ -28,15 +33,3 @@ dionaea_service_catalog:
   mssql: { ext_port: 1433, int_port: 1433, pub_port: 8433, transport: tcp, narrative_key: mssql }
   mysql: { ext_port: 3306, int_port: 3306, pub_port: 8306, transport: tcp, narrative_key: mysql }
   sip: { ext_port: 5060, int_port: 5060, pub_port: 8060, transport: tcp_udp, narrative_key: null }
-
-# Default service set. Operations override this in inventory (e.g. drop
-# `- sip` to silence VoIP noise). Commenting out a line is the entire UX
-# for disabling a service — all three templates above respect this list.
-dionaea_services:
-  - ftp
-  - http
-  - smb
-  - epmap
-  - mssql
-  - mysql
-  - sip

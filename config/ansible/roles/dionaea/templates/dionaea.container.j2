@@ -1,9 +1,9 @@
 # /etc/containers/systemd/users/{{ system.users.sensor.uid }}/dionaea.container
 # Managed by Ansible.
 #
-# PublishPort lines are generated from dionaea_services × dionaea_service_catalog.
-# Disable a service by removing it from dionaea_services in inventory —
-# no edits needed here.
+# PublishPort lines are generated from dionaea_service_catalog. All
+# services are always published — disabling a specific protocol is a
+# manual on-server operation. See docs/honeypots.md.
 
 [Unit]
 Description=Dionaea Malware Honeypot Sensor
@@ -14,8 +14,7 @@ Image=docker.io/dinotools/dionaea:latest
 ContainerName=sensor-dionaea
 Network=pasta
 
-{% for svc in dionaea_services -%}
-{%- set s = dionaea_service_catalog[svc] %}
+{% for svc, s in dionaea_service_catalog.items() -%}
 PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}:{{ s.int_port }}
 PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }}:{{ s.int_port }}
 {% if s.transport == 'tcp_udp' -%}

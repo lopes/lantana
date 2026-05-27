@@ -82,7 +82,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
-  loop: "{{ dionaea_services }}"
+  loop: "{{ dionaea_service_catalog.keys() | list }}"
   loop_control:
     loop_var: _svc
   tags: [dionaea]
@@ -105,7 +105,7 @@
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
     mode: "0644"
-  when: "'http' in dionaea_services"
+  when: "'http' in dionaea_service_catalog"
   tags: [dionaea]
 
 - name: "Remove legacy Quadlet file from user home path"

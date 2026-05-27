@@ -1,12 +1,12 @@
 # /etc/lantana/honeywall/nftables/sensors/dionaea.nft
 # Managed by Ansible.
 #
-# DNAT and accept rules are generated from dionaea_services × dionaea_service_catalog.
-# Disable a service by removing it from dionaea_services in inventory.
+# DNAT and accept rules are generated from dionaea_service_catalog. All
+# services are always published — disabling a specific protocol is a
+# manual on-server operation. See docs/honeypots.md.
 {%- set tcp_pub_ports = [] %}
 {%- set udp_pub_ports = [] %}
-{%- for svc in dionaea_services %}
-{%-   set s = dionaea_service_catalog[svc] %}
+{%- for svc, s in dionaea_service_catalog.items() %}
 {%-   set _ = tcp_pub_ports.append(s.pub_port) %}
 {%-   if s.transport == 'tcp_udp' %}
 {%-     set _ = udp_pub_ports.append(s.pub_port) %}
@@ -15,8 +15,7 @@
 
 table ip lantana_nat {
     chain prerouting {
-{%- for svc in dionaea_services %}
-{%-   set s = dionaea_service_catalog[svc] %}
+{%- for svc, s in dionaea_service_catalog.items() %}
         iifname $WAN_IF tcp dport {{ s.ext_port }} dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}
 {%-   if s.transport == 'tcp_udp' %}
         iifname $WAN_IF udp dport {{ s.ext_port }} dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}
@@ -27,8 +26,7 @@ table ip lantana_nat {
 
 table ip6 lantana_nat6 {
     chain prerouting {
-{%- for svc in dionaea_services %}
-{%-   set s = dionaea_service_catalog[svc] %}
+{%- for svc, s in dionaea_service_catalog.items() %}
         iifname $WAN_IF tcp dport {{ s.ext_port }} dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }}
 {%-   if s.transport == 'tcp_udp' %}
         iifname $WAN_IF udp dport {{ s.ext_port }} dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }}

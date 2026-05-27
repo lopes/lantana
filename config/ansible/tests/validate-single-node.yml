@@ -217,10 +217,15 @@
     # Asserts that each honeypot listed in sensor_honeypots has its
     # rootless user-systemd unit active under stigma's scope, and that
     # the published TCP ports are accepting connections on the sensor
-    # IP. Port lists derive from inventory: Cowrie's are fixed (2222
-    # SSH, 2223 Telnet); Dionaea's are computed from the catalog ∩
-    # dionaea_services so a service toggle in inventory automatically
-    # updates the assertion.
+    # IP. Port lists: Cowrie's are fixed (2222 SSH, 2223 Telnet);
+    # Dionaea's come from the role's catalog (every catalog entry is
+    # always deployed — disabling a specific service is a manual
+    # on-server operation, see docs/honeypots.md).
+    #
+    # If an operator has manually disabled a sub-service post-deploy,
+    # the corresponding wait_for assertion will fail — that's the
+    # intended signal that the host has drifted from the deployed
+    # baseline and Ansible would revert the manual change on next run.
 
     - name: "Load Dionaea service catalog (only needed if dionaea is enabled)"
       ansible.builtin.include_vars:
@@ -276,12 +281,7 @@
         state: started
         timeout: 5
         connect_timeout: 2
-      loop: >-
-        {{ dionaea_service_catalog
-           | dict2items
-           | selectattr('key', 'in', dionaea_services)
-           | map(attribute='value.pub_port')
-           | list }}
+      loop: "{{ dionaea_service_catalog.values() | map(attribute='pub_port') | list }}"
       loop_control:
         loop_var: port
       when: "'dionaea' in (sensor_honeypots | default([]))"
