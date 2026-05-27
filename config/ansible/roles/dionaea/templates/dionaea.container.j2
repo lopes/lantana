@@ -36,11 +36,22 @@ PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }
 {% endfor %}
 
 # Hardening
+# Capability strategy: drop everything by default, then add back only
+# what the bundled image's startup actually needs.
+#   NET_BIND_SERVICE — dionaea binds privileged ports (21, 80, 135, 445)
+#                     inside the container.
+#   SETUID + SETGID  — the entrypoint launches dionaea with `-u dionaea
+#                     -g dionaea`; without these the privilege-drop
+#                     fails and dionaea exits silently with status 133.
+#   CHOWN + FOWNER   — the entrypoint's `cp -a` (template/lib → var/lib)
+#                     preserves ownership; without these we get EPERM
+#                     noise on every boot. Cosmetic but worth removing.
 # ReadOnly=true is incompatible with this image's entrypoint, which has
-# to write the seeded dionaea.cfg into /opt/dionaea/etc/dionaea/. Caps
-# stay dropped — the bundled dionaea.cfg has `modules=curl,python,emu`
-# (no nfq, no pcap) so we don't need CAP_NET_ADMIN or CAP_NET_RAW.
+# to write the seeded dionaea.cfg into /opt/dionaea/etc/dionaea/. The
+# bundled dionaea.cfg disables nfq and pcap modules so no CAP_NET_ADMIN
+# or CAP_NET_RAW required.
 DropCapability=ALL
+AddCapability=NET_BIND_SERVICE SETUID SETGID CHOWN FOWNER
 NoNewPrivileges=true
 VolatileTmp=true
 
