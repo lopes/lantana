@@ -150,6 +150,30 @@ If Ansible is acting on outdated host data during playbook runs, clear the fact 
 ansible-playbook site.yml -e "ansible_facts_parallel=false" --flush-cache
 ```
 
+### Ansible "Permission denied (publickey)" mid-session
+
+Symptom: an `ansible-playbook` run that worked earlier in the same workstation session suddenly fails with `Permission denied (publickey)` from `Gathering Facts`, even though no SSH-side change happened on the VPS.
+
+Most common cause on workstations that maintain **per-operation SSH keys** (e.g. `id_ed25519` for git/local, `ovh_id_ed25519` for the OVH VPS, `aws_id_ed25519` for an AWS host): the ssh-agent has the wrong key loaded. Earlier the operation's key was cached; then something — running `ssh-add` for a different purpose, a Keychain timeout, agent restart, OS sleep — evicted it. The default key remains loaded and gets offered first, but it's not authorised on the target host, and Ansible doesn't fall back to trying other keys before the server refuses.
+
+Diagnose and fix:
+
+```sh
+# What's currently in the agent?
+ssh-add -l
+
+# Load the operation-specific key.
+ssh-add ~/.ssh/<operation>_id_ed25519
+```
+
+To pin the key for a given operation so the agent state stops mattering, set `ansible_ssh_private_key_file` on the host (or in `group_vars/all/main.yml`) so Ansible always uses the right key regardless of which keys happen to be in the agent:
+
+```yaml
+ansible_ssh_private_key_file: ~/.ssh/<operation>_id_ed25519
+```
+
+Pinning is the durable fix; `ssh-add` is the immediate one.
+
 ### Ansible Debug Task
 
 Whenever a task is failing due to variable errors, you can add the following task before the one that's failing to check out the values:
