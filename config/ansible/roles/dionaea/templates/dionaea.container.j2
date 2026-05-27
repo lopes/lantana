@@ -1,5 +1,9 @@
 # /etc/containers/systemd/users/{{ system.users.sensor.uid }}/dionaea.container
-# Managed by Ansible
+# Managed by Ansible.
+#
+# PublishPort lines are generated from dionaea_services × dionaea_service_catalog.
+# Disable a service by removing it from dionaea_services in inventory —
+# no edits needed here.
 
 [Unit]
 Description=Dionaea Malware Honeypot Sensor
@@ -10,22 +14,15 @@ Image=docker.io/dinotools/dionaea:latest
 ContainerName=sensor-dionaea
 Network=pasta
 
-PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8021:21
-PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8021:21
-PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8080:80
-PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8080:80
-PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8135:135
-PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8135:135
-PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8445:445
-PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8445:445
-PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8433:1433
-PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8433:1433
-PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8306:3306
-PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8306:3306
-PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8060:5060
-PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8060:5060
-PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8060:5060/udp
-PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8060:5060/udp
+{% for svc in dionaea_services -%}
+{%- set s = dionaea_service_catalog[svc] %}
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}:{{ s.int_port }}
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }}:{{ s.int_port }}
+{% if s.transport == 'tcp_udp' -%}
+PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}:{{ s.int_port }}/udp
+PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }}:{{ s.int_port }}/udp
+{% endif -%}
+{% endfor %}
 
 # Hardening
 DropCapability=ALL

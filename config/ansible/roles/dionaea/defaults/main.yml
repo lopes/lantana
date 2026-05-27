@@ -1,0 +1,42 @@
+---
+# Dionaea service catalog — single source of truth for ports, transport,
+# and which narrative.services.<key> each service draws banners from.
+# Three rendered artefacts iterate this catalog:
+#
+#   - templates/dionaea.yaml.j2     — Dionaea config (services block)
+#   - templates/dionaea.container.j2 — Quadlet PublishPort lines
+#   - templates/dionaea.nft.j2       — nftables DNAT + accept rules
+#
+# To add a new service: add a catalog entry here, list it in
+# dionaea_services (or in an inventory override), and ensure
+# templates/dionaea.yaml.j2 has a conditional block that renders it.
+#
+# Fields:
+#   ext_port:      external port attackers hit (e.g. 21 for FTP)
+#   int_port:      port the dionaea process binds inside the container
+#   pub_port:      host-side high port the Quadlet publishes the container on
+#                  (DNAT then maps ext_port → pub_port). High ports keep the
+#                  rootless container free of CAP_NET_BIND_SERVICE.
+#   transport:     "tcp" or "tcp_udp" (sip dual-binds; everything else is TCP).
+#   narrative_key: null OR the key under narrative.services.<key> that
+#                  feeds banner/version strings into the dionaea config.
+dionaea_service_catalog:
+  ftp: { ext_port: 21, int_port: 21, pub_port: 8021, transport: tcp, narrative_key: ftp }
+  http: { ext_port: 80, int_port: 80, pub_port: 8080, transport: tcp, narrative_key: http }
+  smb: { ext_port: 445, int_port: 445, pub_port: 8445, transport: tcp, narrative_key: smb }
+  epmap: { ext_port: 135, int_port: 135, pub_port: 8135, transport: tcp, narrative_key: null }
+  mssql: { ext_port: 1433, int_port: 1433, pub_port: 8433, transport: tcp, narrative_key: mssql }
+  mysql: { ext_port: 3306, int_port: 3306, pub_port: 8306, transport: tcp, narrative_key: mysql }
+  sip: { ext_port: 5060, int_port: 5060, pub_port: 8060, transport: tcp_udp, narrative_key: null }
+
+# Default service set. Operations override this in inventory (e.g. drop
+# `- sip` to silence VoIP noise). Commenting out a line is the entire UX
+# for disabling a service — all three templates above respect this list.
+dionaea_services:
+  - ftp
+  - http
+  - smb
+  - epmap
+  - mssql
+  - mysql
+  - sip

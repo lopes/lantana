@@ -55,6 +55,17 @@
     mode: "0644"
   tags: [dionaea]
 
+- name: "Deploy persona-consistent HTTP wwwroot index page"
+  become: true
+  ansible.builtin.template:
+    src: "wwwroot/index.html.j2"
+    dest: /var/lib/lantana/sensor/dionaea/wwwroot/index.html
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0644"
+  when: "'http' in dionaea_services"
+  tags: [dionaea]
+
 - name: "Remove legacy Quadlet file from user home path"
   become: true
   ansible.builtin.file:

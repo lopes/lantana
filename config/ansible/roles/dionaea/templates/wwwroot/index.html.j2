@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ narrative.identity.company }}</title>
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: #f4f4f4;
+    color: #333;
+    margin: 0;
+    padding: 50px;
+    text-align: center;
+  }
+  .container {
+    background: #fff;
+    padding: 40px;
+    border-radius: 4px;
+    max-width: 600px;
+    margin: 100px auto;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+  h1 { color: #2c3e50; margin-top: 0; }
+  p { line-height: 1.6; }
+  .footer {
+    color: #999;
+    font-size: 0.85em;
+    margin-top: 30px;
+    border-top: 1px solid #eee;
+    padding-top: 15px;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>{{ narrative.identity.company }}</h1>
+    <p>Our new website is coming soon.</p>
+    <p>Please check back later.</p>
+    <div class="footer">
+      {{ narrative.identity.common_name }} &mdash;
+      {{ narrative.identity.locality }}, {{ narrative.identity.country }}
+    </div>
+  </div>
+</body>
+</html>
