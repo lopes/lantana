@@ -210,3 +210,78 @@
       ansible.builtin.debug:
         msg: "Log file {{ item.item }} status: {{ 'Present' if item.stat.exists else 'Missing (Might need traffic first)' }}"
       loop: "{{ logfile_check.results }}"
+
+    # ---------------------------------------------------------
+    # HONEYPOTS
+    # ---------------------------------------------------------
+    # Asserts that each honeypot listed in sensor_honeypots has its
+    # rootless user-systemd unit active under stigma's scope, and that
+    # the published TCP ports are accepting connections on the sensor
+    # IP. Port lists derive from inventory: Cowrie's are fixed (2222
+    # SSH, 2223 Telnet); Dionaea's are computed from the catalog ∩
+    # dionaea_services so a service toggle in inventory automatically
+    # updates the assertion.
+
+    - name: "Load Dionaea service catalog (only needed if dionaea is enabled)"
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/dionaea/defaults/main.yml"
+      when: "'dionaea' in (sensor_honeypots | default([]))"
+
+    - name: "Probe each honeypot user-systemd service"
+      become: true
+      become_user: "{{ system.users.sensor.name }}"
+      ansible.builtin.command: "systemctl --user is-active {{ honeypot }}.service"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+      loop: "{{ sensor_honeypots | default([]) }}"
+      loop_control:
+        loop_var: honeypot
+      register: honeypot_active_check
+      changed_when: false
+      # is-active returns rc=3 for inactive — capture it instead of failing
+      # the task so the assert below produces a clean error message.
+      failed_when: false
+
+    - name: "Assert each honeypot user-systemd service reports active"
+      ansible.builtin.assert:
+        that: "result.stdout | trim == 'active'"
+        fail_msg: >-
+          Honeypot {{ result.honeypot }}.service is not active under stigma's
+          user scope (status: {{ result.stdout | default('unknown') | trim }}).
+          Investigate with: sudo -u stigma XDG_RUNTIME_DIR=/run/user/{{ system.users.sensor.uid }}
+          systemctl --user status {{ result.honeypot }}.service
+      loop: "{{ honeypot_active_check.results }}"
+      loop_control:
+        loop_var: result
+        label: "{{ result.honeypot }}"
+
+    - name: "Assert Cowrie's published TCP ports are listening on the sensor IP"
+      ansible.builtin.wait_for:
+        host: "{{ expected_sensor_ipv4 }}"
+        port: "{{ port }}"
+        state: started
+        timeout: 5
+        connect_timeout: 2
+      loop:
+        - 2222    # SSH
+        - 2223    # Telnet
+      loop_control:
+        loop_var: port
+      when: "'cowrie' in (sensor_honeypots | default([]))"
+
+    - name: "Assert Dionaea's published TCP ports are listening on the sensor IP"
+      ansible.builtin.wait_for:
+        host: "{{ expected_sensor_ipv4 }}"
+        port: "{{ port }}"
+        state: started
+        timeout: 5
+        connect_timeout: 2
+      loop: >-
+        {{ dionaea_service_catalog
+           | dict2items
+           | selectattr('key', 'in', dionaea_services)
+           | map(attribute='value.pub_port')
+           | list }}
+      loop_control:
+        loop_var: port
+      when: "'dionaea' in (sensor_honeypots | default([]))"
