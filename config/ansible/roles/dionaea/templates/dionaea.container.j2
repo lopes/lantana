@@ -1,4 +1,4 @@
-# /etc/containers/systemd/{{ system.users.sensor.name }}/dionaea.container
+# /etc/containers/systemd/users/{{ system.users.sensor.uid }}/dionaea.container
 # Managed by Ansible
 
 [Unit]
@@ -27,24 +27,27 @@ PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8060:5060
 PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:8060:5060/udp
 PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:8060:5060/udp
 
-# Hardening settings
+# Hardening
 DropCapability=ALL
 NoNewPrivileges=true
 ReadOnly=true
 VolatileTmp=true
-SecurityLabelDisable=false
-HealthCheck=CMD-SHELL echo | nc -w 3 localhost 445 || exit 1
-HealthCheckInterval=30s
-HealthCheckTimeout=5s
-HealthCheckRetries=3
+
+# Health check (Podman 5.x Quadlet key names)
+# Process-level: resilient to dionaea_services toggles (port-level checks
+# would break if SMB or whichever port we probed got disabled).
+HealthCmd=CMD-SHELL pgrep -f dionaea >/dev/null || exit 1
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
 
 # Resource limits (higher than Cowrie: handles more protocols + stores malware)
 PodmanArgs=--cpus=1.0 --memory=512m
 
-# Volumes: Z/z for SELinux isolation, U for subUID ownership mapping
-Volume=/etc/lantana/sensor/dionaea/dionaea.yaml:/opt/dionaea/etc/dionaea/dionaea.yaml:ro,Z
-Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw,z,U
-Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw,z,U
+# Volumes: U for subUID ownership mapping in rootless container
+Volume=/etc/lantana/sensor/dionaea/dionaea.yaml:/opt/dionaea/etc/dionaea/dionaea.yaml:ro
+Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw,U
+Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw,U
 
 [Service]
 Restart=always
