@@ -88,12 +88,15 @@ Either change is reverted on the next `deploy_honeypots.yml` run.
 
 ## Dionaea
 
-Container image: `docker.io/dinotools/dionaea:latest`.
+Container image: `docker.io/dinotools/dionaea:nightly`.
 Quadlet unit:   `sensor-dionaea` (managed via `/etc/containers/systemd/users/2001/dionaea.container`).
-Config layout:  `/etc/lantana/sensor/dionaea/services/<svc>.yaml` (one file per
-                protocol; bind-mounted read-only over the container's
-                `/opt/dionaea/etc/dionaea/services/` directory). Dionaea's bundled
-                `dionaea.cfg` globs every `*.yaml` in that directory at startup.
+Config layout:  `/etc/lantana/sensor/dionaea/services-enabled/<svc>.yaml` (one file
+                per protocol; bind-mounted read-only over the container's
+                `/opt/dionaea/etc/dionaea/services-enabled/` directory). Dionaea's
+                bundled `dionaea.cfg` globs every `*.yaml` in that directory at
+                startup. A parallel `ihandlers-enabled/` directory holds incident
+                handler configs (we ship only `log_json.yaml` — it streams every
+                attacker connection to NDJSON for the Vector → bronze pipeline).
 
 ### Default protocol surface
 
@@ -117,13 +120,13 @@ belong exclusively to Cowrie.
 ### Disabling a Dionaea sub-service on a running honeypot
 
 Each service is a single YAML file under
-`/etc/lantana/sensor/dionaea/services/`. To disable a service, delete or
-rename its file and restart the container:
+`/etc/lantana/sensor/dionaea/services-enabled/`. To disable a service,
+delete or rename its file and restart the container:
 
 ```bash
 # Example: disable SIP on the running host.
-sudo mv /etc/lantana/sensor/dionaea/services/sip.yaml \
-        /etc/lantana/sensor/dionaea/services/sip.yaml.disabled
+sudo mv /etc/lantana/sensor/dionaea/services-enabled/sip.yaml \
+        /etc/lantana/sensor/dionaea/services-enabled/sip.yaml.disabled
 
 # Restart Dionaea so it re-globs the services directory.
 sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 \

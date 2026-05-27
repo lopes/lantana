@@ -45,14 +45,20 @@
   tags: [dionaea]
 
 # --- CONFIGURATION FILES ---
-# Dionaea reads its main config from the bundled /opt/dionaea/etc/dionaea/dionaea.cfg
-# inside the container — that file globs `services/*.yaml` and `ihandlers/*.yaml`
-# under the same directory. We override those two subdirectories (and only those)
-# with our generated files via :ro bind-mounts in the Quadlet. The bundled
-# dionaea.cfg is left untouched.
+# The dinotools/dionaea image's entrypoint copies template/etc and
+# template/lib into place at startup (under /opt/dionaea/etc and
+# /opt/dionaea/var/lib respectively). The bundled dionaea.cfg globs
+# services-enabled/*.yaml and ihandlers-enabled/*.yaml from inside
+# /opt/dionaea/etc/dionaea/. We override those two subdirectories
+# (and ONLY those) with our generated files via :ro bind-mounts in
+# the Quadlet, so the dionaea.cfg and other bundled fixtures get
+# seeded normally while our 7 service files + log_json ihandler
+# completely replace the default 16 services + 6 ihandlers.
 #
-# A single-file overlay at /opt/dionaea/etc/dionaea/dionaea.yaml does NOT work —
-# Dionaea never reads that path.
+# The Quadlet sets DIONAEA_FORCE_INIT_CONF=1 + DIONAEA_FORCE_INIT_DATA=1
+# so the entrypoint's init runs on every start — without that, the
+# `test ! -d` checks would see our bind-mounted parent directories and
+# skip the seeding, leaving dionaea with no dionaea.cfg.
 
 - name: "Create Dionaea per-service config directories on host"
   become: true
@@ -63,22 +69,26 @@
     group: "root"
     mode: "0755"
   loop:
-    - /etc/lantana/sensor/dionaea/services
-    - /etc/lantana/sensor/dionaea/ihandlers
+    - /etc/lantana/sensor/dionaea/services-enabled
+    - /etc/lantana/sensor/dionaea/ihandlers-enabled
   tags: [dionaea]
 
-- name: "Remove legacy monolithic dionaea.yaml overlay (no longer used)"
+- name: "Remove legacy config-overlay paths (renamed 2026-05-27)"
   become: true
   ansible.builtin.file:
-    path: /etc/lantana/sensor/dionaea/dionaea.yaml
+    path: "{{ item }}"
     state: absent
+  loop:
+    - /etc/lantana/sensor/dionaea/dionaea.yaml
+    - /etc/lantana/sensor/dionaea/services
+    - /etc/lantana/sensor/dionaea/ihandlers
   tags: [dionaea]
 
 - name: "Render Dionaea per-service config files"
   become: true
   ansible.builtin.template:
-    src: "services/{{ _svc }}.yaml.j2"
-    dest: "/etc/lantana/sensor/dionaea/services/{{ _svc }}.yaml"
+    src: "services-enabled/{{ _svc }}.yaml.j2"
+    dest: "/etc/lantana/sensor/dionaea/services-enabled/{{ _svc }}.yaml"
     owner: "root"
     group: "root"
     mode: "0644"
@@ -90,8 +100,8 @@
 - name: "Render Dionaea log_json ihandler"
   become: true
   ansible.builtin.template:
-    src: "ihandlers/log_json.yaml.j2"
-    dest: /etc/lantana/sensor/dionaea/ihandlers/log_json.yaml
+    src: "ihandlers-enabled/log_json.yaml.j2"
+    dest: /etc/lantana/sensor/dionaea/ihandlers-enabled/log_json.yaml
     owner: "root"
     group: "root"
     mode: "0644"

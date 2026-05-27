@@ -10,9 +10,21 @@ Description=Dionaea Malware Honeypot Sensor
 After=network-online.target
 
 [Container]
-Image=docker.io/dinotools/dionaea:latest
+# :latest is frozen at the Nov-2020 0.11.0 release; :nightly is the
+# actively-rebuilt tag (refreshed daily by the upstream CI). Both ship
+# the same source codebase (dionaea 0.11.0) but :nightly carries fresh
+# OS-package security updates.
+Image=docker.io/dinotools/dionaea:nightly
 ContainerName=sensor-dionaea
 Network=pasta
+
+# Force the entrypoint's init_etc / init_lib / init_log functions to
+# run on every container start. Without these, the entrypoint's
+# `test ! -d /opt/dionaea/etc/dionaea` check would see our bind-mounted
+# subdirectories as existing → skip the seeding → dionaea launches with
+# no dionaea.cfg → exit 133 instantly.
+Environment=DIONAEA_FORCE_INIT_CONF=1
+Environment=DIONAEA_FORCE_INIT_DATA=1
 
 {% for svc, s in dionaea_service_catalog.items() -%}
 PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}:{{ s.int_port }}
@@ -24,9 +36,12 @@ PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }
 {% endfor %}
 
 # Hardening
+# ReadOnly=true is incompatible with this image's entrypoint, which has
+# to write the seeded dionaea.cfg into /opt/dionaea/etc/dionaea/. Caps
+# stay dropped — the bundled dionaea.cfg has `modules=curl,python,emu`
+# (no nfq, no pcap) so we don't need CAP_NET_ADMIN or CAP_NET_RAW.
 DropCapability=ALL
 NoNewPrivileges=true
-ReadOnly=true
 VolatileTmp=true
 
 # Health check (Podman 5.x Quadlet key names)
@@ -41,12 +56,18 @@ HealthRetries=3
 PodmanArgs=--cpus=1.0 --memory=512m
 
 # Volumes
-#   services/ and ihandlers/ are mounted :ro over the bundled directories
-#   inside the image — dionaea.cfg globs *.yaml from these paths and only
-#   the files we render here will be loaded.
-#   log + lib bind-mounts use U for subUID ownership mapping in rootless container.
-Volume=/etc/lantana/sensor/dionaea/services:/opt/dionaea/etc/dionaea/services:ro
-Volume=/etc/lantana/sensor/dionaea/ihandlers:/opt/dionaea/etc/dionaea/ihandlers:ro
+#   services-enabled/ and ihandlers-enabled/ are mounted :ro over the
+#   bundled directories inside the image. The bundled dionaea.cfg globs
+#   *.yaml from these paths and only the files we render here will be
+#   loaded — overriding the image's default 16 services (including
+#   blackhole on port 23, which would conflict with Cowrie) and 6
+#   ihandlers (none of which is log_json).
+#   log + lib bind-mounts use U for subUID ownership mapping in rootless
+#   container. The entrypoint's init_lib + init_log copy seed dirs
+#   (binaries, bistreams, ftp, http, ...) into these mounts on first
+#   boot via cp -van (no-clobber).
+Volume=/etc/lantana/sensor/dionaea/services-enabled:/opt/dionaea/etc/dionaea/services-enabled:ro
+Volume=/etc/lantana/sensor/dionaea/ihandlers-enabled:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro
 Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw,U
 Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw,U
 
