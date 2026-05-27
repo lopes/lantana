@@ -4,34 +4,41 @@
 # DNAT and accept rules are generated from dionaea_service_catalog. All
 # services are always published — disabling a specific protocol is a
 # manual on-server operation. See docs/honeypots.md.
-{%- set tcp_pub_ports = [] %}
-{%- set udp_pub_ports = [] %}
-{%- for svc, s in dionaea_service_catalog.items() %}
-{%-   set _ = tcp_pub_ports.append(s.pub_port) %}
-{%-   if s.transport == 'tcp_udp' %}
-{%-     set _ = udp_pub_ports.append(s.pub_port) %}
-{%-   endif %}
-{%- endfor %}
-
+#
+# Whitespace note: block tags (for/if) MUST stay at column 0 with no
+# leading whitespace-strip. Ansible's Jinja2 default sets trim_blocks=True
+# (strips the newline after the closing tag brace) but lstrip_blocks=False
+# (keeps any leading whitespace before the opening tag brace). A leading
+# whitespace-strip combined with trim_blocks would also eat the newline
+# at the end of the previous line, concatenating rules onto one line and
+# producing "conflicting network layer protocols" parse errors in nftables.
+{% set tcp_pub_ports = [] %}
+{% set udp_pub_ports = [] %}
+{% for svc, s in dionaea_service_catalog.items() %}
+{% set _ = tcp_pub_ports.append(s.pub_port) %}
+{% if s.transport == 'tcp_udp' %}
+{% set _ = udp_pub_ports.append(s.pub_port) %}
+{% endif %}
+{% endfor %}
 table ip lantana_nat {
     chain prerouting {
-{%- for svc, s in dionaea_service_catalog.items() %}
+{% for svc, s in dionaea_service_catalog.items() %}
         iifname $WAN_IF tcp dport {{ s.ext_port }} dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}
-{%-   if s.transport == 'tcp_udp' %}
+{% if s.transport == 'tcp_udp' %}
         iifname $WAN_IF udp dport {{ s.ext_port }} dnat to {{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}
-{%-   endif %}
-{%- endfor %}
+{% endif %}
+{% endfor %}
     }
 }
 
 table ip6 lantana_nat6 {
     chain prerouting {
-{%- for svc, s in dionaea_service_catalog.items() %}
+{% for svc, s in dionaea_service_catalog.items() %}
         iifname $WAN_IF tcp dport {{ s.ext_port }} dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }}
-{%-   if s.transport == 'tcp_udp' %}
+{% if s.transport == 'tcp_udp' %}
         iifname $WAN_IF udp dport {{ s.ext_port }} dnat to [{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }}
-{%-   endif %}
-{%- endfor %}
+{% endif %}
+{% endfor %}
     }
 }
 
@@ -39,18 +46,18 @@ table inet lantana_filter {
     chain input {
         ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} tcp dport { {{ tcp_pub_ports | join(', ') }} } accept
         ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} tcp dport { {{ tcp_pub_ports | join(', ') }} } accept
-{%- if udp_pub_ports %}
+{% if udp_pub_ports %}
         ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} udp dport { {{ udp_pub_ports | join(', ') }} } accept
         ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} udp dport { {{ udp_pub_ports | join(', ') }} } accept
-{%- endif %}
+{% endif %}
     }
 
     chain forward {
         ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} tcp dport { {{ tcp_pub_ports | join(', ') }} } accept
         ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} tcp dport { {{ tcp_pub_ports | join(', ') }} } accept
-{%- if udp_pub_ports %}
+{% if udp_pub_ports %}
         ip daddr {{ network.sensors.sensor_01.ipv4.split('/')[0] }} udp dport { {{ udp_pub_ports | join(', ') }} } accept
         ip6 daddr {{ network.sensors.sensor_01.ipv6.split('/')[0] }} udp dport { {{ udp_pub_ports | join(', ') }} } accept
-{%- endif %}
+{% endif %}
     }
 }
