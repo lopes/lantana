@@ -1,0 +1,7 @@
+# Managed by Ansible. Banner string from narrative.services.ftp.banner.
+# Schema: upstream dionaea conf/services/ftp.yaml.in (list of one map).
+- name: ftp
+  config:
+    root: /opt/dionaea/var/dionaea/roots/ftp
+    response_messages:
+      welcome_msg: "{{ narrative.services.ftp.banner }}"

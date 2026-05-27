@@ -1,0 +1,18 @@
+# Managed by Ansible.
+# SIP/VoIP signaling on TCP + UDP 5060. Personality strings stay generic —
+# we don't define narrative.services.sip in narrative.yml; if a future
+# operation needs custom SIP banners, add narrative.services.sip and
+# reference it here.
+# Schema matches dionaea-docker/0.6/conf/services/sip.yaml minus the
+# RTP/actions blocks (which we don't capture in v1.0.0).
+- name: sip
+  config:
+    udp_ports:
+      - 5060
+    tcp_ports:
+      - 5060
+    personalities:
+      default:
+        domain: "localhost"
+        name: "softphone"
+        personality: "generic"

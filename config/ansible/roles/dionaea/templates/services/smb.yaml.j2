@@ -1,0 +1,14 @@
+# Managed by Ansible.
+# Persona strings: narrative.services.smb.workgroup (→ primary_domain +
+# oem_domain_name), narrative.services.smb.server_string (→
+# native_lan_manager), narrative.host.os_release (→ native_os),
+# narrative.host.hostname uppercased (→ server_name; NetBIOS convention).
+# Schema verified from dionaea source: modules/python/dionaea/smb/extras.py
+# `value_names` list. Don't rename these keys — the parser ignores unknown ones.
+- name: smb
+  config:
+    primary_domain: "{{ narrative.services.smb.workgroup }}"
+    oem_domain_name: "{{ narrative.services.smb.workgroup }}"
+    native_os: "{{ narrative.host.os_release }}"
+    native_lan_manager: "{{ narrative.services.smb.server_string }}"
+    server_name: "{{ narrative.host.hostname | upper }}"

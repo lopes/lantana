@@ -45,11 +45,53 @@
   tags: [dionaea]
 
 # --- CONFIGURATION FILES ---
-- name: "Deploy Dionaea configuration template"
+# Dionaea reads its main config from the bundled /opt/dionaea/etc/dionaea/dionaea.cfg
+# inside the container — that file globs `services/*.yaml` and `ihandlers/*.yaml`
+# under the same directory. We override those two subdirectories (and only those)
+# with our generated files via :ro bind-mounts in the Quadlet. The bundled
+# dionaea.cfg is left untouched.
+#
+# A single-file overlay at /opt/dionaea/etc/dionaea/dionaea.yaml does NOT work —
+# Dionaea never reads that path.
+
+- name: "Create Dionaea per-service config directories on host"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  loop:
+    - /etc/lantana/sensor/dionaea/services
+    - /etc/lantana/sensor/dionaea/ihandlers
+  tags: [dionaea]
+
+- name: "Remove legacy monolithic dionaea.yaml overlay (no longer used)"
+  become: true
+  ansible.builtin.file:
+    path: /etc/lantana/sensor/dionaea/dionaea.yaml
+    state: absent
+  tags: [dionaea]
+
+- name: "Render Dionaea per-service config files"
   become: true
   ansible.builtin.template:
-    src: "dionaea.yaml.j2"
-    dest: /etc/lantana/sensor/dionaea/dionaea.yaml
+    src: "services/{{ _svc }}.yaml.j2"
+    dest: "/etc/lantana/sensor/dionaea/services/{{ _svc }}.yaml"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  loop: "{{ dionaea_services }}"
+  loop_control:
+    loop_var: _svc
+  tags: [dionaea]
+
+- name: "Render Dionaea log_json ihandler"
+  become: true
+  ansible.builtin.template:
+    src: "ihandlers/log_json.yaml.j2"
+    dest: /etc/lantana/sensor/dionaea/ihandlers/log_json.yaml
     owner: "root"
     group: "root"
     mode: "0644"

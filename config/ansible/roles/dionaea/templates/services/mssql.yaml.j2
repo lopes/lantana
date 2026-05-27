@@ -1,0 +1,9 @@
+# Managed by Ansible.
+# Tabular Data Stream emulator. The upstream Python module
+# (modules/python/dionaea/mssql/mssql.py) does not consume any
+# config keys — the version banner attackers see is hardcoded in the
+# module's TDS handler. We accept the default persona drift for v1.0.0;
+# narrative.services.mssql.version is unused here.
+# Mark as TODO/v1.1: contribute upstream support for configurable
+# version, or replace this service with a custom TDS emulator.
+- name: mssql

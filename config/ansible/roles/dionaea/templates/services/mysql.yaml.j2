@@ -1,0 +1,13 @@
+# Managed by Ansible.
+# MySQL server version emulated via the `vars.version` field; the upstream
+# module (modules/python/dionaea/mysql/mysql.py:73) reads it as
+# `self.vars.values.get("version")` and writes it into the server greeting.
+# information_schema is an in-memory placeholder so the SQL parser has a
+# default database to bind queries against.
+- name: mysql
+  config:
+    databases:
+      information_schema:
+        path: ":memory:"
+    vars:
+      version: "{{ narrative.services.mysql.version }}"

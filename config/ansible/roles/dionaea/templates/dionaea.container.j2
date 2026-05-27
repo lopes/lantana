@@ -41,8 +41,13 @@ HealthRetries=3
 # Resource limits (higher than Cowrie: handles more protocols + stores malware)
 PodmanArgs=--cpus=1.0 --memory=512m
 
-# Volumes: U for subUID ownership mapping in rootless container
-Volume=/etc/lantana/sensor/dionaea/dionaea.yaml:/opt/dionaea/etc/dionaea/dionaea.yaml:ro
+# Volumes
+#   services/ and ihandlers/ are mounted :ro over the bundled directories
+#   inside the image — dionaea.cfg globs *.yaml from these paths and only
+#   the files we render here will be loaded.
+#   log + lib bind-mounts use U for subUID ownership mapping in rootless container.
+Volume=/etc/lantana/sensor/dionaea/services:/opt/dionaea/etc/dionaea/services:ro
+Volume=/etc/lantana/sensor/dionaea/ihandlers:/opt/dionaea/etc/dionaea/ihandlers:ro
 Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw,U
 Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw,U
 

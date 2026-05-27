@@ -1,0 +1,12 @@
+# Managed by Ansible.
+# Streams every incident to a file:// URI as NDJSON. The path matches
+# Vector's file source in roles/dionaea/templates/dionaea.vector.yaml.j2,
+# which tails /var/log/lantana/sensor/dionaea/dionaea.json on the host
+# (bind-mount target of /opt/dionaea/var/log/dionaea inside the container).
+#
+# Schema: upstream conf/ihandlers/log_json.yaml.in (list of one map).
+# Note the file:// URI uses three slashes: scheme + absolute path.
+- name: log_json
+  config:
+    handlers:
+      - file:///opt/dionaea/var/log/dionaea/dionaea.json

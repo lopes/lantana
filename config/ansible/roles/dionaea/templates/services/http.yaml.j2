@@ -1,0 +1,15 @@
+# Managed by Ansible.
+# Server header from narrative.services.http.server_header.
+# root points at our wwwroot mount (host /var/lib/lantana/sensor/dionaea/wwwroot →
+# container /opt/dionaea/var/lib/dionaea/wwwroot); the persona-consistent
+# index.html.j2 is rendered there by tasks/main.yml.
+- name: http
+  config:
+    root: /opt/dionaea/var/lib/dionaea/wwwroot
+    ports:
+      - 80
+    ssl_ports:
+      - 443
+    max_request_size: 32768
+    global_headers:
+      - ["Server", "{{ narrative.services.http.server_header }}"]
