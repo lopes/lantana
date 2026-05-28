@@ -73,17 +73,6 @@
     - /etc/lantana/sensor/dionaea/ihandlers-enabled
   tags: [dionaea]
 
-- name: "Remove legacy config-overlay paths (renamed 2026-05-27)"
-  become: true
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/lantana/sensor/dionaea/dionaea.yaml
-    - /etc/lantana/sensor/dionaea/services
-    - /etc/lantana/sensor/dionaea/ihandlers
-  tags: [dionaea]
-
 - name: "Render Dionaea per-service config files"
   become: true
   ansible.builtin.template:
@@ -97,11 +86,11 @@
     loop_var: _svc
   tags: [dionaea]
 
-# If a service is removed from `dionaea_service_catalog` (e.g. SIP in
-# v1.0.0), the previous deploy's *.yaml file is still on the VPS and
-# dionaea would keep loading it. Sweep services-enabled and remove any
-# *.yaml whose basename isn't in the current catalog. Same idea for
-# the sip/ seed directory under var/lib/, which would otherwise persist.
+# Catalog idempotency: when a service is removed from
+# `dionaea_service_catalog`, its yaml file from the prior apply would
+# persist on disk and dionaea would keep loading it. Sweep
+# services-enabled and remove any *.yaml whose basename isn't in the
+# current catalog.
 - name: "Find existing per-service yamls on host"
   become: true
   ansible.builtin.find:
@@ -141,13 +130,6 @@
     group: "{{ system.users.sensor.name }}"
     mode: "0644"
   when: "'http' in dionaea_service_catalog"
-  tags: [dionaea]
-
-- name: "Remove legacy Quadlet file from user home path"
-  become: true
-  ansible.builtin.file:
-    path: "/home/{{ system.users.sensor.name }}/.config/containers/systemd/dionaea.container"
-    state: absent
   tags: [dionaea]
 
 - name: "Create Quadlet directory for sensor user"
@@ -200,13 +182,7 @@
     owner: "root"
     group: "root"
     mode: "0600"
-  tags: [dionaea, nftables]
-
-- name: "Reload nftables for Dionaea"
-  become: true
-  ansible.builtin.service:
-    name: nftables
-    state: reloaded
+  notify: "Reload nftables"
   tags: [dionaea, nftables]
 
 # --- LOGGING ---
