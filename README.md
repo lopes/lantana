@@ -47,8 +47,21 @@ ansible-playbook -i inventories/op_myop/inventory.yml playbooks/deploy_honeypots
 ### 4. Validate
 
 ```bash
-ansible-playbook -i inventories/op_myop/inventory.yml tests/validate-single-node.yml -vvv
+ansible-playbook -i inventories/op_myop/inventory.yml tests/validate-single-node.yml -vvv --ask-vault-pass
 ```
+
+---
+
+## Rules of Engagement
+
+Lantana is designed to operate safely in hostile environments and assumes that sensor hosts will eventually be compromised. To ensure ethical, legal, and operational safety, the platform enforces these rules at both architectural and operational levels:
+
+1. **No offensive use.** Honeypots must never be used as offensive infrastructure. The honeywall zone enforces outbound restrictions by default — compromised hosts cannot scan, attack, or otherwise harm third parties. Egress allowances must be explicit and narrowly scoped.
+2. **Assume disposability.** No secrets, credentials, production access, or sensitive systems on sensor hosts. Any compromise is total. Rebuilds are routine, not exceptional.
+3. **No entrapment.** Honeypots must not target specific individuals or organizations without explicit legal authorization. Lantana is broad-spectrum research, not targeted intelligence collection.
+4. **Respect privacy.** Captured data must be handled, stored, and processed according to applicable policies, regulations, and ethical standards.
+5. **Align with operational goals.** Narratives, exposure profiles, and sensor configurations must answer specific questions. Sensor rotation and topology shifts are part of the lifecycle, not ad hoc events.
+6. **No infrastructure disclosure.** Real operator-identifying values (WAN IPs, hostnames, domains, ASNs, SSH host fingerprints) must never appear in any artifact leaving the operator's control — that includes Discord reports, STIX bundles, this repository, commits, talks, screenshots. Real values live only inside each operation's untracked or vault-encrypted inventory. Examples in tracked files use RFC 5737 / 3849 / 2606 / 5398 documentation ranges.
 
 ---
 
@@ -74,9 +87,10 @@ lantana/
 | [Pipeline](docs/pipeline.md) | Data pipeline: bronze/silver/gold datalake, OCSF normalization, enrichment, reports, STIX |
 | [Integrations](docs/integrations.md) | Third-party threat-intel providers: endpoints, auth, rate limits, field extraction, live-probe workflow |
 | [Validation](docs/validation.md) | Post-deploy verification: protocol smoke tests + day-by-day pipeline/report/dashboard checks |
-| [Rules of Engagement](docs/rules-of-engagement.md) | Ethical and operational boundaries for honeypot use |
+| [Risk Scoring](docs/risk-scoring.md) | Composite + per-provider risk score formula, RIOT short-circuit, decomposition |
+| [Honeypots](docs/honeypots.md) | Cowrie + Dionaea: per-honeypot config model, capability allowlist, persona drift notes |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes (Dionaea startup, nftables, Vector pipeline) |
 | [Glossary](docs/glossary.md) | Terminology and definitions |
-| [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 
 ---
 

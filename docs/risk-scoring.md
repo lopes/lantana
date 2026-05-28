@@ -2,6 +2,8 @@
 
 This document is the analyst's reference for how Lantana derives `risk_score` for every source IP in the gold layer. Open it when you're staring at a Discord brief or a dashboard row and wondering *why this IP got this score*.
 
+> **Context:** the per-provider sub-scores below land in silver during the enrichment step described in [`pipeline.md`](pipeline.md), populated from the third-party APIs documented in [`integrations.md`](integrations.md). The gold composite (`risk_score`) is the single number consumed by STIX export, the Discord brief, and the dashboard.
+
 ## TL;DR
 
 Three numbers per IP, all on the same 0–100 scale:
