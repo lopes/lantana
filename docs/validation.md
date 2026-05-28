@@ -1,6 +1,8 @@
 # Lantana: Deployment Validation Guide
 
-A day-by-day checklist for validating a fresh Lantana deployment. Covers infrastructure, honeypots, telemetry pipeline, enrichment, reports, and dashboard. Every file, directory, and service is listed explicitly.
+A post-deploy verification walkthrough — from "the playbook said `failed=0`" to "honeypots are actually capturing attacker traffic and the pipeline is producing usable intel." Covers static infrastructure checks, active protocol smoke tests, telemetry, enrichment, reports, and dashboard. Every file, directory, and service is listed explicitly.
+
+> This guide assumes the operation has already been deployed via [`setup.md`](setup.md) (`deploy_single.yml` + `deploy_honeypots.yml`). For the first-deploy walkthrough — provisioning the server, configuring the inventory, vault, narrative — start there.
 
 ## Executable validation (the fast path)
 
@@ -25,60 +27,18 @@ If both pass, the deployment is healthy. The visual checks (Discord report rende
 
 ---
 
-## Day 0: Deploy and Verify Infrastructure
+## Day 0: Verify Infrastructure
 
-### 0.1 Provision the host
-
-Either use Terraform (Proxmox):
-
-```bash
-cd infra/terraform/environments/proxmox
-cp terraform.tfvars.example terraform.tfvars  # fill in your values
-terraform init
-terraform apply
-```
-
-Or provision a Debian 13 host manually and ensure SSH access.
-
-### 0.2 Create your operation
-
-```bash
-cd config/ansible
-cp -r inventories/op_single inventories/op_myop
-```
-
-Edit these files under `inventories/op_myop/group_vars/all/` (see [`runbook.md`](runbook.md) for an annotated walkthrough):
-
-| File | What to customize |
-|---|---|
-| `inventory.yml` | `ansible_host` (your host IP), `sensor_honeypots` list (cowrie, dionaea) |
-| `main.yml` | SSH connection settings (port, user, key path) |
-| `network.yml` | WAN interface, IP addresses, prefixes |
-| `narrative.yml` | Deception story: hostname, OS, SSH banner, service versions |
-| `reporting.yml` | Operator identity, TLP, pseudonym map |
-
-Create the vault:
-
-```bash
-ansible-vault create inventories/op_myop/group_vars/all/vault.yml
-```
-
-### 0.3 Deploy
-
-```bash
-ansible-playbook -i inventories/op_myop/inventory.yml playbooks/deploy_single.yml --ask-vault-pass
-ansible-playbook -i inventories/op_myop/inventory.yml playbooks/deploy_honeypots.yml --ask-vault-pass
-```
-
-### 0.4 Validate infrastructure
+### 0.1 Static infrastructure checks
 
 Run the validation playbook:
 
 ```bash
-ansible-playbook -i inventories/op_myop/inventory.yml tests/validate-single-node.yml -vvv
+ansible-playbook -i inventories/op_<name>/inventory.yml \
+  tests/validate-single-node.yml -vvv --ask-vault-pass
 ```
 
-Then SSH to the host and check manually:
+A green run covers users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, the four pipeline timers, and the GeoIP cron entry. If anything below the playbook's scope is in doubt, SSH to the host and check manually:
 
 **System users:**
 
@@ -171,9 +131,9 @@ sudo systemctl list-timers --all | grep lantana
 
 ---
 
-### 0.5 Active Protocol Smoke Tests
+### 0.2 Active protocol smoke tests
 
-Section 0.4 confirms the platform is *installed*. The probes below
+Section 0.1 confirms the platform is *installed*. The probes below
 actively exercise each exposed protocol from your workstation and
 confirm the full chain works end-to-end:
 

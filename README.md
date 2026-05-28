@@ -31,7 +31,7 @@ cd config/ansible
 cp -r inventories/op_single inventories/op_myop
 ```
 
-Customize `inventory.yml`, `main.yml`, `network.yml`, `narrative.yml`, and `reporting.yml` under `inventories/op_myop/group_vars/all/`. See the [new-operation runbook](docs/runbook.md) for an annotated walkthrough of each file. Create the encrypted vault:
+Customize `inventory.yml`, `main.yml`, `network.yml`, `narrative.yml`, and `reporting.yml` under `inventories/op_myop/group_vars/all/`. See the [setup guide](docs/setup.md) for an annotated walkthrough of each file. Create the encrypted vault:
 
 ```bash
 ansible-vault create inventories/op_myop/group_vars/all/vault.yml
@@ -70,10 +70,10 @@ lantana/
 | Document | Description |
 |---|---|
 | [Architecture](docs/architecture.md) | Zoned model, deployment modes, network topology, tech stack |
-| [New Operation Runbook](docs/runbook.md) | End-to-end walkthrough: prepare server, clone an operation, vault, narrative, deploy, validate |
+| [Setup Guide](docs/setup.md) | First-deploy walkthrough: prepare server, clone an operation, vault, narrative, deploy honeypots |
 | [Pipeline](docs/pipeline.md) | Data pipeline: bronze/silver/gold datalake, OCSF normalization, enrichment, reports, STIX |
 | [Integrations](docs/integrations.md) | Third-party threat-intel providers: endpoints, auth, rate limits, field extraction, live-probe workflow |
-| [Validation](docs/validation.md) | Day-by-day post-deployment checklist (infrastructure, telemetry, enrichment, reports, dashboard) |
+| [Validation](docs/validation.md) | Post-deploy verification: protocol smoke tests + day-by-day pipeline/report/dashboard checks |
 | [Rules of Engagement](docs/rules-of-engagement.md) | Ethical and operational boundaries for honeypot use |
 | [Glossary](docs/glossary.md) | Terminology and definitions |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |

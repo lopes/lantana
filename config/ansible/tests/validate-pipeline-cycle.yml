@@ -1,6 +1,6 @@
 ---
 # Post-first-cycle pipeline verification — the executable counterpart to
-# the manual walkthrough in docs/runbook.md §11.
+# the manual walkthrough in docs/setup.md §11.
 #
 # Run after the first full pipeline cycle has completed (i.e. after the
 # 06:00 UTC lantana-report.service has fired for at least one day). All

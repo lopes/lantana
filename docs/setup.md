@@ -1,6 +1,6 @@
-# Lantana: New Operation Runbook
+# Lantana: Setup Guide
 
-This runbook walks through standing up a brand-new Lantana operation end to end — from a freshly provisioned server to a running honeypot capturing real attacker traffic.
+This guide walks through standing up a brand-new Lantana operation end to end — from a freshly provisioned server to a running honeypot capturing real attacker traffic.
 
 The flow is the same for every operation:
 
@@ -17,7 +17,7 @@ The flow is the same for every operation:
 > Steps 1–5 are mechanical. Step 6 is creative and load-bearing. Budget more time for the narrative than for everything else combined.
 
 > [!NOTE]
-> All IPs, ports, hostnames, and domains in this runbook are placeholders — IPs come from RFC 5737 (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and RFC 3849 (`2001:db8::/32`); domains from RFC 2606. Substitute your own values throughout. For the SSH admin port, **pick a random ephemeral port (49152–65535)** rather than reusing the runbook's `60090` — a known default makes a host fingerprintable as a Lantana deployment.
+> All IPs, ports, hostnames, and domains in this guide are placeholders — IPs come from RFC 5737 (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and RFC 3849 (`2001:db8::/32`); domains from RFC 2606. Substitute your own values throughout. For the SSH admin port, **pick a random ephemeral port (49152–65535)** rather than reusing the example `60090` — a known default makes a host fingerprintable as a Lantana deployment.
 
 ---
 
@@ -43,7 +43,7 @@ The Ansible playbooks assume the target host is already in this state when a dep
   - Name matches `ansible_user` in the operation's `main.yml`.
 - **SSH service** — `/etc/ssh/sshd_config.d/00-lantana.conf` contains:
   - `PasswordAuthentication no`, `PubkeyAuthentication yes`, `AuthenticationMethods publickey`, `PermitRootLogin no`.
-  - `Port <random ephemeral port 49152–65535 chosen by the operator>` — never `22`, never the runbook's example `60090`.
+  - `Port <random ephemeral port 49152–65535 chosen by the operator>` — never `22`, never the example `60090`.
   - That port matches `ansible_port` in the operation's `main.yml`.
 - **`ssh.socket` disabled** — Debian 13 ships socket activation enabled, which silently keeps `sshd` listening on `22` regardless of the drop-in config.
 - **Python 3** installed (required for Ansible module execution).
@@ -168,7 +168,7 @@ all:
 
 ### `group_vars/all/main.yml`
 
-Confirm the SSH user, port, and key path match what `bootstrap-ssh.sh` configured, and set `lantana.mode` to `single` or `multi` (single is the default this runbook assumes):
+Confirm the SSH user, port, and key path match what `bootstrap-ssh.sh` configured, and set `lantana.mode` to `single` or `multi` (single is the default this guide assumes):
 
 ```yaml
 ansible_user: "lantana"
@@ -396,7 +396,7 @@ Run the automated validation playbook:
 
 ```bash
 ansible-playbook -i inventories/op_<name>/inventory.yml \
-  tests/validate-single-node.yml -vvv
+  tests/validate-single-node.yml -vvv --ask-vault-pass
 ```
 
 Then verify on the host:
@@ -405,6 +405,8 @@ Then verify on the host:
 - The MOTD on login shows the operation name and persona hostname.
 - `sudo systemctl status vector` is active.
 - `sudo nft list ruleset` loads without error.
+
+For the active protocol smoke tests (probing each exposed port from your workstation and verifying the deception/log/bronze chain end to end) and the post-natural-traffic checks, see **[`validation.md`](validation.md)**.
 
 Move to step 10 only after the validation playbook passes cleanly.
 
@@ -521,10 +523,10 @@ The platform runs itself from here. Pipeline jobs are systemd `oneshot` services
 
 ```bash
 ansible-playbook -i inventories/op_<name>/inventory.yml \
-  tests/validate-single-node.yml -vvv
+  tests/validate-single-node.yml -vvv --ask-vault-pass
 ```
 
-See `docs/validation.md` for the full day-by-day checklist.
+See [`validation.md`](validation.md) for the full day-by-day checklist.
 
 ---
 
@@ -753,7 +755,7 @@ Two common follow-ups:
 | Scaffold narrative | invoke the `scaffold-narrative` skill with a one-sentence archetype |
 | Deploy base | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_single.yml --ask-vault-pass` |
 | Deploy honeypots | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_honeypots.yml --ask-vault-pass` |
-| Validate stack | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv` |
+| Validate stack | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv --ask-vault-pass` |
 | Validate pipeline cycle | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass` |
 | Dashboard tunnel | `ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>` → on sensor: `sudo -u nectar XDG_CACHE_HOME=/tmp /opt/lantana/pipeline/venv/bin/lantana-dashboard` → browse to <http://localhost:8501> |
 | Export STIX bundle | Dashboard → STIX Export page → pick date → **Generate** → **Download** (`.json`) |

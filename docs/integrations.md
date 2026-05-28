@@ -7,7 +7,7 @@ Lantana enriches honeypot telemetry with external data from five third-party int
 
 This document is the single reference for how each integration works — endpoints/files, authentication, rate limits, docs links, and how to verify them end-to-end.
 
-For where enrichment fits in the pipeline (bronze → silver, OCSF normalization, OPSEC redaction), see [`pipeline.md`](pipeline.md). For how the vault carries provider keys, see [`runbook.md`](runbook.md#5-create-the-vault).
+For where enrichment fits in the pipeline (bronze → silver, OCSF normalization, OPSEC redaction), see [`pipeline.md`](pipeline.md). For how the vault carries provider keys, see [`setup.md`](setup.md#5-create-the-vault).
 
 ---
 

@@ -177,16 +177,16 @@ Section captions and dashboard widget tooltips share one source — `WhatWhyHow`
 
 Entry point: `lantana-dashboard`. The dashboard is the operator's personal console — never shared externally. Peers receive Discord reports and STIX bundles. Pages cover operational overview, geographic analysis (world map, country/ASN/city breakdowns), per-IP risk profiles with full enrichment detail, behavioral progression analysis, IDS detection findings, credential intelligence, and STIX export. See [`dashboard/pages/`](../pipeline/src/lantana/dashboard/pages/) for the current page set.
 
-The dashboard binds to `localhost:8501` only (OPSEC Layer 3 — never exposed externally). Reach it via SSH local-port-forwarding from the operator workstation; see [`runbook.md` §11 → "Inspect the dashboard + export STIX"](runbook.md#inspect-the-dashboard--export-stix) for the exact pattern. STIX bundles are generated on-demand from the dashboard's STIX Export page and streamed to the operator's browser — not stored server-side.
+The dashboard binds to `localhost:8501` only (OPSEC Layer 3 — never exposed externally). Reach it via SSH local-port-forwarding from the operator workstation; see [`setup.md` §11 → "Inspect the dashboard + export STIX"](setup.md#inspect-the-dashboard--export-stix) for the exact pattern. STIX bundles are generated on-demand from the dashboard's STIX Export page and streamed to the operator's browser — not stored server-side.
 
 #### Verification playbooks
 
 Two Ansible playbooks codify the post-deploy invariants — these are the canonical health checks, not eyeball-driven walkthroughs:
 
-* [`config/ansible/tests/validate-single-node.yml`](../config/ansible/tests/validate-single-node.yml) — runs immediately after `deploy_single.yml`. Asserts users, SSH, network, firewall, logrotate files, GeoIP cron, and the five `lantana-*.timer` units (installed + enabled).
+* [`config/ansible/tests/validate-single-node.yml`](../config/ansible/tests/validate-single-node.yml) — runs immediately after `deploy_single.yml`. Asserts users, SSH, network, firewall, logrotate files, GeoIP cron, and the four `lantana-*.timer` units (installed + enabled).
 * [`config/ansible/tests/validate-pipeline-cycle.yml`](../config/ansible/tests/validate-pipeline-cycle.yml) — runs after the first 06:00 UTC cycle. Asserts each pipeline systemd unit's last `Result=success`, `run_summary` in journal, silver+gold parquet presence, `.provider_state.json` exists, no API-key residue in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + the GreyNoise RIOT invariant. `target_date` defaults to yesterday UTC; override via `-e target_date=YYYY-MM-DD`.
 
-Visual / browser-driven checks (Discord report rendering, dashboard pages, STIX bundle download) stay manual — see `runbook.md` §11.
+Visual / browser-driven checks (Discord report rendering, dashboard pages, STIX bundle download) stay manual — see `setup.md` §11.
 
 ---
 

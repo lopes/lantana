@@ -56,7 +56,7 @@ def main() -> None:
         # `sudo -u nectar`), $HOME stays as the invoking user's home — which
         # nectar can't traverse. Streamlit then crashes reading ~/.streamlit/
         # secrets.toml. Point HOME and CWD at a directory nectar owns: prefer
-        # XDG_CACHE_HOME (the runbook already sets it to /tmp), else /tmp.
+        # XDG_CACHE_HOME (the setup guide already sets it to /tmp), else /tmp.
         runtime_dir = os.environ.get("XDG_CACHE_HOME") or "/tmp"
         os.chdir(runtime_dir)
         env = {**os.environ, "HOME": runtime_dir}
