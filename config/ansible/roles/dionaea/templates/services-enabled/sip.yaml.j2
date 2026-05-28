@@ -12,7 +12,13 @@
       - 5060
     tcp_ports:
       - 5060
-    users: "var/lib/dionaea/sip/accounts.sqlite"
+    # In-memory sqlite avoids an ownership race: with the bundled image's
+    # privilege-drop model, the supervisor (root) ends up creating the
+    # on-disk accounts.sqlite before the worker (dionaea user) tries to
+    # write to it, producing "attempt to write a readonly database". A
+    # honeypot has no real need to persist fake SIP user state across
+    # restarts, so :memory: is the cleanest fix.
+    users: ":memory:"
     rtp:
       enable: true
       modes:
