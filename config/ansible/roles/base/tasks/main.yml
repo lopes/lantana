@@ -1,5 +1,18 @@
 ---
 # --- BASIC PACKAGES ---
+# On a fresh Debian 13 host, cloud-init's package_upgrade and the
+# unattended-upgrades daemon hold /var/lib/dpkg/lock-frontend for
+# several minutes at first boot. The apt module's default
+# DPkg::Lock::Timeout=60 is too short — wait it out before any apt task.
+- name: "Wait for dpkg lock to clear (first-boot unattended-upgrades)"
+  become: true
+  ansible.builtin.shell: |
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
+    while fuser /var/lib/apt/lists/lock        >/dev/null 2>&1; do sleep 5; done
+  changed_when: false
+  timeout: 600
+  tags: [base]
+
 - name: "Update apt cache"
   become: true
   ansible.builtin.apt:
