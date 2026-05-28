@@ -377,7 +377,20 @@ For multi-node, swap `deploy_single.yml` for `deploy_multi.yml` and use the corr
 
 ---
 
-## 8. Validate Base Platform
+## 8. Deploy Honeypots
+
+Deploy the honeypot roles listed in `sensor_honeypots` in the operation's inventory. The same command applies for both single-node and multi-node — the playbook targets `single_nodes` and `sensor_low_nodes` automatically:
+
+```bash
+ansible-playbook -i inventories/op_<name>/inventory.yml \
+  playbooks/deploy_honeypots.yml --ask-vault-pass
+```
+
+This step must run before step 9: `tests/validate-single-node.yml` asserts the cowrie and dionaea user-systemd services are active, which only happens after this playbook templates their Quadlet units.
+
+---
+
+## 9. Validate the Full Stack
 
 Run the automated validation playbook:
 
@@ -393,18 +406,7 @@ Then verify on the host:
 - `sudo systemctl status vector` is active.
 - `sudo nft list ruleset` loads without error.
 
-Move to step 9 only after the validation playbook passes cleanly.
-
----
-
-## 9. Deploy and Validate Honeypots
-
-Deploy the honeypot roles listed in `sensor_honeypots` in the operation's inventory. The same command applies for both single-node and multi-node — the playbook targets `single_nodes` and `sensor_low_nodes` automatically:
-
-```bash
-ansible-playbook -i inventories/op_<name>/inventory.yml \
-  playbooks/deploy_honeypots.yml --ask-vault-pass
-```
+Move to step 10 only after the validation playbook passes cleanly.
 
 ### Validate on the sensor
 
@@ -750,8 +752,8 @@ Two common follow-ups:
 | Create vault | `cp inventories/op_single/group_vars/all/vault.yml.example inventories/op_<name>/group_vars/all/vault.yml` then edit, then `ansible-vault encrypt` |
 | Scaffold narrative | invoke the `scaffold-narrative` skill with a one-sentence archetype |
 | Deploy base | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_single.yml --ask-vault-pass` |
-| Validate base | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv` |
 | Deploy honeypots | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_honeypots.yml --ask-vault-pass` |
+| Validate stack | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv` |
 | Validate pipeline cycle | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass` |
 | Dashboard tunnel | `ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>` → on sensor: `sudo -u nectar XDG_CACHE_HOME=/tmp /opt/lantana/pipeline/venv/bin/lantana-dashboard` → browse to <http://localhost:8501> |
 | Export STIX bundle | Dashboard → STIX Export page → pick date → **Generate** → **Download** (`.json`) |
