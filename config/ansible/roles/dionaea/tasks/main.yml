@@ -97,6 +97,31 @@
     loop_var: _svc
   tags: [dionaea]
 
+# If a service is removed from `dionaea_service_catalog` (e.g. SIP in
+# v1.0.0), the previous deploy's *.yaml file is still on the VPS and
+# dionaea would keep loading it. Sweep services-enabled and remove any
+# *.yaml whose basename isn't in the current catalog. Same idea for
+# the sip/ seed directory under var/lib/, which would otherwise persist.
+- name: "Find existing per-service yamls on host"
+  become: true
+  ansible.builtin.find:
+    paths: /etc/lantana/sensor/dionaea/services-enabled
+    patterns: "*.yaml"
+  register: _existing_svc_yamls
+  tags: [dionaea]
+
+- name: "Remove stale per-service yamls (catalog drift)"
+  become: true
+  ansible.builtin.file:
+    path: "{{ _yaml_file.path }}"
+    state: absent
+  loop: "{{ _existing_svc_yamls.files }}"
+  loop_control:
+    loop_var: _yaml_file
+    label: "{{ _yaml_file.path | basename }}"
+  when: "(_yaml_file.path | basename | regex_replace('\\.yaml$', '')) not in dionaea_service_catalog"
+  tags: [dionaea]
+
 - name: "Render Dionaea log_json ihandler"
   become: true
   ansible.builtin.template:

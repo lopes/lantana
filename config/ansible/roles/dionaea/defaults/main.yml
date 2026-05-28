@@ -22,9 +22,19 @@
 #   pub_port:      host-side high port the Quadlet publishes the container on
 #                  (DNAT then maps ext_port → pub_port). High ports keep the
 #                  rootless container free of CAP_NET_BIND_SERVICE.
-#   transport:     "tcp" or "tcp_udp" (sip dual-binds; everything else is TCP).
+#   transport:     "tcp" or "tcp_udp" (currently all entries are TCP-only;
+#                  retained for future SIP-style dual-bind services).
 #   narrative_key: null OR the key under narrative.services.<key> that
 #                  feeds banner/version strings into the dionaea config.
+#
+# NOTE: SIP was dropped in v1.0.0 because the dinotools image's privilege-
+# drop model produces an unfixable sqlite ownership race in the SIP
+# service (supervisor-as-root creates accounts.sqlite before worker-as-
+# dionaea-user, leaving the file unwritable post-drop). :memory: didn't
+# help. VoIP scan noise is also low signal for the fintech persona. The
+# templates/services-enabled/sip.yaml.j2 file is retained so a future
+# v1.1 with a fixed image can re-enable SIP by adding the catalog entry
+# back.
 dionaea_service_catalog:
   ftp: { ext_port: 21, int_port: 21, pub_port: 8021, transport: tcp, narrative_key: ftp }
   http: { ext_port: 80, int_port: 80, pub_port: 8080, transport: tcp, narrative_key: http }
@@ -32,4 +42,3 @@ dionaea_service_catalog:
   epmap: { ext_port: 135, int_port: 135, pub_port: 8135, transport: tcp, narrative_key: null }
   mssql: { ext_port: 1433, int_port: 1433, pub_port: 8433, transport: tcp, narrative_key: mssql }
   mysql: { ext_port: 3306, int_port: 3306, pub_port: 8306, transport: tcp, narrative_key: mysql }
-  sip: { ext_port: 5060, int_port: 5060, pub_port: 8060, transport: tcp_udp, narrative_key: null }

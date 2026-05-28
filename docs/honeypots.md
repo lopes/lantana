@@ -112,10 +112,17 @@ The full set of services Lantana enables in Dionaea is defined in
 | SMB      | 445           | 445            | Workgroup / native OS / native LAN manager / server name from narrative |
 | MSSQL    | 1433          | 1433           | Version string is hardcoded in the upstream module (v1.1 TODO) |
 | MySQL    | 3306          | 3306           | Server version from `narrative.services.mysql.version` |
-| SIP      | 5060 TCP/UDP  | 5060 TCP/UDP   | Generic persona; no narrative integration |
 
 Dionaea has no native SSH (22) or Telnet (23) listener — those ports
 belong exclusively to Cowrie.
+
+**SIP intentionally disabled in v1.0.0.** The dinotools image's
+privilege-drop model creates an unfixable ownership race on the SIP
+module's `accounts.sqlite` (the root supervisor opens the file first,
+the dionaea-user worker can't write to it post-drop). The
+`templates/services-enabled/sip.yaml.j2` file is kept in the repo so a
+future image fix lets us re-enable SIP by re-adding the catalog entry
+in `roles/dionaea/defaults/main.yml`.
 
 ### Disabling a Dionaea sub-service on a running honeypot
 
