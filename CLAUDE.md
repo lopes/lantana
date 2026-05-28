@@ -193,7 +193,7 @@ End-to-end pipeline runs on a live operation consume real provider budget and re
 
 ## Vector deployment discipline
 
-Vector configs span multiple files: `/etc/vector/vector.yaml` (main, with the keepalive blackhole sink) plus every `conf.d/*.yaml` (honeypot pipelines, firewall, receiver). Vector loads them as a single merged tree at startup, but `vector validate <file>` on a single conf.d file usually fails on "No sinks defined" — sinks live in the honeywall's `forward.yaml`, sources/transforms live elsewhere.
+Vector configs span multiple files: `/etc/vector/vector.yaml` (main, with the keepalive blackhole sink) plus every `conf.d/*.yaml` (honeypot pipelines, firewall, receiver). Vector loads them as a single merged tree at startup, but `vector validate <file>` on a single conf.d file usually fails on "No sinks defined" — sinks live in `forward-honeywall.yaml` / `forward-sensor.yaml`, sources/transforms live elsewhere.
 
 A broken VRL fragment renders fine via Ansible's `template` module, the `Restart Vector` task succeeds (systemd starts the process), then Vector exits 78/CONFIG, systemd's restart-on-failure policy kicks in, and you get a crashloop with no source ingestion (2026-05-21 10:47 outage — every cowrie/suricata/nftables event for ~4 hours sat in the source files unshipped).
 

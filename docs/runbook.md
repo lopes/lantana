@@ -597,19 +597,15 @@ The 13 checks map to the architectural pieces:
 ### Immediate post-deploy (within minutes of `ansible-playbook` finishing)
 
 ```bash
-# (1) Pipeline systemd timers active — five entries with next-fire timestamps.
+# (1) Pipeline systemd timers active — four entries with next-fire timestamps.
 ssh -p <PORT> lantana@<SN01> "sudo systemctl list-timers --all | grep lantana"
-# Expect: lantana-prune.timer / -enrich / -transform / -alert / -report
+# Expect: lantana-prune.timer / -enrich / -transform / -report
 
-# (2) No legacy cron file (the systemd-timer migration removed it).
-ssh -p <PORT> lantana@<SN01> "sudo cat /etc/cron.d/lantana-pipeline 2>&1 | head"
-# Expect: cat: ... : No such file or directory
-
-# (3) Vector active and ingesting.
+# (2) Vector active and ingesting.
 ssh -p <PORT> lantana@<SN01> "sudo systemctl is-active vector"
 ssh -p <PORT> lantana@<SN01> "sudo journalctl -u vector --since '5 min ago' | grep -iE 'error|warn' | head"
 
-# (4) Datalake skeleton present.
+# (3) Datalake skeleton present.
 ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake -maxdepth 2 -type d | sort"
 # Expect: bronze/, silver/, gold/ — empty until the first events arrive.
 ```
@@ -617,30 +613,30 @@ ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake -maxdepth 2 -t
 ### After the first full cycle (≥ 06:00 UTC on day two)
 
 ```bash
-# (5) Each systemd unit shows last-run success.
+# (4) Each systemd unit shows last-run success.
 ssh -p <PORT> lantana@<SN01> "for u in lantana-prune lantana-enrich lantana-transform lantana-report; do
   echo == \$u ==; sudo systemctl status \$u.service --no-pager | head -10
 done"
 # Expect each: Loaded: loaded, ActiveState: inactive (dead), Result: success.
 
-# (6) journalctl captures structlog run_summary for enrich + transform.
+# (5) journalctl captures structlog run_summary for enrich + transform.
 ssh -p <PORT> lantana@<SN01> "sudo journalctl -u lantana-enrich.service --since '01:00 UTC' | grep run_summary"
 ssh -p <PORT> lantana@<SN01> "sudo journalctl -u lantana-transform.service --since '04:00 UTC' | grep run_summary"
 # Expect: one structured line per service with silver_rows + provider stats.
 
-# (7) Silver written for all active datasets.
+# (6) Silver written for all active datasets.
 ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake/silver -name '*.parquet'"
 
-# (8) Gold present — all 7 tables.
+# (7) Gold present — all 7 tables.
 ssh -p <PORT> lantana@<SN01> "sudo find /var/lib/lantana/datalake/gold -name '*.parquet' | awk -F/ '{print \$7}' | sort -u"
 # Expect: behavioral_progression / behavioral_progression_multiday / campaign_clusters /
 #         daily_summary / detection_findings / geographic_summary / ip_reputation
 
-# (9) Provider state file created (shape: `{provider: {last_rate_limited: 'YYYY-MM-DD'}}`).
+# (8) Provider state file created (shape: `{provider: {last_rate_limited: 'YYYY-MM-DD'}}`).
 ssh -p <PORT> lantana@<SN01> "sudo cat /var/lib/lantana/datalake/.provider_state.json"
 # Empty `{}` on day-1 is fine — no provider tripped its rate-limit breaker yet.
 
-# (10) enrichment_errors.json contains no API-key residue (the URL sanitiser is working).
+# (9) enrichment_errors.json contains no API-key residue (the URL sanitiser is working).
 ssh -p <PORT> lantana@<SN01> "sudo grep -E 'key=[A-Za-z0-9]{20,}' /var/lib/lantana/datalake/enrichment_errors.json | head"
 # Expect: NO output. Any match here is a sanitiser regression.
 
