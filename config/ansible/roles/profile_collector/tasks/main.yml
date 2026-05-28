@@ -165,11 +165,7 @@
   tags: [collector, pipeline]
 
 # --- PIPELINE SYSTEMD TIMERS ---
-# Each pipeline job is a systemd oneshot service triggered by a matching
-# timer. Earlier cron+`logger -t` setup is replaced: this restores native
-# journal capture, exit-code visibility (`systemctl status`), and
-# Persistent=true catch-up after downtime. Schedule is identical to the
-# prior cron file (00:15 / 01:00 / 04:00 / 05:00 UTC).
+# Schedule: prune 00:15, enrich 01:00, transform 04:00, report 06:00 (UTC).
 - name: "Deploy pipeline systemd service units"
   become: true
   ansible.builtin.template:
@@ -221,31 +217,10 @@
     on_calendar: "{{ item.calendar }}"
   tags: [collector, pipeline]
 
-# lantana-alert.timer was retired when the daily brief absorbed the
-# alerter's role (single Discord message at 06:00). The .service unit
-# stays so `systemctl start lantana-alert.service` (or
-# `lantana-alert --force --date YYYY-MM-DD` for off-cycle replays) still
-# works. This task cleans up the timer file + disables it on hosts that
-# were deployed before the consolidation.
-- name: "Retire legacy lantana-alert.timer (consolidated into daily report)"
-  become: true
-  ansible.builtin.systemd:
-    name: lantana-alert.timer
-    enabled: false
-    state: stopped
-    daemon_reload: true
-  failed_when: false  # already-absent timer is fine
-  tags: [collector, pipeline]
-
-- name: "Remove legacy lantana-alert.timer unit file"
-  become: true
-  ansible.builtin.file:
-    path: /etc/systemd/system/lantana-alert.timer
-    state: absent
-  # The next "Enable and start pipeline systemd timers" task uses
-  # daemon_reload: true, which is enough to drop the now-removed unit.
-  tags: [collector, pipeline]
-
+# lantana-alert has a .service unit but no .timer — the daily brief
+# absorbed the alerter's schedule (single Discord message at 06:00).
+# The .service stays so `systemctl start lantana-alert.service` (or
+# `lantana-alert --force --date YYYY-MM-DD`) still works for replays.
 - name: "Enable and start pipeline systemd timers"
   become: true
   ansible.builtin.systemd:
@@ -258,27 +233,6 @@
     - lantana-enrich
     - lantana-transform
     - lantana-report
-  tags: [collector, pipeline]
-
-- name: "Remove legacy pipeline cron file"
-  become: true
-  ansible.builtin.file:
-    path: /etc/cron.d/lantana-pipeline
-    state: absent
-  tags: [collector, pipeline]
-
-- name: "Remove legacy shell prune script"
-  become: true
-  ansible.builtin.file:
-    path: /usr/local/sbin/lantana-prune
-    state: absent
-  tags: [collector, pipeline]
-
-- name: "Remove legacy prune cron"
-  become: true
-  ansible.builtin.file:
-    path: /etc/cron.d/lantana-prune
-    state: absent
   tags: [collector, pipeline]
 
 # --- LOG RECEIVER ---
