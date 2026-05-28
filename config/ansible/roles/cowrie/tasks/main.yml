@@ -60,13 +60,6 @@
     mode: "0644"
   tags: [cowrie]
 
-- name: "Remove legacy Quadlet file from user home path"
-  become: true
-  ansible.builtin.file:
-    path: "/home/{{ system.users.sensor.name }}/.config/containers/systemd/cowrie.container"
-    state: absent
-  tags: [cowrie]
-
 - name: "Create Quadlet directory for sensor user"
   become: true
   ansible.builtin.file:
@@ -117,13 +110,7 @@
     owner: "root"
     group: "root"
     mode: "0600"
-  tags: [cowrie, nftables]
-
-- name: "Reload nftables for Cowrie"
-  become: true
-  ansible.builtin.service:
-    name: nftables
-    state: reloaded
+  notify: "Reload nftables"
   tags: [cowrie, nftables]
 
 # --- LOGGING ---
