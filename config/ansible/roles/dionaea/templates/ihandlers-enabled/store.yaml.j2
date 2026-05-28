@@ -1,0 +1,15 @@
+# Managed by Ansible.
+# Bundled `store` ihandler. Writes attacker-delivered binaries to disk,
+# named by SHA-512. The `path` is relative to dionaea's working directory
+# (/opt/dionaea/) inside the container, which maps to
+# /var/lib/lantana/sensor/dionaea/ on the host via the Quadlet bind-mount
+# in roles/dionaea/templates/dionaea.container.j2.
+#
+# Schema: upstream conf/ihandlers/store.yaml.in (list of one map).
+# ASCII-only -- the dinotools image runs Python 3.6 + PyYAML, which
+# falls back to the ASCII codec without a BOM. One non-ASCII byte in
+# any ihandler/service yaml aborts the entire service-registration loop
+# (see CLAUDE.md "Honeypot deployment discipline").
+- name: store
+  config:
+    path: "var/lib/dionaea/binaries"

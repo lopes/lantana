@@ -121,6 +121,20 @@
     mode: "0644"
   tags: [dionaea]
 
+# The `store` ihandler is bundled with dionaea and writes attacker-
+# delivered binaries to /opt/dionaea/var/lib/dionaea/binaries/ (mapped
+# to /var/lib/lantana/sensor/dionaea/binaries/ on the host). Without
+# this ihandler, downloaded binaries are received then discarded.
+- name: "Render Dionaea store ihandler"
+  become: true
+  ansible.builtin.template:
+    src: "ihandlers-enabled/store.yaml.j2"
+    dest: /etc/lantana/sensor/dionaea/ihandlers-enabled/store.yaml
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  tags: [dionaea]
+
 - name: "Deploy persona-consistent HTTP wwwroot index page"
   become: true
   ansible.builtin.template:
