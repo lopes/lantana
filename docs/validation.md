@@ -684,6 +684,12 @@ Then on your workstation, open <http://localhost:8501> and verify each page:
 - **Events by Type stacked bar** — horizontal Plotly stacked bar across Auth / Commands / Findings / Network with hover proportions.
 - Top-N tables aligned in two-column rows (Usernames + Passwords; Commands + Source Countries); each row's shared caption sits above the column pair so the tables top-align.
 
+**Geography page:**
+
+- World map — bubble size = log10 events, colour = composite `risk_score`. Hover reveals country, event count, top ASN.
+- Top countries / top cities / top ASNs — three Plotly horizontal bars, each with its own section caption.
+- All values driven by `geographic_summary` gold table; empty on day-1 if no traffic yet hit the geographic aggregator.
+
 **IP Reputation page:**
 
 - `st.expander("How risk_score is calculated")` below the page caption — formula, bucket thresholds (sourced from `intel/stix.py:RISK_THRESHOLD` and `RISK_HIGH_THRESHOLD`), RIOT short-circuit note, link to [`docs/risk-scoring.md`](risk-scoring.md).
