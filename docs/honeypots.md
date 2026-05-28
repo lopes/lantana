@@ -1,7 +1,7 @@
 # Honeypots
 
 Lantana ships two honeypots in v1.0.0: **Cowrie** (SSH + Telnet) and **Dionaea**
-(SMB, FTP, HTTP, MSSQL, MySQL, EPMAP/DCERPC, SIP). Both run as rootless
+(SMB, FTP, HTTP, MSSQL, MySQL, EPMAP/DCERPC). Both run as rootless
 Podman containers under the `stigma` user (UID 2001), are configured via
 Ansible roles under `config/ansible/roles/`, and ship event NDJSON to
 the collector via Vector.
@@ -98,6 +98,79 @@ Config layout:  `/etc/lantana/sensor/dionaea/services-enabled/<svc>.yaml` (one f
                 handler configs (we ship only `log_json.yaml` — it streams every
                 attacker connection to NDJSON for the Vector → bronze pipeline).
 
+### Container model and constraints
+
+Five non-obvious choices are load-bearing. Future template changes
+must keep them intact or dionaea will silently exit on startup with
+no log lines.
+
+1. **Image tag: `:nightly`, not `:latest`.** `docker.io/dinotools/dionaea:latest`
+   is frozen at the 2020-11-30 0.11.0 release and has not been rebuilt
+   since. Its config tree is half-empty — many of the layout assumptions
+   you'd make from reading the upstream source don't hold. `:nightly`
+   is rebuilt daily by the upstream CI from the same 0.11.0 source plus
+   current OS-package security fixes. Always pull `:nightly`.
+
+2. **Per-service directory overlay, not a single-file overlay.** The
+   image's bundled `/opt/dionaea/etc/dionaea/dionaea.cfg` (INI format)
+   is what dionaea reads at startup. It globs `services-enabled/*.yaml`
+   and `ihandlers-enabled/*.yaml`. Mounting a single `dionaea.yaml`
+   anywhere does nothing — dionaea never reads that path. Lantana's
+   Quadlet bind-mounts our `services-enabled/` and `ihandlers-enabled/`
+   directories `:ro` over the bundled ones, replacing the image's
+   default 16 services with our 6 and the default 6 ihandlers with just
+   `log_json` (which is what the Vector pipeline consumes).
+
+3. **`Environment=DIONAEA_FORCE_INIT_CONF=1` + `DIONAEA_FORCE_INIT_DATA=1`
+   are required.** The image's entrypoint script seeds `dionaea.cfg`
+   from `template/etc/` only if `/opt/dionaea/etc/dionaea/` doesn't
+   exist. Our bind-mounts of `services-enabled/` and `ihandlers-enabled/`
+   cause Podman to auto-create the parent dir, defeating that check.
+   The two `FORCE_INIT` env vars override the check and force the seed
+   to run every boot.
+
+4. **Five specific capabilities must stay added.** The Quadlet starts
+   from `DropCapability=ALL`, then adds back exactly what the bundled
+   entrypoint needs:
+   - `NET_BIND_SERVICE` — dionaea binds privileged ports (21, 80, 135,
+     445) inside the container.
+   - `SETUID` + `SETGID` — the entrypoint invokes
+     `dionaea -u dionaea -g dionaea`, which calls `setuid()`/`setgid()`
+     to drop from container-root to the `dionaea` user before binding
+     non-privileged ports.
+   - `CHOWN` + `FOWNER` — `init_lib`'s `cp -a` preserves ownership when
+     seeding state dirs; without these the warnings flood stderr and
+     downstream tasks misread the noise as failure.
+
+   Without `SETUID`/`SETGID`, dionaea exits silently with status 133
+   immediately after the `Starting dionaea ...` line, no traceback, no
+   error log. That's the canary for a missing capability.
+
+5. **`ReadOnly=true` is incompatible with this image.** The entrypoint
+   has to write the seeded `dionaea.cfg` (and other config fixtures)
+   into `/opt/dionaea/etc/dionaea/`. With `ReadOnly=true` enabled, the
+   seed fails silently and dionaea launches with no config. Lantana's
+   Quadlet does NOT set `ReadOnly=true` on the dionaea container;
+   `DropCapability=ALL` + the explicit five-cap allowlist + rootless
+   user namespace + `NoNewPrivileges=true` carry the containment load
+   instead.
+
+### ASCII-only constraint in service yamls
+
+The image runs Python 3.6, whose `PyYAML` falls back to the ASCII
+codec when reading files without a UTF-8 BOM. Any non-ASCII byte in
+a `services-enabled/*.yaml` or `ihandlers-enabled/*.yaml` file
+(em-dashes, arrows, smart quotes) triggers
+`UnicodeDecodeError` deep inside `yaml.safe_load`, which causes the
+*entire* service-registration loop to abort — not just the one bad
+file. Effect: zero services bind, no clean error reaches stderr.
+
+**All comment text and string values in `templates/services-enabled/*.yaml.j2`
+and `templates/ihandlers-enabled/*.yaml.j2` must be 7-bit ASCII.** Use
+`--` instead of `—`, `->` instead of `→`, straight quotes only. The
+templates in `dionaea.container.j2` and `dionaea.nft.j2` are not
+affected because systemd-Quadlet and nftables both handle UTF-8 fine.
+
 ### Default protocol surface
 
 The full set of services Lantana enables in Dionaea is defined in
@@ -131,17 +204,13 @@ Each service is a single YAML file under
 delete or rename its file and restart the container:
 
 ```bash
-# Example: disable SIP on the running host.
-sudo mv /etc/lantana/sensor/dionaea/services-enabled/sip.yaml \
-        /etc/lantana/sensor/dionaea/services-enabled/sip.yaml.disabled
+# Example: disable the EPMAP (DCE/RPC endpoint mapper) listener.
+sudo mv /etc/lantana/sensor/dionaea/services-enabled/epmap.yaml \
+        /etc/lantana/sensor/dionaea/services-enabled/epmap.yaml.disabled
 
 # Restart Dionaea so it re-globs the services directory.
 sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 \
   systemctl --user restart dionaea.service
-
-# Confirm — SIP should no longer listen inside the container.
-sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 \
-  podman exec sensor-dionaea ss -lntu | grep -i 5060   # expect empty
 ```
 
 As with Cowrie, the honeywall's nftables DNAT for the now-disabled port

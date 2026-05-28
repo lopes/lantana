@@ -61,6 +61,117 @@ When debugging volume mounts in the `.container` files, verify the correct flags
 
 ---
 
+## Dionaea Sensor
+
+The dinotools/dionaea image has several startup quirks that produce
+silent or near-silent failures. The container will be `healthy` per
+Podman's healthcheck (which only checks process liveness via `pgrep`)
+even when dionaea has bound zero ports. See [`honeypots.md`](honeypots.md#container-model-and-constraints)
+for the deployment invariants this section troubleshoots.
+
+### Symptom: Exit status 133 immediately, no log content
+
+dionaea launched and died within ~100ms. The container shows
+`status=exited (133)` in `systemctl --user status dionaea.service`,
+the container itself is already gone (auto-rm) so `podman logs` says
+"no such container", and neither `dionaea.log` nor `dionaea-errors.log`
+exist on disk.
+
+Most likely cause: a missing capability. The bundled entrypoint runs
+`dionaea -u dionaea -g dionaea` which calls `setuid()`/`setgid()` to
+drop privileges; without `CAP_SETUID` / `CAP_SETGID` the call fails
+and dionaea exits silently with 133. Confirm by checking the Quadlet:
+
+```bash
+grep -A2 AddCapability /etc/containers/systemd/users/2001/dionaea.container
+```
+
+Should show `NET_BIND_SERVICE SETUID SETGID CHOWN FOWNER`. If
+anything is missing — re-deploy the dionaea role.
+
+### Symptom: dionaea runs but binds zero ports
+
+`podman exec sensor-dionaea python3 -c "import socket; ..." ` returns
+`ConnectionRefusedError` for every catalog port even though the
+process is alive. The killer is the YAML parser:
+
+```bash
+sudo grep -i UnicodeDecodeError /var/log/lantana/sensor/dionaea/dionaea-errors.log
+```
+
+If you see a `UnicodeDecodeError('ascii', ...)` referencing one of our
+service yamls, the file has a non-ASCII byte (em-dash, arrow, smart
+quote) in a comment or value. Python 3.6's PyYAML falls back to the
+ASCII codec without a BOM and aborts the *entire* service registration
+loop, not just the bad file — so one stray `—` in
+`services-enabled/mssql.yaml` knocks out FTP, HTTP, SMB, and everyone
+else too.
+
+Fix:
+
+```bash
+# Find any non-ASCII bytes in the rendered yamls on the VPS:
+sudo python3 -c "import pathlib; [print(p, sum(1 for b in p.read_bytes() if b>127)) for p in pathlib.Path('/etc/lantana/sensor/dionaea/services-enabled').glob('*.yaml')]"
+```
+
+Any nonzero count means that template has a non-ASCII char. Open the
+matching `roles/dionaea/templates/services-enabled/<svc>.yaml.j2`,
+replace `—` with `--`, `→` with `->`, smart quotes with straight
+quotes, then re-deploy.
+
+### Symptom: SIP only — "attempt to write a readonly database"
+
+The bundled image's SIP module opens `accounts.sqlite` from the
+supervisor process (running as container root) before the worker
+process drops privileges to the `dionaea` user. The worker then can't
+write to the root-owned file and dionaea logs:
+
+```
+sqlite3.OperationalError: attempt to write a readonly database
+```
+
+`:memory:` doesn't fix it (other on-disk state in the SIP module hits
+the same race). SIP is intentionally not in the v1.0.0 catalog for
+this reason — see [`honeypots.md`](honeypots.md#dionaea). If you see
+this error for any *other* service, the same root cause applies and
+the same `:memory:` / drop-from-catalog escape hatches are your
+options.
+
+### Symptom: Half-deployed state from earlier failed run
+
+The state directory `/var/lib/lantana/sensor/dionaea/` keeps seed
+files (sqlite DBs, FTP root, http template) between runs. After a
+failed deploy these can have wrong ownership and produce cryptic
+permission errors. To fully reset:
+
+```bash
+sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user stop dionaea.service
+sudo rm -rf /var/lib/lantana/sensor/dionaea/*
+sudo rm -f /var/log/lantana/sensor/dionaea/{dionaea.log,dionaea-errors.log,dionaea.json}
+ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_honeypots.yml --ask-vault-pass
+sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user start dionaea.service
+```
+
+The re-deploy re-renders the `wwwroot/index.html` page (otherwise the
+HTTP service has no root to serve) and the entrypoint's `init_lib`
+re-seeds state dirs from the image's `template/lib/`.
+
+### Diagnostic recipe: which ports are actually bound
+
+```bash
+sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 podman exec sensor-dionaea python3 -c "import socket
+for p in (21,80,135,445,1433,3306):
+    try: socket.create_connection(('127.0.0.1',p),1).close(); print(p,'BOUND')
+    except Exception as e: print(p,'NOT_BOUND',type(e).__name__)"
+```
+
+Runs inside the container's netns; reports each catalog port from
+dionaea's own loopback. `BOUND` means dionaea has bound that port;
+`ConnectionRefusedError` means nothing's listening; other exceptions
+are unusual and worth pasting into a bug report.
+
+---
+
 ## Nftables Filtering & Routing
 
 Lantana uses `nftables` for strict blast-radius containment and routing traffic to the rootless decoys.
