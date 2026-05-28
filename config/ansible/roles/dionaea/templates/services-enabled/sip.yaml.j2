@@ -1,18 +1,36 @@
 # Managed by Ansible.
-# SIP/VoIP signaling on TCP + UDP 5060. Personality strings stay generic --
-# we don't define narrative.services.sip in narrative.yml; if a future
-# operation needs custom SIP banners, add narrative.services.sip and
-# reference it here.
-# Schema matches dionaea-docker/0.6/conf/services/sip.yaml minus the
-# RTP/actions blocks (which we don't capture in v1.0.0).
+# SIP/VoIP signaling. Mirrors the bundled :nightly image's
+# services-available/sip.yaml; absent the `users:` + `rtp:` blocks,
+# dionaea silently refuses to start the SIP listener. Paths are relative
+# to dionaea's working dir (/opt/dionaea/).
+# No narrative integration -- we don't define narrative.services.sip.
+# If a future op wants persona-customized SIP banners, add the key and
+# substitute below.
 - name: sip
   config:
     udp_ports:
       - 5060
     tcp_ports:
       - 5060
+    users: "var/lib/dionaea/sip/accounts.sqlite"
+    rtp:
+      enable: true
+      modes:
+        - bistream
+        - pcap
+      pcap:
+        path: "var/lib/dionaea/sip/rtp/{personality}/%Y-%m-%d/"
+        filename: "%H:%M:%S_{remote_host}_{remote_port}_in.pcap"
     personalities:
       default:
         domain: "localhost"
         name: "softphone"
         personality: "generic"
+    actions:
+      bank-redirect:
+        do: "redirect"
+        params:
+      play-hello:
+        do: "play"
+        params:
+          file: "var/lib/dionaea/sip/hello.wav"

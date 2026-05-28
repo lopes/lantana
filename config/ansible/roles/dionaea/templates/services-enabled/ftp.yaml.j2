@@ -1,7 +1,12 @@
 # Managed by Ansible. Banner string from narrative.services.ftp.banner.
 # Schema: upstream dionaea conf/services/ftp.yaml.in (list of one map).
+# `root` is RELATIVE to dionaea's working dir (/opt/dionaea/), matching
+# both the bundled image's services-available/ftp.yaml and the seed
+# directory the entrypoint's init_lib creates at var/lib/dionaea/ftp/root.
+# Absolute paths (e.g. /opt/dionaea/var/dionaea/roots/ftp) silently fail
+# to start the FTP listener.
 - name: ftp
   config:
-    root: /opt/dionaea/var/dionaea/roots/ftp
+    root: "var/lib/dionaea/ftp/root"
     response_messages:
       welcome_msg: "{{ narrative.services.ftp.banner }}"
