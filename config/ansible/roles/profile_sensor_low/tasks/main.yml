@@ -77,7 +77,6 @@
   become: true
   ansible.builtin.apt:
     name: podman
-    update_cache: true
   tags: [honeypots]
 
 # --- LOG FORWARDING ---

@@ -62,10 +62,6 @@
   notify: "Restart rsyslog"
   tags: [nftables]
 
-- name: "Forces handler to flush immediately"
-  ansible.builtin.meta: flush_handlers
-  tags: [nftables]
-
 - name: "Log rotation of authentication events"
   become: true
   ansible.builtin.copy:

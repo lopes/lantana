@@ -7,12 +7,6 @@
   ansible.builtin.command: sysctl --system
   changed_when: false
 
-- name: "Restart sshd"
-  become: true
-  ansible.builtin.service:
-    name: ssh
-    state: restarted
-
 - name: "Reload nftables"
   become: true
   ansible.builtin.service:

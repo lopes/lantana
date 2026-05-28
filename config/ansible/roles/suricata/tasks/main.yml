@@ -15,12 +15,6 @@
   tags: [suricata]
 
 # --- SURICATA INSTALLATION ---
-- name: "Update apt cache"
-  become: true
-  ansible.builtin.apt:
-    update_cache: true
-  tags: [suricata]
-
 - name: "Install Suricata"
   become: true
   ansible.builtin.apt:

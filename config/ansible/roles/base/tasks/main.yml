@@ -94,10 +94,6 @@
   ansible.builtin.include_tasks: uv.yml
   tags: [uv]
 
-- name: "Deploy SSH"
-  ansible.builtin.include_tasks: ssh.yml
-  tags: [ssh]
-
 - name: "Deploy Vector"
   ansible.builtin.include_tasks: vector.yml
   tags: [vector]

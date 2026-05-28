@@ -1,11 +1,5 @@
 ---
 # --- DEPENDENCY INSTALLATION ---
-- name: "Update apt cache"
-  become: true
-  ansible.builtin.apt:
-    update_cache: true
-  tags: [vector]
-
 - name: "Install Vector dependencies"
   become: true
   ansible.builtin.apt:
@@ -61,7 +55,6 @@
   ansible.builtin.apt:
     name: vector
     state: present
-    update_cache: true
   tags: [vector]
 
 # --- ARCHITECTURE SETUP ---
