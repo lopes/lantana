@@ -90,7 +90,7 @@
   become: true
   ansible.builtin.template:
     src: forward.vector.yaml.j2
-    dest: /etc/vector/conf.d/forward.yaml
+    dest: /etc/vector/conf.d/forward-honeywall.yaml
     owner: "root"
     group: "root"
     mode: "0644"

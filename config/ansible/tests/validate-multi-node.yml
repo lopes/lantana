@@ -183,7 +183,7 @@
 
     - name: "Check Vector forward config exists"
       ansible.builtin.stat:
-        path: /etc/vector/conf.d/forward.yaml
+        path: /etc/vector/conf.d/forward-sensor.yaml
       register: vector_fwd
 
     - name: "Assert Vector forward config"

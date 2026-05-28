@@ -146,7 +146,8 @@ ls /var/lib/lantana/honeywall/suricata/rules/
 ```bash
 sudo systemctl status vector
 ls /etc/vector/conf.d/
-# cowrie.yaml, dionaea.yaml, suricata.yaml, forward.yaml, receive.yaml
+# cowrie.yaml, dionaea.yaml, suricata.yaml, firewall.yaml,
+# forward-honeywall.yaml, forward-sensor.yaml, receive.yaml
 ```
 
 **Pipeline installed and scheduled:**
