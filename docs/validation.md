@@ -8,7 +8,7 @@ Most of the checks below are encoded in two Ansible playbooks. Run those first; 
 
 | When | Playbook | What it checks |
 |---|---|---|
-| Immediately after `deploy_single.yml` | `tests/validate-single-node.yml` | Users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, systemd timers for the five pipeline jobs (enabled and present), GeoIP cron entry |
+| Immediately after `deploy_single.yml` | `tests/validate-single-node.yml` | Users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, systemd timers for the four pipeline jobs (enabled and present), GeoIP cron entry |
 | After the first 06:00 UTC cycle (day 2+) | `tests/validate-pipeline-cycle.yml` | Each pipeline unit's last `Result=success`, `run_summary` events in journal, silver written for cowrie/suricata/nftables, all 7 gold tables present, `.provider_state.json` exists, no API-key leak in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + GreyNoise RIOT invariant |
 
 Run them via:
@@ -105,8 +105,13 @@ ls -la /var/lib/lantana/collector/geoip/    # GeoLite2-City.mmdb, GeoLite2-ASN.m
 **Config files deployed:**
 
 ```bash
-cat /etc/lantana/sensor/cowrie/cowrie.cfg | head -5     # Should show narrative hostname
-cat /etc/lantana/sensor/dionaea/dionaea.yaml | head -5  # Should show service config
+cat /etc/lantana/sensor/cowrie/cowrie.cfg | head -5
+# Should show narrative hostname in [honeypot] section
+
+ls /etc/lantana/sensor/dionaea/services-enabled/
+# One *.yaml per entry in dionaea_service_catalog (currently 6: ftp,
+# http, epmap, smb, mssql, mysql — see roles/dionaea/defaults/main.yml).
+
 cat /etc/lantana/collector/reporting.json | python3 -m json.tool | head -10
 # secrets.json: DO NOT cat — contains API keys. Just verify it exists:
 test -f /etc/lantana/collector/secrets.json && echo "OK"
@@ -166,6 +171,237 @@ sudo systemctl list-timers --all | grep lantana
 
 ---
 
+### 0.5 Active Protocol Smoke Tests
+
+Section 0.4 confirms the platform is *installed*. The probes below
+actively exercise each exposed protocol from your workstation and
+confirm the full chain works end-to-end:
+
+1. The port answers and the banner matches the narrative persona.
+2. Cowrie or Dionaea writes a structured event to its JSON log.
+3. Vector picks the event up and writes it to bronze NDJSON.
+
+Replace `<host>` with `network.honeywall.wan.ipv4` from your
+inventory. Run probes from a workstation outside the operation's
+internal prefixes (otherwise the Vector `filter_<honeypot>` transform
+drops your traffic — see CLAUDE.md "OPSEC Layer 1"). Note your
+workstation's egress IP first — you'll match against it in the logs:
+
+```bash
+curl -s ifconfig.me
+```
+
+#### One-shot banner sweep
+
+```bash
+nmap -sV -Pn -p 21,22,23,80,135,445,1433,3306 <host>
+```
+
+Cross-check each banner against `narrative.services.<svc>` in your
+operation's `narrative.yml`. Mismatches mean a stale render, a template
+not consuming the narrative, or — for MSSQL — the upstream module
+hard-coding the version (known v1.0.0 drift, see CLAUDE.md
+"Honeypot deployment discipline").
+
+#### SSH 22 — Cowrie
+
+**Workstation:**
+
+```bash
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o PubkeyAuthentication=no -o IdentityAgent=none \
+    root@<host>
+# Any password works. Land in Cowrie's fake shell.
+# Run: whoami; uname -a; ls; exit
+```
+
+The shell's prompt hostname must match `narrative.host.hostname`.
+Without `PubkeyAuthentication=no -o IdentityAgent=none`, your SSH
+agent may silently hand a key to Cowrie which accepts it — no
+password prompt and you'll mis-diagnose the auth path.
+
+**Sensor verification:**
+
+```bash
+sudo tail -5 /var/log/lantana/sensor/cowrie/cowrie.json | jq -c .
+# Expect: cowrie.session.connect → cowrie.login.failed/success →
+#         cowrie.command.input(*) → cowrie.session.closed
+# src_ip matches your egress IP from `curl ifconfig.me` above.
+
+sudo tail -1 /var/lib/lantana/datalake/bronze/dataset=cowrie/date=$(date -u +%Y-%m-%d)/server=*/events.json | jq .
+# Vector has written this event to bronze. Empty or stale means
+# the cowrie → vector → bronze chain is broken; check `journalctl -u vector`.
+```
+
+#### Telnet 23 — Cowrie
+
+**Workstation:**
+
+```bash
+nc -v <host> 23
+# Login: root <enter>
+# Password: <anything> <enter>
+# Lands in the same Cowrie fake shell. Type `exit` or Ctrl-]; quit.
+```
+
+**Sensor verification:** identical to SSH; the matching cowrie.json
+event has `"protocol": "telnet"` instead of `"ssh"`.
+
+#### FTP 21 — Dionaea
+
+**Workstation:**
+
+```bash
+nc -v <host> 21
+# Expect line: 220 <narrative.services.ftp.banner>
+# Optionally drive an anonymous login:
+#   USER anonymous <enter>
+#   PASS test@example.com <enter>
+#   QUIT <enter>
+```
+
+Or one-shot with curl:
+
+```bash
+curl -v ftp://anonymous:test@<host>/
+# Dionaea logs every command regardless of whether anonymous succeeds.
+```
+
+**Sensor verification:**
+
+```bash
+sudo tail -3 /var/log/lantana/sensor/dionaea/dionaea.json | jq -c .
+# Expect: { "connection": { "protocol": "ftpd", "type": "accept",
+#                            "remote": { "host": "<your-egress-ip>" } } }
+
+sudo tail -1 /var/lib/lantana/datalake/bronze/dataset=dionaea/date=$(date -u +%Y-%m-%d)/server=*/events.json | jq .
+```
+
+#### HTTP 80 — Dionaea
+
+**Workstation:**
+
+```bash
+curl -I http://<host>/
+# Expect: Server: <narrative.services.http.server_header>
+
+curl -sv http://<host>/ -o /dev/null
+# Body is the persona-consistent index.html rendered by
+# roles/dionaea/templates/wwwroot/index.html.j2.
+```
+
+**Sensor verification:** dionaea.json shows `"protocol": "httpd"`
+with the GET line. Note Dionaea logs the connection on accept; the
+request body shows up as a separate event.
+
+#### EPMAP 135 — Dionaea
+
+DCERPC endpoint mapper. Most workstations don't ship `rpcclient`; the
+banner sweep above already touched port 135, so just confirm Dionaea
+saw the connect:
+
+```bash
+sudo grep -i 'epmapper\|protocol=epmapper' /var/log/lantana/sensor/dionaea/dionaea.json | tail -3
+```
+
+If you want a deeper probe, `impacket-rpcdump <host>` (from the
+impacket toolkit) enumerates RPC interfaces — Dionaea responds with
+the bundled fake set.
+
+#### SMB 445 — Dionaea
+
+**Workstation:**
+
+```bash
+nmap --script=smb-os-discovery -p 445 <host>
+# Expect OS string ~ narrative.host.os_release; workgroup ~
+# narrative.services.smb.workgroup; server name ~ uppercase(hostname).
+```
+
+Or, if you have smbclient:
+
+```bash
+smbclient -L //<host> -N
+# Anonymous shares listing; Dionaea logs the SMB negotiation.
+```
+
+**Sensor verification:** dionaea.json shows `"protocol": "smbd"`.
+
+#### MSSQL 1433 — Dionaea
+
+```bash
+nmap -p 1433 --script=ms-sql-info <host>
+# Returns the version banner. v1.0.0 known issue: the upstream MSSQL
+# module hardcodes its version string, so this won't reflect
+# narrative.services.mssql.version. The connection still logs.
+```
+
+**Sensor verification:** dionaea.json shows `"protocol": "mssqld"`.
+
+#### MySQL 3306 — Dionaea
+
+**Workstation (no mysql client required):**
+
+```bash
+nc -v <host> 3306 < /dev/null | head -c 64 | xxd
+# Expect the version handshake packet:
+# byte 0-2: packet length, byte 3: sequence
+# byte 4:   protocol version (0x0a)
+# byte 5+:  null-terminated version string = narrative.services.mysql.version
+```
+
+Or with a mysql client:
+
+```bash
+mysql -h <host> -u root -p<anything>
+# Authentication fails (expected); Dionaea logs the connection.
+```
+
+**Sensor verification:** dionaea.json shows `"protocol": "mysqld"`.
+
+#### End-to-end smoke matrix
+
+After all probes, confirm the protocols you exercised aggregated
+correctly:
+
+```bash
+# Per-protocol event counts in the raw honeypot logs (today UTC):
+sudo jq -r '.connection.protocol // .eventid' \
+  /var/log/lantana/sensor/cowrie/cowrie.json \
+  /var/log/lantana/sensor/dionaea/dionaea.json \
+  2>/dev/null | sort | uniq -c | sort -rn
+# Expect at least one entry per protocol you tested. Look for
+# ssh/telnet (cowrie eventids) and ftpd/httpd/epmapper/smbd/mssqld/mysqld.
+
+# Per-dataset bronze line counts (today UTC):
+for d in cowrie dionaea suricata nftables; do
+  total=$(sudo find /var/lib/lantana/datalake/bronze/dataset=$d \
+            -name 'events.json' -exec wc -l {} + 2>/dev/null \
+            | awk 'END{print $1+0}')
+  printf '%-10s bronze lines: %d\n' "$d" "$total"
+done
+```
+
+**Suricata corroboration:** every external probe should also surface
+in Suricata's flow log even if no IDS rule matched. Quick spot-check:
+
+```bash
+sudo jq -c 'select(.src_ip == "<your-egress-ip>" and .event_type == "flow")' \
+  /var/log/lantana/honeywall/suricata/eve.json | tail -10
+```
+
+**Triage matrix when something is missing:**
+
+| Symptom | Most likely cause | Where to look |
+|---|---|---|
+| Workstation probe times out | nftables DNAT missing or sensor container down | `sudo nft list ruleset \| grep -A2 lantana_nat`; `systemctl --user status cowrie\|dionaea` |
+| Probe succeeds but no log on sensor | Container bound but didn't write log (config or service-yaml issue) | `podman exec` into the container; check stdout/stderr of the supervised process |
+| Log exists locally but not in bronze | Vector pipeline broken | `sudo journalctl -u vector --since '5 min ago'`; look for VRL errors |
+| Local + bronze fine but Suricata flow missing | Suricata not seeing traffic on the listening interface | `sudo systemctl status suricata`; `sudo nft list ruleset \| grep lantana_forward` |
+| All present but you can't find them | Egress IP mismatch (CGNAT, VPN) | re-run `curl ifconfig.me` from the same workstation |
+
+---
+
 ## Day 0 + 1 hour: Verify Logs Are Being Generated
 
 After deployment, real attackers will start hitting exposed ports. Within minutes to hours you should see data.
@@ -214,7 +450,7 @@ sudo journalctl -u vector --since "1 hour ago" | tail -20
 
 ## Day 1: First Pipeline Run
 
-The pipeline runs via systemd timers: 01:00 UTC enrich, 04:00 transform, 05:00 alert, 06:00 report. After the first night:
+The pipeline runs via systemd timers: 00:15 UTC prune, 01:00 enrich, 04:00 transform, 06:00 report. After the first night:
 
 ### 1.1 Verify enrichment ran (bronze -> silver)
 
