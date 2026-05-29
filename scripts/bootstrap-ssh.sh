@@ -42,6 +42,7 @@ echo ""
 echo "Bootstrapping remote host ..."
 echo ""
 
+# shellcheck disable=SC2087  # $PUBKEY and $SSH_PORT must expand client-side before being sent over SSH
 ssh -p 22 -i "$KEY" "${SSH_USER}@${HOST}" << REMOTE
 set -eu
 

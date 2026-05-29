@@ -52,7 +52,9 @@ class TestGreyNoiseProvider:
         assert result.data["greynoise_riot"] is False
         assert result.data["greynoise_name"] == "Mass Scanner"
         assert result.data["greynoise_last_seen"] == "2026-05-15"
-        assert result.data["greynoise_link"].startswith("https://viz.greynoise.io/")
+        link = result.data["greynoise_link"]
+        assert isinstance(link, str)
+        assert link.startswith("https://viz.greynoise.io/")
 
     @pytest.mark.asyncio()
     async def test_anonymous_request_omits_key_header(

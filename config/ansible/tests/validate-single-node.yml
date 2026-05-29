@@ -94,11 +94,7 @@
       ansible.builtin.stat:
         path: "{{ item.path }}"
       loop:
-        - {
-            path: "/etc/lantana/honeywall/nftables/sensors",
-            owner: "root",
-            mode: "0755",
-          }
+        - { path: "/etc/lantana/honeywall/nftables/sensors", owner: "root", mode: "0755" }
         - { path: "/var/log/lantana/honeywall", owner: "root", mode: "0755" }
       register: dir_stats
 

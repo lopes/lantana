@@ -157,6 +157,7 @@
     - name: "Scan enrichment_errors.json for API-key residue"
       become: true
       ansible.builtin.shell: |
+        set -o pipefail
         if [ -f {{ datalake_root }}/enrichment_errors.json ]; then
           grep -E 'key=[A-Za-z0-9]{20,}' {{ datalake_root }}/enrichment_errors.json | wc -l
         else
