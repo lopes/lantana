@@ -95,4 +95,5 @@ jobs:
         run: pip install --upgrade ansible-core ansible-lint
 
       - name: ansible-lint
-        run: ansible-lint config/ansible/playbooks config/ansible/roles config/ansible/tests
+        working-directory: config/ansible
+        run: ansible-lint playbooks roles tests
