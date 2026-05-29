@@ -40,16 +40,16 @@ module "single_node" {
   source = "./modules/lantana-node"
   count  = var.deployment_mode == "single" ? 1 : 0
 
-  vm_name            = "${var.operation_name}-sn-01"
-  node_name          = var.node_name
-  template_vm_id     = var.template_vm_id
-  datastore_id       = var.datastore
-  num_cpus           = var.single_node_cpus
-  memory             = var.single_node_memory
-  disk_size          = var.single_node_disk
-  wan_bridge         = var.wan_bridge
-  lan_bridge         = null
-  user_data_file_id  = proxmox_virtual_environment_file.cloud_init.id
+  vm_name           = "${var.operation_name}-sn-01"
+  node_name         = var.node_name
+  template_vm_id    = var.template_vm_id
+  datastore_id      = var.datastore
+  num_cpus          = var.single_node_cpus
+  memory            = var.single_node_memory
+  disk_size         = var.single_node_disk
+  wan_bridge        = var.wan_bridge
+  lan_bridge        = null
+  user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
 }
 
 # --- MULTI-NODE DEPLOYMENT ---
@@ -57,46 +57,46 @@ module "honeywall" {
   source = "./modules/lantana-node"
   count  = var.deployment_mode == "multi" ? 1 : 0
 
-  vm_name            = "${var.operation_name}-honeywall-01"
-  node_name          = var.node_name
-  template_vm_id     = var.template_vm_id
-  datastore_id       = var.datastore
-  num_cpus           = 2
-  memory             = 2048
-  disk_size          = 20
-  wan_bridge         = var.wan_bridge
-  lan_bridge         = var.lan_bridge
-  user_data_file_id  = proxmox_virtual_environment_file.cloud_init.id
+  vm_name           = "${var.operation_name}-honeywall-01"
+  node_name         = var.node_name
+  template_vm_id    = var.template_vm_id
+  datastore_id      = var.datastore
+  num_cpus          = 2
+  memory            = 2048
+  disk_size         = 20
+  wan_bridge        = var.wan_bridge
+  lan_bridge        = var.lan_bridge
+  user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
 }
 
 module "sensor" {
   source = "./modules/lantana-node"
   count  = var.deployment_mode == "multi" ? 1 : 0
 
-  vm_name            = "${var.operation_name}-low-01"
-  node_name          = var.node_name
-  template_vm_id     = var.template_vm_id
-  datastore_id       = var.datastore
-  num_cpus           = 2
-  memory             = 4096
-  disk_size          = 40
-  wan_bridge         = null
-  lan_bridge         = var.lan_bridge
-  user_data_file_id  = proxmox_virtual_environment_file.cloud_init.id
+  vm_name           = "${var.operation_name}-low-01"
+  node_name         = var.node_name
+  template_vm_id    = var.template_vm_id
+  datastore_id      = var.datastore
+  num_cpus          = 2
+  memory            = 4096
+  disk_size         = 40
+  wan_bridge        = null
+  lan_bridge        = var.lan_bridge
+  user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
 }
 
 module "collector" {
   source = "./modules/lantana-node"
   count  = var.deployment_mode == "multi" ? 1 : 0
 
-  vm_name            = "${var.operation_name}-collector-01"
-  node_name          = var.node_name
-  template_vm_id     = var.template_vm_id
-  datastore_id       = var.datastore
-  num_cpus           = 2
-  memory             = 4096
-  disk_size          = 100
-  wan_bridge         = null
-  lan_bridge         = var.lan_bridge
-  user_data_file_id  = proxmox_virtual_environment_file.cloud_init.id
+  vm_name           = "${var.operation_name}-collector-01"
+  node_name         = var.node_name
+  template_vm_id    = var.template_vm_id
+  datastore_id      = var.datastore
+  num_cpus          = 2
+  memory            = 4096
+  disk_size         = 100
+  wan_bridge        = null
+  lan_bridge        = var.lan_bridge
+  user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
 }
