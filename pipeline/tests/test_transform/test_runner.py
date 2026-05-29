@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path  # noqa: TC003 — used in function signatures
 
 import polars as pl
+import pytest  # noqa: TC002 — used in function signatures
 
 from lantana.common.datalake import write_silver_partition
 from lantana.models.ocsf import (
@@ -120,7 +121,7 @@ def test_run_transform_empty_silver(tmp_datalake: Path) -> None:
 
 
 def test_main_appends_transform_failed_on_crash(
-    tmp_path: Path, monkeypatch: object,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A transform crash must surface as a ``transform_failed`` row in the errors NDJSON.
 
@@ -134,13 +135,12 @@ def test_main_appends_transform_failed_on_crash(
 
     errors_path = tmp_path / "enrichment_errors.json"
 
-    def _boom(target_date: date, **_: object) -> None:  # type: ignore[no-untyped-def]
+    def _boom(target_date: date, **_: object) -> None:
         raise RuntimeError("simulated transform crash")
 
-    # type: ignore[attr-defined]  monkeypatch is pytest.MonkeyPatch
-    monkeypatch.setattr(transform_runner, "run_transform", _boom)  # type: ignore[attr-defined]
-    monkeypatch.setattr(transform_runner, "ERRORS_PATH", errors_path)  # type: ignore[attr-defined]
-    monkeypatch.setattr(  # type: ignore[attr-defined]
+    monkeypatch.setattr(transform_runner, "run_transform", _boom)
+    monkeypatch.setattr(transform_runner, "ERRORS_PATH", errors_path)
+    monkeypatch.setattr(
         "sys.argv",
         ["lantana-transform", "--date", "2026-05-20"],
     )

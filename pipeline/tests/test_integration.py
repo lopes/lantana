@@ -84,7 +84,7 @@ def _add_enrichment_stubs(df: pl.DataFrame) -> pl.DataFrame:
 
 def _add_missing_silver_columns(df: pl.DataFrame) -> pl.DataFrame:
     """Add null columns that gold metrics may reference but some datasets lack."""
-    optional: dict[str, pl.DataType] = {
+    optional: dict[str, type[pl.DataType]] = {
         "session": pl.Utf8,
         "user_name": pl.Utf8,
         "unmapped_password": pl.Utf8,
