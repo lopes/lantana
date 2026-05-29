@@ -1,0 +1,25 @@
+---
+# ansible-lint config — minimum gate for CI, not a style police.
+# Run from repo root with explicit targets: `ansible-lint config/ansible/playbooks config/ansible/roles config/ansible/tests`.
+
+profile: min
+
+exclude_paths:
+  # Operation inventories carry vault-encrypted vars and real per-deployment values.
+  # They are not lintable without decryption, and they should never be linted in CI
+  # (the public CI runner has no business touching production inventories).
+  - config/ansible/inventories/op_*/
+  # Ansible's own collection cache and lint cache directories.
+  - .ansible/
+  - .cache/
+
+skip_list:
+  # Existing role conventions don't prefix internal vars (uv_version, _uv_installed,
+  # _existing_svc_yamls, ...). Renaming requires touching every defaults file and
+  # every reference. Tracked as a future refactor; not a CI-gate concern.
+  - var-naming[no-role-prefix]
+  # Several systemctl calls are idiomatic for cases the systemd module handles
+  # awkwardly: user-scoped daemon-reload for Quadlet units (rootless stigma user),
+  # and read-only queries (is-enabled/is-active/Result) in validate-* playbooks.
+  # Refactoring these to systemd_service would not improve correctness.
+  - command-instead-of-module
