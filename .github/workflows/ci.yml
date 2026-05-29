@@ -91,12 +91,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install ansible-core and ansible-lint
-        run: pip install --upgrade ansible-core ansible-lint
-
-      - name: Install collections into ansible.cfg's collections_path
-        working-directory: config/ansible
-        run: ansible-galaxy collection install community.general -p collections
+      - name: Install ansible and ansible-lint
+        run: pip install --upgrade ansible ansible-lint
 
       - name: ansible-lint
         working-directory: config/ansible
