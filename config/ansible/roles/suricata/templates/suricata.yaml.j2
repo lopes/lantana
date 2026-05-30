@@ -48,6 +48,14 @@ outputs:
       community-id: true
       community-id-seed: 0
       types:
+        # Only `alert` and `flow` are emitted to bronze. See
+        # docs/troubleshooting.md § *eve.json Event Type Policy* for the
+        # rationale: pipeline today consumes only `alert` events (mapped to
+        # OCSF Detection Finding), and `flow` is retained for a planned
+        # behavioural-engagement metric (app_proto, byte counts, flow_state,
+        # community_id). All other event types — protocol decoders, anomaly,
+        # fileinfo, netflow, stats — have no silver/gold consumer and were
+        # disabled to keep bronze volume bounded.
         - alert:
             payload: true
             payload-buffer-size: 8kb
@@ -57,35 +65,6 @@ outputs:
             http-body-printable: true
             metadata: true
             tagged-packets: true
-        - anomaly:
-            enabled: true
-        - http:
-            extended: true
-        - dns:
-            query: true
-            answer: true
-        - tls:
-            extended: true
-        - files:
-            force-magic: true
-        - smtp:
-            extended: true
-        - ftp
-        - rdp
-        - smb
-        - tftp
-        - ike
-        - krb5
-        - snmp
-        - rfb
-        - sip
-        - dhcp:
-            enabled: true
-        - ssh
-        - mqtt:
-            enabled: true
-        - http2
-        - quic
         - flow
   - fast:
       enabled: false
