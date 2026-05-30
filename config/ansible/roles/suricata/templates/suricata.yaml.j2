@@ -59,11 +59,6 @@ outputs:
             tagged-packets: true
         - anomaly:
             enabled: true
-        - stats:
-            totals: true
-            threads: true
-            deltas: false
-            null-values: false
         - http:
             extended: true
         - dns:
@@ -92,7 +87,6 @@ outputs:
         - http2
         - quic
         - flow
-        - netflow
   - fast:
       enabled: false
   - pcap-log:

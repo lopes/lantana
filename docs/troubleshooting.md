@@ -233,6 +233,17 @@ sudo suricata -c /etc/suricata/suricata.yaml -r /tmp/test-attack.pcap -l /tmp/su
 cat /tmp/suricata-test-logs/eve.json | jq 'select(.event_type=="alert")'
 ```
 
+### eve.json Event Type Policy
+
+The `outputs[].eve-log.types` block in `roles/suricata/templates/suricata.yaml.j2` intentionally excludes two event types that ship by default in upstream Suricata configs:
+
+- **`stats`** — Suricata's internal process counters (app-layer totals, decoder stats, detect engine metrics). Each row is ~68 KB of nested JSON describing Suricata's own behaviour, not attacker behaviour, so it carries zero detection or intel value. The Vector OPSEC filter (`filter_suricata`, `roles/suricata/templates/suricata.vector.yaml.j2`) does not drop these because stats events have no `src_ip` field — the filter's CIDR/WAN-address checks never engage and the event flows through to bronze unfiltered.
+- **`netflow`** — flow *summaries* that mostly duplicate the `flow` events Suricata already emits on flow termination. Keeping both effectively doubles flow-related bronze volume for no added signal.
+
+**Why the policy exists:** On 2026-05-30, `lantana-enrich.service` was OOM-killed at 01:01:38 UTC processing the previous day's bronze. The trigger was a suricata bronze file ~3.25× its typical size (864 MB vs. ~266 MB on a normal day), with `stats` accounting for ~31% of bytes and `netflow` another ~30%. Polars materialises the day's NDJSON in memory during the bronze→silver normalize; the enricher peaked at 6.2 GB anon-rss on a 7.6 GB single-node deployment with no swap, and the global OOM killer fired before any silver was written. Downstream `lantana-transform` and `lantana-report` then ran on empty silver, the brief posted "No data available for this date" to Discord with a green embed, and the day's intel was lost.
+
+**If you re-enable either type:** profile bronze row sizes first. A p99 row size much larger than p50 means a small population of giant events is dominating bytes — that population should be filtered out at Suricata (preferred) or at the Vector pipeline (`filter_suricata`) before reaching bronze. Suricata's top-level `stats: enabled: true` block (separate from the eve.json output) may stay enabled — it controls counter *collection* for Suricata's own observability and does not contribute to bronze.
+
 ---
 
 ## Systemd & Debian Core
