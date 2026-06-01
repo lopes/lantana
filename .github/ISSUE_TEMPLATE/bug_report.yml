@@ -1,0 +1,12 @@
+- title prefix: [bug]
+ - Labels auto-applied: bug
+ - Body:
+   - What happened (textarea, required)
+   - Expected behavior (textarea, required)
+   - Repro steps (textarea, required)
+   - Component (dropdown: pipeline, honeywall, sensor, collector, dashboard, ansible roles, terraform, docs, other)
+   - Lantana version / commit SHA (input, required)
+   - Deployment mode (dropdown: single-node, multi-node)
+   - Logs / output (textarea, optional, with explicit warning: scrub WAN IPs, hostnames, API keys before pasting)
+   - OPSEC ack (checkbox: "I confirm this report contains no operator-identifying values")
+
