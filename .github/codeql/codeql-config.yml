@@ -1,0 +1,3 @@
+paths-ignore:
+  - "scripts/probe-*.py"   # diagnostic tools — intentional console output, not production code
+  - "pipeline/tests/**"    # test fixtures with fixed strings, no untrusted input
