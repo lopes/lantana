@@ -4,9 +4,17 @@
   <img src="assets/lantana-logo.svg" alt="Lantana" width="160">
 </p>
 
-Lantana is a honeypot-as-code platform that deploys and operates IPv4/IPv6 dual-stack honeypots aligned with [MITRE Engage](https://engage.mitre.org/) principles. It treats honeypots as operational infrastructure — continuously rotated, reshaped, and adapted to evolving narratives and intelligence goals.
+<p align="center">
+  <a href="https://github.com/lopes/lantana/actions/workflows/ci.yml"><img src="https://github.com/lopes/lantana/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/lopes/lantana/actions/workflows/codeql.yml"><img src="https://github.com/lopes/lantana/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/lopes/lantana" alt="License"></a>
+  <img src="https://img.shields.io/badge/python-3.13%2B-blue" alt="Python 3.13+">
+  <img src="https://img.shields.io/badge/debian-13-red" alt="Debian 13">
+</p>
 
-The platform covers the full lifecycle: from controlled exposure to structured data ingestion, enrichment, analysis, and intelligence output (STIX bundles, Discord reports, Streamlit dashboard). It emphasizes disposability, policy-driven deployment, and strict blast-radius containment.
+**Lantana is a honeypot-as-code platform.** Deploy IPv4/IPv6 dual-stack honeypots from an Ansible inventory, capture attacker behavior into a typed datalake, and ship intelligence as Discord briefs, STIX bundles, and a Streamlit dashboard. Aligned with [MITRE Engage](https://engage.mitre.org/) — honeypots are treated as disposable infrastructure that gets rotated and reshaped as narratives evolve.
+
+The platform covers the full lifecycle: controlled exposure → structured ingestion → enrichment → analysis → intelligence output. Designed for disposability, policy-driven deployment, and strict blast-radius containment.
 
 > [!tip]
 > [Lantana camara](https://en.wikipedia.org/wiki/Lantana_camara) is a plant that attracts insects with its colorful flowers — much like a honeypot attracts attackers with its deliberately vulnerable services. It's invasive, resilient, and thrives in hostile environments.
