@@ -21,6 +21,7 @@ lan_bridge = "vmbr1" # Only needed for multi-node
 operation_name  = "lantana"
 deployment_mode = "single" # "single" or "multi"
 ssh_public_key  = "ssh-ed25519 AAAA... user@host"
+ssh_port        = 49234    # Required. Operator-chosen random ephemeral port (49152-65535). Never 22 or 60090.
 
 # --- Single-node sizing ---
 single_node_cpus   = 2

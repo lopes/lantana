@@ -86,7 +86,7 @@ variable "ssh_port" {
 
   validation {
     condition     = var.ssh_port >= 49152 && var.ssh_port <= 65535
-    error_message = "ssh_port must be in the ephemeral range 49152–65535 per Lantana OPSEC. See docs/runbook.md deployment contract."
+    error_message = "ssh_port must be in the ephemeral range 49152–65535 per Lantana OPSEC. See docs/setup.md deployment contract."
   }
 }
 

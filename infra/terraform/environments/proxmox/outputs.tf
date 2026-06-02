@@ -23,8 +23,8 @@ output "collector_ip" {
 output "ssh_command" {
   description = "SSH command to connect to the primary node"
   value = var.deployment_mode == "single" ? (
-    "ssh -p 60090 lantana@${module.single_node[0].vm_ip}"
+    "ssh -p ${var.ssh_port} lantana@${module.single_node[0].vm_ip}"
     ) : (
-    "ssh -p 60090 lantana@${module.honeywall[0].vm_ip}"
+    "ssh -p ${var.ssh_port} lantana@${module.honeywall[0].vm_ip}"
   )
 }
