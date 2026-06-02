@@ -1,3 +1,19 @@
+# GitHub Actions are pinned to floating major-version tags (e.g. actions/checkout@v6),
+# not 40-char commit SHAs. The tradeoff:
+#
+# - SHA-pinning protects against a maintainer (or attacker who compromised one) moving
+#   a tag to point at a malicious commit (tj-actions/changed-files, 2025).
+# - Floating tags rely on the tag-maintainer not retroactively rewriting a released
+#   tag — which all of the actions we use (actions/*, astral-sh/setup-uv, hashicorp/*,
+#   github/codeql-action) treat as a hard invariant.
+#
+# Lantana is a solo-maintained OSS project; the SHA-pinning churn (every dependabot
+# bump becomes a SHA diff requiring fresh review) is not worth the marginal protection
+# for this risk profile. The mitigation we DO apply is below: dependabot reviews every
+# bump, minor/patch grouped to cut PR noise, and CI must pass before merge.
+#
+# Revisit this if Lantana moves to multi-maintainer or starts handling secrets in CI.
+
 version: 2
 updates:
   - package-ecosystem: "uv"
