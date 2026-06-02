@@ -6,6 +6,10 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
     labels: ["dependencies", "python"]
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "terraform"
     directory: "/infra/terraform/environments/proxmox"
@@ -13,6 +17,10 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 3
     labels: ["dependencies", "terraform"]
+    groups:
+      terraform-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -20,3 +28,7 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 3
     labels: ["dependencies", "ci"]
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

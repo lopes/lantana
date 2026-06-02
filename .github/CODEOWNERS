@@ -1,0 +1,5 @@
+# Lantana CODEOWNERS — single maintainer
+# Reviews are not enforced by branch protection at v1.0.0, but this codifies ownership
+# so future contributors know who to tag.
+
+* @lopes

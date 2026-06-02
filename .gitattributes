@@ -1,0 +1,23 @@
+# Normalize line endings to LF on checkout, regardless of platform.
+* text=auto eol=lf
+
+# Explicit binary types (no diff, no merge confusion).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.parquet binary
+*.mmdb binary
+
+# Terraform state files are JSON but should never be merged/diffed.
+*.tfstate binary
+*.tfstate.* binary
+
+# Language hints for cleaner diffs.
+*.j2 linguist-language=Jinja
+*.tftpl linguist-language=YAML

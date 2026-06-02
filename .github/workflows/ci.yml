@@ -17,6 +17,7 @@ jobs:
   python:
     name: Python (pytest + ruff + mypy)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: pipeline
@@ -40,12 +41,22 @@ jobs:
       - name: ruff check
         run: uv run ruff check .
 
+      - name: ruff format check
+        run: uv run ruff format --check .
+
       - name: mypy --strict
         run: uv run mypy --strict src tests
+
+      - name: ruff check (scripts)
+        run: uv run ruff check ../scripts/*.py
+
+      - name: mypy --strict (scripts)
+        run: uv run mypy --strict ../scripts/*.py
 
   terraform:
     name: Terraform (fmt + validate)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -71,6 +82,7 @@ jobs:
   shellcheck:
     name: Shellcheck
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
         with:
@@ -82,6 +94,7 @@ jobs:
   ansible-lint:
     name: Ansible-lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
