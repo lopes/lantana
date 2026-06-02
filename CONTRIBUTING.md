@@ -50,9 +50,12 @@ Real values live only inside each operation's `config/ansible/inventories/op_<na
 
 ## 3. Development environment
 
+> [!important]
+> **The `--extra dev` flag is mandatory for local Python work.** `pytest`, `ruff`, and `mypy` live in `[project.optional-dependencies.dev]`. A bare `uv sync --frozen` will succeed but strip them — your first `uv run pytest` then fails with "command not found." The Ansible deploy on the collector intentionally omits `--extra dev` (production runtime doesn't need test tooling), but local development always needs it.
+
 | Stack | Setup |
 |---|---|
-| Python pipeline | `cd pipeline && uv sync --frozen --extra dev` — `--extra dev` is required because `pytest`, `ruff`, and `mypy` live in `[project.optional-dependencies.dev]`. Bare `uv sync --frozen` strips them. |
+| Python pipeline | `cd pipeline && uv sync --frozen --extra dev` |
 | Ansible | `pip install ansible ansible-lint`. Run from `config/ansible/`. |
 | Shell | `shellcheck` from `apt` / `brew`. |
 | Terraform | `terraform >= 1.15.5` (matches CI). |
