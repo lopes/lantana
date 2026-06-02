@@ -52,7 +52,7 @@ Each provider's score lives in `pipeline/src/lantana/enrichment/providers/<name>
 
 ### AbuseIPDB
 
-```
+```text
 abuseipdb_risk_score = abuseConfidenceScore  (clamped to 0..100)
 ```
 
