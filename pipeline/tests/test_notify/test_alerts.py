@@ -96,10 +96,15 @@ class TestCategorizeErrors:
 
     def test_critical_set_contract(self) -> None:
         """Pin the critical error-type list so adding a new one is an explicit choice."""
-        assert frozenset({
-            "dataset_processing_failed",
-            "transform_failed",
-        }) == CRITICAL_ERROR_TYPES
+        assert (
+            frozenset(
+                {
+                    "dataset_processing_failed",
+                    "transform_failed",
+                }
+            )
+            == CRITICAL_ERROR_TYPES
+        )
 
     def test_info_set_contract(self) -> None:
         """Info tier is routine ops noise; new entries require explicit thought
@@ -118,12 +123,29 @@ class TestLoadErrorsForDate:
 
     def test_filters_by_date(self, tmp_path: Path) -> None:
         errors_path = tmp_path / "errors.json"
-        self._write(errors_path, [
-            {"date": "2026-05-19", "provider": "abuseipdb", "error_type": "rate_limit", "count": 1},
-            {"date": "2026-05-20", "provider": "shodan", "error_type": "rate_limit", "count": 5},
-            {"date": "2026-05-21", "provider": "pipeline",
-             "error_type": "dataset_processing_failed", "count": 1},
-        ])
+        self._write(
+            errors_path,
+            [
+                {
+                    "date": "2026-05-19",
+                    "provider": "abuseipdb",
+                    "error_type": "rate_limit",
+                    "count": 1,
+                },
+                {
+                    "date": "2026-05-20",
+                    "provider": "shodan",
+                    "error_type": "rate_limit",
+                    "count": 5,
+                },
+                {
+                    "date": "2026-05-21",
+                    "provider": "pipeline",
+                    "error_type": "dataset_processing_failed",
+                    "count": 1,
+                },
+            ],
+        )
         rows = load_errors_for_date(errors_path, date(2026, 5, 20))
         assert len(rows) == 1
         assert rows[0]["provider"] == "shodan"
@@ -147,9 +169,7 @@ class TestLoadErrorsForDate:
     def test_skips_blank_lines(self, tmp_path: Path) -> None:
         errors_path = tmp_path / "errors.json"
         errors_path.write_text(
-            '{"date": "2026-05-20", "provider": "ok", "error_type": "rate_limit", "count": 1}\n'
-            "\n"
-            "\n"
+            '{"date": "2026-05-20", "provider": "ok", "error_type": "rate_limit", "count": 1}\n\n\n'
         )
         rows = load_errors_for_date(errors_path, date(2026, 5, 20))
         assert len(rows) == 1
@@ -199,12 +219,14 @@ class TestBuildEmbedBody:
     def test_truncates_long_messages(self) -> None:
         long_msg = "x" * 1000
         buckets = ErrorBuckets(
-            critical=[{
-                "provider": "pipeline",
-                "error_type": "dataset_processing_failed",
-                "count": 1,
-                "message": long_msg,
-            }],
+            critical=[
+                {
+                    "provider": "pipeline",
+                    "error_type": "dataset_processing_failed",
+                    "count": 1,
+                    "message": long_msg,
+                }
+            ],
             warning=[],
         )
         body = build_embed_body(date(2026, 5, 20), buckets)
@@ -239,12 +261,14 @@ class TestBuildEmbedBody:
     def test_three_tier_body(self) -> None:
         """All three sections render together on a mixed day."""
         buckets = ErrorBuckets(
-            critical=[{
-                "provider": "pipeline",
-                "error_type": "dataset_processing_failed",
-                "count": 1,
-                "message": "nft schema mismatch",
-            }],
+            critical=[
+                {
+                    "provider": "pipeline",
+                    "error_type": "dataset_processing_failed",
+                    "count": 1,
+                    "message": "nft schema mismatch",
+                }
+            ],
             warning=[
                 {"provider": "virustotal", "error_type": "timeout", "count": 3},
             ],
@@ -302,13 +326,20 @@ def _make_reporting() -> Any:
         ReportingConfig,
         SharingConfig,
     )
+
     return ReportingConfig(
         operator=OperatorConfig(
-            name="Test", handle="t", contact="x", pgp_fingerprint="A",
+            name="Test",
+            handle="t",
+            contact="x",
+            pgp_fingerprint="A",
         ),
         sharing=SharingConfig(tlp="GREEN", community="t", discord_channel="c"),
         operation=OperationConfig(
-            name="op_test", description="x", sector="t", region="t",
+            name="op_test",
+            description="x",
+            sector="t",
+            region="t",
             start_date="2026-01-01",
         ),
         redact=RedactConfig(infrastructure_ips=[], infrastructure_cidrs=[], pseudonym_map={}),
@@ -317,13 +348,16 @@ def _make_reporting() -> Any:
 
 def _make_secrets(webhook: str = "https://discord.test/webhook") -> Any:
     from lantana.common.config import SecretsConfig
-    return SecretsConfig.model_validate({
-        "vault_apikey_virustotal": "v",
-        "vault_apikey_shodan": "s",
-        "vault_apikey_abuseipdb": "a",
-        "vault_apikey_greynoise": "g",
-        "vault_webhook_discord": webhook,
-    })
+
+    return SecretsConfig.model_validate(
+        {
+            "vault_apikey_virustotal": "v",
+            "vault_apikey_shodan": "s",
+            "vault_apikey_abuseipdb": "a",
+            "vault_apikey_greynoise": "g",
+            "vault_webhook_discord": webhook,
+        }
+    )
 
 
 class TestRunAlerter:
@@ -347,18 +381,25 @@ class TestRunAlerter:
     @pytest.mark.asyncio()
     async def test_critical_day_sends_red_alert(self, tmp_path: Path) -> None:
         errors_path = tmp_path / "errors.json"
-        errors_path.write_text(json.dumps({
-            "date": "2026-05-20",
-            "provider": "pipeline",
-            "error_type": "dataset_processing_failed",
-            "count": 1,
-            "message": "ValueError(...)",
-        }) + "\n")
+        errors_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-05-20",
+                    "provider": "pipeline",
+                    "error_type": "dataset_processing_failed",
+                    "count": 1,
+                    "message": "ValueError(...)",
+                }
+            )
+            + "\n"
+        )
         state_path = tmp_path / ".last_alerted"
 
-        with patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send, \
-             patch("lantana.notify.alerts.load_secrets", new=_make_secrets), \
-             patch("lantana.notify.alerts.load_reporting", new=_make_reporting):
+        with (
+            patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send,
+            patch("lantana.notify.alerts.load_secrets", new=_make_secrets),
+            patch("lantana.notify.alerts.load_reporting", new=_make_reporting),
+        ):
             await run_alerter(
                 date(2026, 5, 20),
                 errors_path=errors_path,
@@ -377,18 +418,25 @@ class TestRunAlerter:
     async def test_warning_only_day_sends_orange_alert(self, tmp_path: Path) -> None:
         """Warning-tier errors (non-rate-limit transient) fire the orange alert."""
         errors_path = tmp_path / "errors.json"
-        errors_path.write_text(json.dumps({
-            "date": "2026-05-20",
-            "provider": "virustotal",
-            "error_type": "timeout",
-            "count": 5,
-            "message": "Read timeout",
-        }) + "\n")
+        errors_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-05-20",
+                    "provider": "virustotal",
+                    "error_type": "timeout",
+                    "count": 5,
+                    "message": "Read timeout",
+                }
+            )
+            + "\n"
+        )
         state_path = tmp_path / ".last_alerted"
 
-        with patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send, \
-             patch("lantana.notify.alerts.load_secrets", new=_make_secrets), \
-             patch("lantana.notify.alerts.load_reporting", new=_make_reporting):
+        with (
+            patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send,
+            patch("lantana.notify.alerts.load_secrets", new=_make_secrets),
+            patch("lantana.notify.alerts.load_reporting", new=_make_reporting),
+        ):
             await run_alerter(
                 date(2026, 5, 20),
                 errors_path=errors_path,
@@ -406,13 +454,18 @@ class TestRunAlerter:
         attachment, so traceability is preserved.
         """
         errors_path = tmp_path / "errors.json"
-        errors_path.write_text(json.dumps({
-            "date": "2026-05-20",
-            "provider": "abuseipdb",
-            "error_type": "rate_limit",
-            "count": 200,
-            "message": "429",
-        }) + "\n")
+        errors_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-05-20",
+                    "provider": "abuseipdb",
+                    "error_type": "rate_limit",
+                    "count": 200,
+                    "message": "429",
+                }
+            )
+            + "\n"
+        )
         state_path = tmp_path / ".last_alerted"
 
         with patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send:
@@ -430,13 +483,18 @@ class TestRunAlerter:
     @pytest.mark.asyncio()
     async def test_idempotent_second_run(self, tmp_path: Path) -> None:
         errors_path = tmp_path / "errors.json"
-        errors_path.write_text(json.dumps({
-            "date": "2026-05-20",
-            "provider": "pipeline",
-            "error_type": "dataset_processing_failed",
-            "count": 1,
-            "message": "...",
-        }) + "\n")
+        errors_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-05-20",
+                    "provider": "pipeline",
+                    "error_type": "dataset_processing_failed",
+                    "count": 1,
+                    "message": "...",
+                }
+            )
+            + "\n"
+        )
         state_path = tmp_path / ".last_alerted"
         # Pre-populate marker as if a prior run had sent the alert
         mark_alerted(state_path, date(2026, 5, 20))
@@ -453,19 +511,26 @@ class TestRunAlerter:
     @pytest.mark.asyncio()
     async def test_force_overrides_marker(self, tmp_path: Path) -> None:
         errors_path = tmp_path / "errors.json"
-        errors_path.write_text(json.dumps({
-            "date": "2026-05-20",
-            "provider": "pipeline",
-            "error_type": "dataset_processing_failed",
-            "count": 1,
-            "message": "...",
-        }) + "\n")
+        errors_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-05-20",
+                    "provider": "pipeline",
+                    "error_type": "dataset_processing_failed",
+                    "count": 1,
+                    "message": "...",
+                }
+            )
+            + "\n"
+        )
         state_path = tmp_path / ".last_alerted"
         mark_alerted(state_path, date(2026, 5, 20))
 
-        with patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send, \
-             patch("lantana.notify.alerts.load_secrets", new=_make_secrets), \
-             patch("lantana.notify.alerts.load_reporting", new=_make_reporting):
+        with (
+            patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send,
+            patch("lantana.notify.alerts.load_secrets", new=_make_secrets),
+            patch("lantana.notify.alerts.load_reporting", new=_make_reporting),
+        ):
             await run_alerter(
                 date(2026, 5, 20),
                 errors_path=errors_path,
@@ -479,21 +544,28 @@ class TestRunAlerter:
     async def test_no_webhook_configured_skips_send(self, tmp_path: Path) -> None:
         """A missing webhook is logged-and-skipped, not crash."""
         errors_path = tmp_path / "errors.json"
-        errors_path.write_text(json.dumps({
-            "date": "2026-05-20",
-            "provider": "pipeline",
-            "error_type": "dataset_processing_failed",
-            "count": 1,
-            "message": "...",
-        }) + "\n")
+        errors_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-05-20",
+                    "provider": "pipeline",
+                    "error_type": "dataset_processing_failed",
+                    "count": 1,
+                    "message": "...",
+                }
+            )
+            + "\n"
+        )
         state_path = tmp_path / ".last_alerted"
 
         def _empty_secrets() -> Any:
             return _make_secrets(webhook="")
 
-        with patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send, \
-             patch("lantana.notify.alerts.load_secrets", new=_empty_secrets), \
-             patch("lantana.notify.alerts.load_reporting", new=_make_reporting):
+        with (
+            patch("lantana.notify.alerts.send_notification", new=AsyncMock()) as mock_send,
+            patch("lantana.notify.alerts.load_secrets", new=_empty_secrets),
+            patch("lantana.notify.alerts.load_reporting", new=_make_reporting),
+        ):
             await run_alerter(
                 date(2026, 5, 20),
                 errors_path=errors_path,

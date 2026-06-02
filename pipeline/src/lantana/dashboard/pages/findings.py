@@ -33,6 +33,7 @@ def _metric_help(name: str) -> str | None:
     triplet = METRICS.get(name)
     return triplet.tooltip() if triplet is not None else None
 
+
 _PARETO_LIMIT: int = 50
 _TOP_BAR_LIMIT: int = 20
 
@@ -155,15 +156,18 @@ def render(selected_date: date) -> None:
     # Summary metrics
     cols = st.columns(3)
     cols[0].metric(
-        "Total Rules", len(df),
+        "Total Rules",
+        len(df),
         help=_metric_help("Total Rules"),
     )
     cols[1].metric(
-        "Total Events", f"{df['event_count'].sum():,}",
+        "Total Events",
+        f"{df['event_count'].sum():,}",
         help=_metric_help("Total Detection Events"),
     )
     cols[2].metric(
-        "Total Unique IPs", f"{df['unique_ips'].sum():,}",
+        "Total Unique IPs",
+        f"{df['unique_ips'].sum():,}",
         help=_metric_help("Total Detection IPs"),
     )
 

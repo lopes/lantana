@@ -164,6 +164,7 @@ class VirusTotalProvider:
         response.raise_for_status()
         payload: dict[str, dict[str, dict[str, int | str]]] = response.json()
         attributes = payload["data"]["attributes"]
+        # `attributes` is typed as nested dict; mypy can't narrow .get to dict[str, int].
         last_analysis: dict[str, int] = attributes.get("last_analysis_stats", {})  # type: ignore[assignment]
 
         malicious = int(last_analysis.get("malicious", 0))

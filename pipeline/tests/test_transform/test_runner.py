@@ -121,7 +121,8 @@ def test_run_transform_empty_silver(tmp_datalake: Path) -> None:
 
 
 def test_main_appends_transform_failed_on_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A transform crash must surface as a ``transform_failed`` row in the errors NDJSON.
 

@@ -58,91 +58,134 @@ def silver_df() -> pl.DataFrame:
 
     # --- attacker-1: nftables scan events ---
     for i in range(2):
-        rows.append({
-            "class_uid": CLASS_NETWORK_ACTIVITY,
-            "category_uid": 4,
-            "severity_id": 3,
-            "activity_id": 5,
-            "type_uid": 400105,
-            "time": _ts(minute=0, second=i),
-            "message": "drop input",
-            "status_id": STATUS_UNKNOWN,
-            "src_endpoint_ip": "203.0.113.50",
-            "src_endpoint_port": 54321 + i,
-            "dst_endpoint_ip": "honeypot-sensor-01",
-            "dst_endpoint_port": 23,
-            "dataset": "nftables",
-            "server": "sensor-01",
-            "operation": "op_test",
-            "session": None,
-            "user_name": None,
-            "unmapped_password": None,
-            "actor_process_cmd_line": None,
-            "finding_title": None,
-            "finding_uid": None,
-            "geo.country_code": "CN",
-            "geo.asn": "4134",
-            "geo.isp": "ChinaNet",
-            "abuseipdb_confidence_score": 85,
-            "abuseipdb_risk_score": 85.0,
-            "greynoise_classification": "malicious",
-            "greynoise_noise": True,
-            "greynoise_riot": False,
-            "greynoise_risk_score": 75.0,
-        })
+        rows.append(
+            {
+                "class_uid": CLASS_NETWORK_ACTIVITY,
+                "category_uid": 4,
+                "severity_id": 3,
+                "activity_id": 5,
+                "type_uid": 400105,
+                "time": _ts(minute=0, second=i),
+                "message": "drop input",
+                "status_id": STATUS_UNKNOWN,
+                "src_endpoint_ip": "203.0.113.50",
+                "src_endpoint_port": 54321 + i,
+                "dst_endpoint_ip": "honeypot-sensor-01",
+                "dst_endpoint_port": 23,
+                "dataset": "nftables",
+                "server": "sensor-01",
+                "operation": "op_test",
+                "session": None,
+                "user_name": None,
+                "unmapped_password": None,
+                "actor_process_cmd_line": None,
+                "finding_title": None,
+                "finding_uid": None,
+                "geo.country_code": "CN",
+                "geo.asn": "4134",
+                "geo.isp": "ChinaNet",
+                "abuseipdb_confidence_score": 85,
+                "abuseipdb_risk_score": 85.0,
+                "greynoise_classification": "malicious",
+                "greynoise_noise": True,
+                "greynoise_riot": False,
+                "greynoise_risk_score": 75.0,
+            }
+        )
 
     # --- attacker-1: auth attempts (2 fail, 1 success) ---
-    for i, (user, pw, status) in enumerate([
-        ("root", "admin", STATUS_FAILURE),
-        ("root", "password", STATUS_FAILURE),
-        ("root", "admin", STATUS_SUCCESS),
-    ]):
-        rows.append({
-            "class_uid": CLASS_AUTHENTICATION,
-            "category_uid": 3,
-            "severity_id": 3,
-            "activity_id": 1,
-            "type_uid": 300201,
-            "time": _ts(minute=1, second=i),
-            "message": "login attempt",
-            "status_id": status,
-            "src_endpoint_ip": "203.0.113.50",
-            "src_endpoint_port": 54400 + i,
-            "dst_endpoint_ip": "honeypot-sensor-01",
-            "dst_endpoint_port": 2222,
-            "dataset": "cowrie",
-            "server": "sensor-01",
-            "operation": "op_test",
-            "session": "sess-a1",
-            "user_name": user,
-            "unmapped_password": pw,
-            "actor_process_cmd_line": None,
-            "finding_title": None,
-            "finding_uid": None,
-            "geo.country_code": "CN",
-            "geo.asn": "4134",
-            "geo.isp": "ChinaNet",
-            "abuseipdb_confidence_score": 85,
-            "abuseipdb_risk_score": 85.0,
-            "greynoise_classification": "malicious",
-            "greynoise_noise": True,
-            "greynoise_riot": False,
-            "greynoise_risk_score": 75.0,
-        })
+    for i, (user, pw, status) in enumerate(
+        [
+            ("root", "admin", STATUS_FAILURE),
+            ("root", "password", STATUS_FAILURE),
+            ("root", "admin", STATUS_SUCCESS),
+        ]
+    ):
+        rows.append(
+            {
+                "class_uid": CLASS_AUTHENTICATION,
+                "category_uid": 3,
+                "severity_id": 3,
+                "activity_id": 1,
+                "type_uid": 300201,
+                "time": _ts(minute=1, second=i),
+                "message": "login attempt",
+                "status_id": status,
+                "src_endpoint_ip": "203.0.113.50",
+                "src_endpoint_port": 54400 + i,
+                "dst_endpoint_ip": "honeypot-sensor-01",
+                "dst_endpoint_port": 2222,
+                "dataset": "cowrie",
+                "server": "sensor-01",
+                "operation": "op_test",
+                "session": "sess-a1",
+                "user_name": user,
+                "unmapped_password": pw,
+                "actor_process_cmd_line": None,
+                "finding_title": None,
+                "finding_uid": None,
+                "geo.country_code": "CN",
+                "geo.asn": "4134",
+                "geo.isp": "ChinaNet",
+                "abuseipdb_confidence_score": 85,
+                "abuseipdb_risk_score": 85.0,
+                "greynoise_classification": "malicious",
+                "greynoise_noise": True,
+                "greynoise_riot": False,
+                "greynoise_risk_score": 75.0,
+            }
+        )
 
     # --- attacker-1: commands executed ---
     for i, cmd in enumerate(["uname -a", "cat /etc/passwd"]):
-        rows.append({
-            "class_uid": CLASS_PROCESS_ACTIVITY,
+        rows.append(
+            {
+                "class_uid": CLASS_PROCESS_ACTIVITY,
+                "category_uid": 1,
+                "severity_id": 3,
+                "activity_id": 1,
+                "type_uid": 100701,
+                "time": _ts(minute=2, second=i),
+                "message": f"CMD: {cmd}",
+                "status_id": STATUS_UNKNOWN,
+                "src_endpoint_ip": "203.0.113.50",
+                "src_endpoint_port": 54500 + i,
+                "dst_endpoint_ip": "honeypot-sensor-01",
+                "dst_endpoint_port": 2222,
+                "dataset": "cowrie",
+                "server": "sensor-01",
+                "operation": "op_test",
+                "session": "sess-a1",
+                "user_name": None,
+                "unmapped_password": None,
+                "actor_process_cmd_line": cmd,
+                "finding_title": None,
+                "finding_uid": None,
+                "geo.country_code": "CN",
+                "geo.asn": "4134",
+                "geo.isp": "ChinaNet",
+                "abuseipdb_confidence_score": 85,
+                "abuseipdb_risk_score": 85.0,
+                "greynoise_classification": "malicious",
+                "greynoise_noise": True,
+                "greynoise_riot": False,
+                "greynoise_risk_score": 75.0,
+            }
+        )
+
+    # --- attacker-1: file download (malware) ---
+    rows.append(
+        {
+            "class_uid": CLASS_FILE_ACTIVITY,
             "category_uid": 1,
-            "severity_id": 3,
-            "activity_id": 1,
-            "type_uid": 100701,
-            "time": _ts(minute=2, second=i),
-            "message": f"CMD: {cmd}",
+            "severity_id": 4,
+            "activity_id": 2,
+            "type_uid": 100102,
+            "time": _ts(minute=2, second=30),
+            "message": "Downloaded URL",
             "status_id": STATUS_UNKNOWN,
             "src_endpoint_ip": "203.0.113.50",
-            "src_endpoint_port": 54500 + i,
+            "src_endpoint_port": 54321,
             "dst_endpoint_ip": "honeypot-sensor-01",
             "dst_endpoint_port": 2222,
             "dataset": "cowrie",
@@ -151,9 +194,12 @@ def silver_df() -> pl.DataFrame:
             "session": "sess-a1",
             "user_name": None,
             "unmapped_password": None,
-            "actor_process_cmd_line": cmd,
+            "actor_process_cmd_line": None,
             "finding_title": None,
             "finding_uid": None,
+            "file_hash_sha256": "e3b0c44298fc1c149afbf4c8996fb924",
+            "file_url": "http://malware.example.com/payload.sh",
+            "file_path": "/tmp/payload.sh",
             "geo.country_code": "CN",
             "geo.asn": "4134",
             "geo.isp": "ChinaNet",
@@ -163,155 +209,135 @@ def silver_df() -> pl.DataFrame:
             "greynoise_noise": True,
             "greynoise_riot": False,
             "greynoise_risk_score": 75.0,
-        })
-
-    # --- attacker-1: file download (malware) ---
-    rows.append({
-        "class_uid": CLASS_FILE_ACTIVITY,
-        "category_uid": 1,
-        "severity_id": 4,
-        "activity_id": 2,
-        "type_uid": 100102,
-        "time": _ts(minute=2, second=30),
-        "message": "Downloaded URL",
-        "status_id": STATUS_UNKNOWN,
-        "src_endpoint_ip": "203.0.113.50",
-        "src_endpoint_port": 54321,
-        "dst_endpoint_ip": "honeypot-sensor-01",
-        "dst_endpoint_port": 2222,
-        "dataset": "cowrie",
-        "server": "sensor-01",
-        "operation": "op_test",
-        "session": "sess-a1",
-        "user_name": None,
-        "unmapped_password": None,
-        "actor_process_cmd_line": None,
-        "finding_title": None,
-        "finding_uid": None,
-        "file_hash_sha256": "e3b0c44298fc1c149afbf4c8996fb924",
-        "file_url": "http://malware.example.com/payload.sh",
-        "file_path": "/tmp/payload.sh",
-        "geo.country_code": "CN",
-        "geo.asn": "4134",
-        "geo.isp": "ChinaNet",
-        "abuseipdb_confidence_score": 85,
-        "abuseipdb_risk_score": 85.0,
-        "greynoise_classification": "malicious",
-        "greynoise_noise": True,
-        "greynoise_riot": False,
-        "greynoise_risk_score": 75.0,
-    })
+        }
+    )
 
     # --- attacker-1: suricata alert ---
-    rows.append({
-        "class_uid": CLASS_DETECTION_FINDING,
-        "category_uid": 2,
-        "severity_id": 4,
-        "activity_id": 1,
-        "type_uid": 200401,
-        "time": _ts(minute=0, second=30),
-        "message": "ET SCAN Potential SSH Scan",
-        "status_id": STATUS_UNKNOWN,
-        "src_endpoint_ip": "203.0.113.50",
-        "src_endpoint_port": 54321,
-        "dst_endpoint_ip": "honeypot-sensor-01",
-        "dst_endpoint_port": 22,
-        "dataset": "suricata",
-        "server": "sensor-01",
-        "operation": "op_test",
-        "session": None,
-        "user_name": None,
-        "unmapped_password": None,
-        "actor_process_cmd_line": None,
-        "finding_title": "ET SCAN Potential SSH Scan",
-        "finding_uid": "2001219",
-        "geo.country_code": "CN",
-        "geo.asn": "4134",
-        "geo.isp": "ChinaNet",
-        "abuseipdb_confidence_score": 85,
-        "abuseipdb_risk_score": 85.0,
-        "greynoise_classification": "malicious",
-        "greynoise_noise": True,
-        "greynoise_riot": False,
-        "greynoise_risk_score": 75.0,
-    })
-
-    # --- attacker-2: credential stuffing (15 auth failures, shared creds) ---
-    creds = [
-        ("root", "admin"), ("root", "password"), ("root", "123456"),
-        ("admin", "admin"), ("admin", "password"), ("test", "test"),
-        ("root", "root"), ("user", "user"), ("root", "toor"),
-        ("admin", "123456"), ("root", "admin"), ("root", "password"),
-        ("admin", "admin"), ("root", "admin"), ("root", "letmein"),
-    ]
-    for i, (user, pw) in enumerate(creds):
-        rows.append({
-            "class_uid": CLASS_AUTHENTICATION,
-            "category_uid": 3,
-            "severity_id": 2,
+    rows.append(
+        {
+            "class_uid": CLASS_DETECTION_FINDING,
+            "category_uid": 2,
+            "severity_id": 4,
             "activity_id": 1,
-            "type_uid": 300201,
-            "time": _ts(minute=5, second=i * 2),
-            "message": "login attempt",
-            "status_id": STATUS_FAILURE,
-            "src_endpoint_ip": "198.51.100.22",
-            "src_endpoint_port": 12300 + i,
-            "dst_endpoint_ip": "honeypot-sensor-01",
-            "dst_endpoint_port": 2222,
-            "dataset": "cowrie",
-            "server": "sensor-01",
-            "operation": "op_test",
-            "session": f"sess-b{i}",
-            "user_name": user,
-            "unmapped_password": pw,
-            "actor_process_cmd_line": None,
-            "finding_title": None,
-            "finding_uid": None,
-            "geo.country_code": "RU",
-            "geo.asn": "12389",
-            "geo.isp": "Rostelecom",
-            "abuseipdb_confidence_score": 42,
-            "abuseipdb_risk_score": 42.0,
-            "greynoise_classification": "benign",
-            "greynoise_noise": False,
-            "greynoise_riot": False,
-            "greynoise_risk_score": 0.0,
-        })
-
-    # --- attacker-3: scanner only (nftables) ---
-    for i in range(3):
-        rows.append({
-            "class_uid": CLASS_NETWORK_ACTIVITY,
-            "category_uid": 4,
-            "severity_id": 1,
-            "activity_id": 5,
-            "type_uid": 400105,
-            "time": _ts(minute=8, second=i * 10),
-            "message": "drop input",
+            "type_uid": 200401,
+            "time": _ts(minute=0, second=30),
+            "message": "ET SCAN Potential SSH Scan",
             "status_id": STATUS_UNKNOWN,
-            "src_endpoint_ip": "192.0.2.99",
-            "src_endpoint_port": 60000 + i,
+            "src_endpoint_ip": "203.0.113.50",
+            "src_endpoint_port": 54321,
             "dst_endpoint_ip": "honeypot-sensor-01",
-            "dst_endpoint_port": 80 + i,
-            "dataset": "nftables",
+            "dst_endpoint_port": 22,
+            "dataset": "suricata",
             "server": "sensor-01",
             "operation": "op_test",
             "session": None,
             "user_name": None,
             "unmapped_password": None,
             "actor_process_cmd_line": None,
-            "finding_title": None,
-            "finding_uid": None,
-            "geo.country_code": "US",
-            "geo.asn": "15169",
-            "geo.isp": "Google",
-            "abuseipdb_confidence_score": 10,
-            "abuseipdb_risk_score": 10.0,
-            "greynoise_classification": "benign",
-            "greynoise_noise": False,
+            "finding_title": "ET SCAN Potential SSH Scan",
+            "finding_uid": "2001219",
+            "geo.country_code": "CN",
+            "geo.asn": "4134",
+            "geo.isp": "ChinaNet",
+            "abuseipdb_confidence_score": 85,
+            "abuseipdb_risk_score": 85.0,
+            "greynoise_classification": "malicious",
+            "greynoise_noise": True,
             "greynoise_riot": False,
-            "greynoise_risk_score": 0.0,
-        })
+            "greynoise_risk_score": 75.0,
+        }
+    )
+
+    # --- attacker-2: credential stuffing (15 auth failures, shared creds) ---
+    creds = [
+        ("root", "admin"),
+        ("root", "password"),
+        ("root", "123456"),
+        ("admin", "admin"),
+        ("admin", "password"),
+        ("test", "test"),
+        ("root", "root"),
+        ("user", "user"),
+        ("root", "toor"),
+        ("admin", "123456"),
+        ("root", "admin"),
+        ("root", "password"),
+        ("admin", "admin"),
+        ("root", "admin"),
+        ("root", "letmein"),
+    ]
+    for i, (user, pw) in enumerate(creds):
+        rows.append(
+            {
+                "class_uid": CLASS_AUTHENTICATION,
+                "category_uid": 3,
+                "severity_id": 2,
+                "activity_id": 1,
+                "type_uid": 300201,
+                "time": _ts(minute=5, second=i * 2),
+                "message": "login attempt",
+                "status_id": STATUS_FAILURE,
+                "src_endpoint_ip": "198.51.100.22",
+                "src_endpoint_port": 12300 + i,
+                "dst_endpoint_ip": "honeypot-sensor-01",
+                "dst_endpoint_port": 2222,
+                "dataset": "cowrie",
+                "server": "sensor-01",
+                "operation": "op_test",
+                "session": f"sess-b{i}",
+                "user_name": user,
+                "unmapped_password": pw,
+                "actor_process_cmd_line": None,
+                "finding_title": None,
+                "finding_uid": None,
+                "geo.country_code": "RU",
+                "geo.asn": "12389",
+                "geo.isp": "Rostelecom",
+                "abuseipdb_confidence_score": 42,
+                "abuseipdb_risk_score": 42.0,
+                "greynoise_classification": "benign",
+                "greynoise_noise": False,
+                "greynoise_riot": False,
+                "greynoise_risk_score": 0.0,
+            }
+        )
+
+    # --- attacker-3: scanner only (nftables) ---
+    for i in range(3):
+        rows.append(
+            {
+                "class_uid": CLASS_NETWORK_ACTIVITY,
+                "category_uid": 4,
+                "severity_id": 1,
+                "activity_id": 5,
+                "type_uid": 400105,
+                "time": _ts(minute=8, second=i * 10),
+                "message": "drop input",
+                "status_id": STATUS_UNKNOWN,
+                "src_endpoint_ip": "192.0.2.99",
+                "src_endpoint_port": 60000 + i,
+                "dst_endpoint_ip": "honeypot-sensor-01",
+                "dst_endpoint_port": 80 + i,
+                "dataset": "nftables",
+                "server": "sensor-01",
+                "operation": "op_test",
+                "session": None,
+                "user_name": None,
+                "unmapped_password": None,
+                "actor_process_cmd_line": None,
+                "finding_title": None,
+                "finding_uid": None,
+                "geo.country_code": "US",
+                "geo.asn": "15169",
+                "geo.isp": "Google",
+                "abuseipdb_confidence_score": 10,
+                "abuseipdb_risk_score": 10.0,
+                "greynoise_classification": "benign",
+                "greynoise_noise": False,
+                "greynoise_riot": False,
+                "greynoise_risk_score": 0.0,
+            }
+        )
 
     return pl.DataFrame(rows)
 
@@ -381,42 +407,44 @@ class TestDailySummary:
         rows: list[dict[str, object]] = []
         # CH: 1 IP, 100 events — would win event-count ranking
         for i in range(100):
-            rows.append({
-                "class_uid": CLASS_AUTHENTICATION,
-                "status_id": STATUS_FAILURE,
-                "src_endpoint_ip": "192.0.2.1",
-                "geo.country_code": "CH",
-                "user_name": "root",
-                "unmapped_password": "x",
-                "actor_process_cmd_line": None,
-                "session": f"s-{i}",
-                "finding_title": None,
-                "finding_uid": None,
-                "file_hash_sha256": None,
-                "file_url": None,
-            })
+            rows.append(
+                {
+                    "class_uid": CLASS_AUTHENTICATION,
+                    "status_id": STATUS_FAILURE,
+                    "src_endpoint_ip": "192.0.2.1",
+                    "geo.country_code": "CH",
+                    "user_name": "root",
+                    "unmapped_password": "x",
+                    "actor_process_cmd_line": None,
+                    "session": f"s-{i}",
+                    "finding_title": None,
+                    "finding_uid": None,
+                    "file_hash_sha256": None,
+                    "file_url": None,
+                }
+            )
         # US: 5 distinct IPs, 1 event each — wins unique-IP ranking
         for i in range(5):
-            rows.append({
-                "class_uid": CLASS_AUTHENTICATION,
-                "status_id": STATUS_FAILURE,
-                "src_endpoint_ip": f"198.51.100.{i + 1}",
-                "geo.country_code": "US",
-                "user_name": "admin",
-                "unmapped_password": "y",
-                "actor_process_cmd_line": None,
-                "session": f"u-{i}",
-                "finding_title": None,
-                "finding_uid": None,
-                "file_hash_sha256": None,
-                "file_url": None,
-            })
+            rows.append(
+                {
+                    "class_uid": CLASS_AUTHENTICATION,
+                    "status_id": STATUS_FAILURE,
+                    "src_endpoint_ip": f"198.51.100.{i + 1}",
+                    "geo.country_code": "US",
+                    "user_name": "admin",
+                    "unmapped_password": "y",
+                    "actor_process_cmd_line": None,
+                    "session": f"u-{i}",
+                    "finding_title": None,
+                    "finding_uid": None,
+                    "file_hash_sha256": None,
+                    "file_url": None,
+                }
+            )
         silver = pl.DataFrame(rows)
         result = compute_daily_summary(silver)
         countries = result.row(0, named=True)["top_source_countries"]
-        assert countries[0]["value"] == "US", (
-            f"expected US first (5 unique IPs), got {countries}"
-        )
+        assert countries[0]["value"] == "US", f"expected US first (5 unique IPs), got {countries}"
         assert countries[0]["count"] == 5  # 5 unique US IPs
         # CH has 1 unique IP regardless of its 100 events
         ch_entry = next(e for e in countries if e["value"] == "CH")
@@ -434,12 +462,14 @@ class TestDailySummary:
         not ColumnNotFoundError — gold should still be produced from
         whatever silver landed cleanly.
         """
-        suricata_only = pl.DataFrame({
-            "class_uid": [2004, 4001, 4001],
-            "status_id": [0, 0, 0],
-            "src_endpoint_ip": ["203.0.113.10", "203.0.113.20", "198.51.100.50"],
-            "dataset": ["suricata"] * 3,
-        })
+        suricata_only = pl.DataFrame(
+            {
+                "class_uid": [2004, 4001, 4001],
+                "status_id": [0, 0, 0],
+                "src_endpoint_ip": ["203.0.113.10", "203.0.113.20", "198.51.100.50"],
+                "dataset": ["suricata"] * 3,
+            }
+        )
         result = compute_daily_summary(suricata_only)
         assert result.height == 1
         row = result.row(0, named=True)
@@ -535,19 +565,21 @@ class TestIPReputation:
         crash — the aggregation columns get null values, the risk formula uses
         fill_null(0) to absorb them.
         """
-        partial = pl.DataFrame({
-            "src_endpoint_ip": ["203.0.113.50"],
-            "dataset": ["suricata"],
-            "class_uid": [CLASS_NETWORK_ACTIVITY],
-            "status_id": [STATUS_UNKNOWN],
-            "user_name": [None],
-            "unmapped_password": [None],
-            "time": [datetime(2026, 5, 19, 12, 0, tzinfo=UTC)],
-            "geo.country_code": ["BR"],
-            "geo.asn": [12345],
-            "geo.isp": ["Example ISP"],
-            # No abuseipdb_*, greynoise_*, shodan_*, vt_* columns at all
-        })
+        partial = pl.DataFrame(
+            {
+                "src_endpoint_ip": ["203.0.113.50"],
+                "dataset": ["suricata"],
+                "class_uid": [CLASS_NETWORK_ACTIVITY],
+                "status_id": [STATUS_UNKNOWN],
+                "user_name": [None],
+                "unmapped_password": [None],
+                "time": [datetime(2026, 5, 19, 12, 0, tzinfo=UTC)],
+                "geo.country_code": ["BR"],
+                "geo.asn": [12345],
+                "geo.isp": ["Example ISP"],
+                # No abuseipdb_*, greynoise_*, shodan_*, vt_* columns at all
+            }
+        )
         result = compute_ip_reputation(partial)
         assert result.height == 1
         row = result.row(0, named=True)
@@ -726,32 +758,52 @@ def multi_day_silver_frames() -> list[tuple[date, pl.DataFrame]]:
 
     ip = "203.0.113.50"
 
-    df1 = pl.DataFrame([
-        _make_silver_row(ip, CLASS_NETWORK_ACTIVITY, datetime(2026, 4, 20, 10, 0, tzinfo=UTC)),
-        _make_silver_row(ip, CLASS_NETWORK_ACTIVITY, datetime(2026, 4, 20, 10, 1, tzinfo=UTC)),
-    ])
+    df1 = pl.DataFrame(
+        [
+            _make_silver_row(ip, CLASS_NETWORK_ACTIVITY, datetime(2026, 4, 20, 10, 0, tzinfo=UTC)),
+            _make_silver_row(ip, CLASS_NETWORK_ACTIVITY, datetime(2026, 4, 20, 10, 1, tzinfo=UTC)),
+        ]
+    )
 
-    df3 = pl.DataFrame([
-        _make_silver_row(
-            ip, CLASS_AUTHENTICATION, datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
-            status_id=STATUS_FAILURE, user_name="root", unmapped_password="admin",
-        ),
-        _make_silver_row(
-            ip, CLASS_AUTHENTICATION, datetime(2026, 4, 22, 14, 1, tzinfo=UTC),
-            status_id=STATUS_FAILURE, user_name="root", unmapped_password="password",
-        ),
-    ])
+    df3 = pl.DataFrame(
+        [
+            _make_silver_row(
+                ip,
+                CLASS_AUTHENTICATION,
+                datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
+                status_id=STATUS_FAILURE,
+                user_name="root",
+                unmapped_password="admin",
+            ),
+            _make_silver_row(
+                ip,
+                CLASS_AUTHENTICATION,
+                datetime(2026, 4, 22, 14, 1, tzinfo=UTC),
+                status_id=STATUS_FAILURE,
+                user_name="root",
+                unmapped_password="password",
+            ),
+        ]
+    )
 
-    df5 = pl.DataFrame([
-        _make_silver_row(
-            ip, CLASS_AUTHENTICATION, datetime(2026, 4, 24, 8, 0, tzinfo=UTC),
-            status_id=STATUS_SUCCESS, user_name="root", unmapped_password="admin",
-        ),
-        _make_silver_row(
-            ip, CLASS_PROCESS_ACTIVITY, datetime(2026, 4, 24, 8, 1, tzinfo=UTC),
-            actor_process_cmd_line="uname -a",
-        ),
-    ])
+    df5 = pl.DataFrame(
+        [
+            _make_silver_row(
+                ip,
+                CLASS_AUTHENTICATION,
+                datetime(2026, 4, 24, 8, 0, tzinfo=UTC),
+                status_id=STATUS_SUCCESS,
+                user_name="root",
+                unmapped_password="admin",
+            ),
+            _make_silver_row(
+                ip,
+                CLASS_PROCESS_ACTIVITY,
+                datetime(2026, 4, 24, 8, 1, tzinfo=UTC),
+                actor_process_cmd_line="uname -a",
+            ),
+        ]
+    )
 
     return [(day1, df1), (day3, df3), (day5, df5)]
 
@@ -792,17 +844,13 @@ class TestMultiDayBehavioralProgression:
         # First seen Apr 20, interactive stage reached Apr 24 -> 4 days
         assert row["progression_velocity_days"] == 4
 
-    def test_is_slow_burn(
-        self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]
-    ) -> None:
+    def test_is_slow_burn(self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]) -> None:
         """IP that escalates across days is flagged as slow burn."""
         result = compute_behavioral_progression_multiday(multi_day_silver_frames)
         row = result.row(0, named=True)
         assert row["is_slow_burn"] is True
 
-    def test_active_days(
-        self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]
-    ) -> None:
+    def test_active_days(self, multi_day_silver_frames: list[tuple[date, pl.DataFrame]]) -> None:
         """active_days counts distinct calendar days with events."""
         result = compute_behavioral_progression_multiday(multi_day_silver_frames)
         row = result.row(0, named=True)
@@ -849,15 +897,17 @@ class TestGeographicSummary:
         worked with string-typed test fixtures and crashed in production
         with ComputeError: cannot compare string with numeric type (i64).
         """
-        df = pl.DataFrame({
-            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
-            "geo.country_code": ["BR", "US"],
-            "geo.city": ["São Paulo", "New York"],
-            "geo.latitude": [-23.5, 40.7],
-            "geo.longitude": [-46.6, -74.0],
-            "geo.asn": pl.Series([262691, 15169], dtype=pl.Int64),
-            "geo.isp": ["CONECTA LTDA.", "Google"],
-        })
+        df = pl.DataFrame(
+            {
+                "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
+                "geo.country_code": ["BR", "US"],
+                "geo.city": ["São Paulo", "New York"],
+                "geo.latitude": [-23.5, 40.7],
+                "geo.longitude": [-46.6, -74.0],
+                "geo.asn": pl.Series([262691, 15169], dtype=pl.Int64),
+                "geo.isp": ["CONECTA LTDA.", "Google"],
+            }
+        )
         result = compute_geographic_summary(df)
         assert not result.is_empty()
         asns = result.row(0, named=True)["top_asns"]
@@ -890,13 +940,15 @@ class TestDetectionFindings:
 
     def test_no_findings(self) -> None:
         """DataFrame with no detection findings returns empty."""
-        df = pl.DataFrame({
-            "class_uid": [CLASS_NETWORK_ACTIVITY],
-            "finding_title": [None],
-            "src_endpoint_ip": ["1.2.3.4"],
-            "severity_id": [3],
-            "time": [_ts()],
-        })
+        df = pl.DataFrame(
+            {
+                "class_uid": [CLASS_NETWORK_ACTIVITY],
+                "finding_title": [None],
+                "src_endpoint_ip": ["1.2.3.4"],
+                "severity_id": [3],
+                "time": [_ts()],
+            }
+        )
         assert compute_detection_findings(df).is_empty()
 
 
@@ -1122,10 +1174,14 @@ class TestRiskScoreDecomposition:
         # auth_successes (+20) + commands (+25) + findings (+15) + downloads (+20)
         # would land at 80 behavioral, but we use a simpler single-signal row to
         # stay readable: auth_successes only → behavioral = 20 + auth_attempts*0.1.
-        df = pl.DataFrame([_row_with(
-            class_uid=CLASS_AUTHENTICATION,
-            status_id=STATUS_SUCCESS,
-        )])
+        df = pl.DataFrame(
+            [
+                _row_with(
+                    class_uid=CLASS_AUTHENTICATION,
+                    status_id=STATUS_SUCCESS,
+                )
+            ]
+        )
         result = compute_ip_reputation(df)
         row = result.row(0, named=True)
         # auth_successes=1, auth_attempts=1 (one auth event), behavioral = 20 + 0.1 = 20.1
@@ -1136,12 +1192,16 @@ class TestRiskScoreDecomposition:
 
     def test_pure_enrichment_with_no_activity(self) -> None:
         """Heavy enrichment, zero behavioural activity → score = enrichment / 2."""
-        df = pl.DataFrame([_row_with(
-            abuseipdb_risk_score=100.0,
-            virustotal_risk_score=100.0,
-            shodan_risk_score=100.0,
-            greynoise_risk_score=100.0,
-        )])
+        df = pl.DataFrame(
+            [
+                _row_with(
+                    abuseipdb_risk_score=100.0,
+                    virustotal_risk_score=100.0,
+                    shodan_risk_score=100.0,
+                    greynoise_risk_score=100.0,
+                )
+            ]
+        )
         result = compute_ip_reputation(df)
         row = result.row(0, named=True)
         assert row["enrichment_risk_score"] == pytest.approx(100.0)
@@ -1155,16 +1215,20 @@ class TestRiskScoreDecomposition:
         so the enrichment side isn't necessarily zero. But the behavioral
         side does the lifting. Validates that RIOT lowers but doesn't erase
         the score (the user's plan-time intent)."""
-        df = pl.DataFrame([_row_with(
-            class_uid=CLASS_AUTHENTICATION,
-            status_id=STATUS_SUCCESS,
-            # RIOT → GN score 0; AbuseIPDB unaffected.
-            abuseipdb_risk_score=90.0,
-            virustotal_risk_score=None,
-            shodan_risk_score=None,
-            greynoise_risk_score=0.0,
-            greynoise_riot=True,
-        )])
+        df = pl.DataFrame(
+            [
+                _row_with(
+                    class_uid=CLASS_AUTHENTICATION,
+                    status_id=STATUS_SUCCESS,
+                    # RIOT → GN score 0; AbuseIPDB unaffected.
+                    abuseipdb_risk_score=90.0,
+                    virustotal_risk_score=None,
+                    shodan_risk_score=None,
+                    greynoise_risk_score=0.0,
+                    greynoise_riot=True,
+                )
+            ]
+        )
         result = compute_ip_reputation(df)
         row = result.row(0, named=True)
         # enrichment = mean(90, null, null, 0) = 45
@@ -1178,13 +1242,17 @@ class TestRiskScoreDecomposition:
 
     def test_blended_average_correct(self) -> None:
         """Full enrichment AND full behavioural escalation → score ≈ midpoint."""
-        df = pl.DataFrame([_row_with(
-            class_uid=CLASS_PROCESS_ACTIVITY,
-            abuseipdb_risk_score=80.0,
-            virustotal_risk_score=75.0,
-            shodan_risk_score=100.0,
-            greynoise_risk_score=75.0,
-        )])
+        df = pl.DataFrame(
+            [
+                _row_with(
+                    class_uid=CLASS_PROCESS_ACTIVITY,
+                    abuseipdb_risk_score=80.0,
+                    virustotal_risk_score=75.0,
+                    shodan_risk_score=100.0,
+                    greynoise_risk_score=75.0,
+                )
+            ]
+        )
         # One CMD event → behavioral = +25 (commands) + 0.1 (auth_attempts*0.1
         # contributes 0 here since auth_attempts=0). Actually auth_attempts only
         # counts CLASS_AUTHENTICATION rows; this is process activity, so
@@ -1210,13 +1278,17 @@ class TestRiskScoreDecomposition:
     def test_score_clipped_to_unit_range(self) -> None:
         """Scores stay in [0, 100] even with extreme inputs."""
         # Pathological: all maxes, plus high behavioural — still ≤ 100.
-        df = pl.DataFrame([_row_with(
-            class_uid=CLASS_PROCESS_ACTIVITY,
-            abuseipdb_risk_score=200.0,  # clipped on each side
-            virustotal_risk_score=200.0,
-            shodan_risk_score=200.0,
-            greynoise_risk_score=200.0,
-        )])
+        df = pl.DataFrame(
+            [
+                _row_with(
+                    class_uid=CLASS_PROCESS_ACTIVITY,
+                    abuseipdb_risk_score=200.0,  # clipped on each side
+                    virustotal_risk_score=200.0,
+                    shodan_risk_score=200.0,
+                    greynoise_risk_score=200.0,
+                )
+            ]
+        )
         result = compute_ip_reputation(df)
         row = result.row(0, named=True)
         # Inputs clip at 100; mean = 100; behavioral = 25 (commands); composite=62.5.
@@ -1239,17 +1311,21 @@ class TestRiskScoreDecomposition:
           greynoise_riot=True            → greynoise_risk_score=0 (RIOT override)
           shodan: not populated this day → null
         """
-        df = pl.DataFrame([_row_with(
-            # No behavioral activity → behavioral_risk_score=0.
-            abuseipdb_confidence_score=90,
-            abuseipdb_risk_score=90.0,
-            virustotal_risk_score=100.0,
-            shodan_risk_score=None,
-            greynoise_classification="malicious",
-            greynoise_noise=True,
-            greynoise_riot=True,
-            greynoise_risk_score=0.0,
-        )])
+        df = pl.DataFrame(
+            [
+                _row_with(
+                    # No behavioral activity → behavioral_risk_score=0.
+                    abuseipdb_confidence_score=90,
+                    abuseipdb_risk_score=90.0,
+                    virustotal_risk_score=100.0,
+                    shodan_risk_score=None,
+                    greynoise_classification="malicious",
+                    greynoise_noise=True,
+                    greynoise_riot=True,
+                    greynoise_risk_score=0.0,
+                )
+            ]
+        )
         result = compute_ip_reputation(df)
         row = result.row(0, named=True)
 

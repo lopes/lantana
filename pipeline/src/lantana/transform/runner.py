@@ -57,14 +57,19 @@ def _append_transform_failed_row(target_date: date, exc: BaseException, errors_p
     try:
         errors_path.parent.mkdir(parents=True, exist_ok=True)
         with errors_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "date": target_date.isoformat(),
-                "provider": "transform",
-                "error_type": "transform_failed",
-                "count": 1,
-                "message": repr(exc),
-                "timestamp": datetime.now(tz=UTC).isoformat(),
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "date": target_date.isoformat(),
+                        "provider": "transform",
+                        "error_type": "transform_failed",
+                        "count": 1,
+                        "message": repr(exc),
+                        "timestamp": datetime.now(tz=UTC).isoformat(),
+                    }
+                )
+                + "\n"
+            )
     except OSError as write_exc:
         # If we can't even append the error row, log it — but don't mask the
         # original transform failure by raising a different exception.

@@ -61,11 +61,13 @@ def test_read_bronze_ndjson_adds_partition_columns(bronze_with_data: Path) -> No
 
 def test_write_and_read_silver_roundtrip(tmp_path: Path) -> None:
     """Write to silver, read back, verify data matches."""
-    df = pl.DataFrame({
-        "src_ip": ["203.0.113.50"],
-        "dst_ip": ["honeypot-wan"],
-        "event": ["scan"],
-    })
+    df = pl.DataFrame(
+        {
+            "src_ip": ["203.0.113.50"],
+            "dst_ip": ["honeypot-wan"],
+            "event": ["scan"],
+        }
+    )
     path = write_silver_partition(df, date(2026, 4, 25), "cowrie", "sn-01", silver_root=tmp_path)
     assert path.exists()
 
@@ -77,10 +79,12 @@ def test_write_and_read_silver_roundtrip(tmp_path: Path) -> None:
 
 def test_write_gold_table_creates_parquet(tmp_path: Path) -> None:
     """Gold writer creates a Parquet file at the expected path."""
-    df = pl.DataFrame({
-        "metric": ["unique_ips"],
-        "value": [47],
-    })
+    df = pl.DataFrame(
+        {
+            "metric": ["unique_ips"],
+            "value": [47],
+        }
+    )
     path = write_gold_table(df, "daily_summary", date(2026, 4, 25), gold_root=tmp_path)
     assert path.exists()
     assert "daily_summary" in str(path)
@@ -94,18 +98,22 @@ def test_read_silver_partition_handles_heterogeneous_schemas(tmp_path: Path) -> 
     """
     target = date(2026, 5, 19)
 
-    cowrie_df = pl.DataFrame({
-        "src_ip": ["203.0.113.50"],
-        "shasum": ["abc"],
-        "sensor": ["container-123"],
-    })
+    cowrie_df = pl.DataFrame(
+        {
+            "src_ip": ["203.0.113.50"],
+            "shasum": ["abc"],
+            "sensor": ["container-123"],
+        }
+    )
     write_silver_partition(cowrie_df, target, "cowrie", "sn-01", silver_root=tmp_path)
 
-    suricata_df = pl.DataFrame({
-        "src_ip": ["198.51.100.22"],
-        "alert_signature": ["ET SCAN ..."],
-        "alert_severity": [2],
-    })
+    suricata_df = pl.DataFrame(
+        {
+            "src_ip": ["198.51.100.22"],
+            "alert_signature": ["ET SCAN ..."],
+            "alert_severity": [2],
+        }
+    )
     write_silver_partition(suricata_df, target, "suricata", "sn-01", silver_root=tmp_path)
 
     combined = read_silver_partition(target, silver_root=tmp_path).collect()

@@ -165,12 +165,14 @@ def _make_vt_provider_class() -> type:
 
 
 def _stub_secrets() -> SecretsConfig:
-    return SecretsConfig.model_validate({
-        "vault_apikey_virustotal": "test-vt",
-        "vault_apikey_shodan": "test-shodan",
-        "vault_apikey_abuseipdb": "test-abuseipdb",
-        "vault_apikey_greynoise": "test-greynoise",
-    })
+    return SecretsConfig.model_validate(
+        {
+            "vault_apikey_virustotal": "test-vt",
+            "vault_apikey_shodan": "test-shodan",
+            "vault_apikey_abuseipdb": "test-abuseipdb",
+            "vault_apikey_greynoise": "test-greynoise",
+        }
+    )
 
 
 def _stub_reporting() -> ReportingConfig:
@@ -233,7 +235,8 @@ def _copy_bronze_fixtures(
 
 @pytest.fixture()
 def prod_pipeline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Path]:
     """Set up the full enrichment + transform pipeline against production-shape bronze.
 
@@ -280,16 +283,19 @@ def prod_pipeline(
     monkeypatch.setattr(runner_mod, "load_reporting", _stub_reporting)
 
     monkeypatch.setattr(
-        runner_mod, "AbuseIPDBProvider",
+        runner_mod,
+        "AbuseIPDBProvider",
         _make_ip_provider_class("abuseipdb", _FULL_ENRICHMENT["abuseipdb"]),
     )
     monkeypatch.setattr(
-        runner_mod, "ShodanProvider",
+        runner_mod,
+        "ShodanProvider",
         _make_ip_provider_class("shodan", _FULL_ENRICHMENT["shodan"]),
     )
     monkeypatch.setattr(runner_mod, "VirusTotalProvider", _make_vt_provider_class())
     monkeypatch.setattr(
-        runner_mod, "GreyNoiseProvider",
+        runner_mod,
+        "GreyNoiseProvider",
         _make_ip_provider_class("greynoise", _FULL_ENRICHMENT["greynoise"]),
     )
 
@@ -328,8 +334,11 @@ async def test_end_to_end_pipeline_against_production_shape(
 
     def _silver_parquet(dataset: str) -> Path:
         return (
-            silver_root / f"dataset={dataset}" / f"date={date_str}"
-            / "server=sn-01" / "events.parquet"
+            silver_root
+            / f"dataset={dataset}"
+            / f"date={date_str}"
+            / "server=sn-01"
+            / "events.parquet"
         )
 
     def _gold_parquet(table: str) -> Path:
@@ -348,8 +357,14 @@ async def test_end_to_end_pipeline_against_production_shape(
 
     # Geo struct flattened to flat dotted columns
     geo_subs = (
-        "country_code", "region_code", "city", "latitude",
-        "longitude", "timezone", "asn", "isp",
+        "country_code",
+        "region_code",
+        "city",
+        "latitude",
+        "longitude",
+        "timezone",
+        "asn",
+        "isp",
     )
     for sub in geo_subs:
         assert f"geo.{sub}" in cowrie_silver.columns, f"cowrie silver missing geo.{sub}"
@@ -414,15 +429,11 @@ async def test_end_to_end_pipeline_against_production_shape(
             continue
         values = cowrie_silver.get_column(col).drop_nulls().to_list()
         for val in values:
-            assert HONEYPOT_WAN not in val, (
-                f"WAN leak in cowrie silver column {col!r}: {val!r}"
-            )
+            assert HONEYPOT_WAN not in val, f"WAN leak in cowrie silver column {col!r}: {val!r}"
 
     # Specifically: the WAN-as-password attacker row must have its
     # `unmapped_password` rewritten to the pseudonym.
-    wan_as_password_rows = cowrie_silver.filter(
-        pl.col("unmapped_password") == "honeypot-wan"
-    )
+    wan_as_password_rows = cowrie_silver.filter(pl.col("unmapped_password") == "honeypot-wan")
     assert wan_as_password_rows.height == 1, (
         "WAN-as-password attacker must be pseudonymized, not dropped"
     )
@@ -541,12 +552,13 @@ async def test_riot_signal_survives_bronze_to_gold(
     riot_data: dict[str, Any] = {
         "greynoise_classification": "malicious",
         "greynoise_noise": True,
-        "greynoise_riot": True,            # ← the load-bearing flag
+        "greynoise_riot": True,  # ← the load-bearing flag
         "greynoise_name": "Censys",
-        "greynoise_risk_score": 0.0,        # ← RIOT short-circuit value
+        "greynoise_risk_score": 0.0,  # ← RIOT short-circuit value
     }
     monkeypatch.setattr(
-        runner_mod, "GreyNoiseProvider",
+        runner_mod,
+        "GreyNoiseProvider",
         _make_ip_provider_class("greynoise", riot_data),
     )
 
@@ -568,8 +580,11 @@ async def test_riot_signal_survives_bronze_to_gold(
 
     # --- Silver carries the RIOT signal for the full attacker ---
     cowrie_silver = pl.read_parquet(
-        prod_pipeline["silver"] / "dataset=cowrie" / f"date={date_str}"
-        / "server=sn-01" / "events.parquet"
+        prod_pipeline["silver"]
+        / "dataset=cowrie"
+        / f"date={date_str}"
+        / "server=sn-01"
+        / "events.parquet"
     )
     attacker_rows = cowrie_silver.filter(pl.col("src_endpoint_ip") == ATTACKER_FULL)
     assert attacker_rows.height > 0, (
@@ -622,7 +637,8 @@ async def test_riot_signal_survives_bronze_to_gold(
 
 @pytest.fixture()
 def prod_pipeline_no_cowrie(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Path]:
     """Same setup as ``prod_pipeline`` but copies only suricata + nftables bronze.
 
@@ -671,16 +687,19 @@ def prod_pipeline_no_cowrie(
     monkeypatch.setattr(runner_mod, "load_reporting", _stub_reporting)
 
     monkeypatch.setattr(
-        runner_mod, "AbuseIPDBProvider",
+        runner_mod,
+        "AbuseIPDBProvider",
         _make_ip_provider_class("abuseipdb", _FULL_ENRICHMENT["abuseipdb"]),
     )
     monkeypatch.setattr(
-        runner_mod, "ShodanProvider",
+        runner_mod,
+        "ShodanProvider",
         _make_ip_provider_class("shodan", _FULL_ENRICHMENT["shodan"]),
     )
     monkeypatch.setattr(runner_mod, "VirusTotalProvider", _make_vt_provider_class())
     monkeypatch.setattr(
-        runner_mod, "GreyNoiseProvider",
+        runner_mod,
+        "GreyNoiseProvider",
         _make_ip_provider_class("greynoise", _FULL_ENRICHMENT["greynoise"]),
     )
 
@@ -752,20 +771,21 @@ async def test_pipeline_and_brief_survive_missing_cowrie(
     summary = pl.read_parquet(_gold_parquet("daily_summary"))
     reputation = pl.read_parquet(_gold_parquet("ip_reputation"))
     progression_path = _gold_parquet("behavioral_progression")
-    progression = (
-        pl.read_parquet(progression_path) if progression_path.exists() else pl.DataFrame()
-    )
+    progression = pl.read_parquet(progression_path) if progression_path.exists() else pl.DataFrame()
     clusters_path = _gold_parquet("campaign_clusters")
-    clusters = (
-        pl.read_parquet(clusters_path) if clusters_path.exists() else pl.DataFrame()
-    )
+    clusters = pl.read_parquet(clusters_path) if clusters_path.exists() else pl.DataFrame()
     geographic = pl.read_parquet(_gold_parquet("geographic_summary"))
     detection = pl.read_parquet(_gold_parquet("detection_findings"))
 
     # Sanity: cowrie-specific summary fields are either absent or empty.
     row = summary.row(0, named=True)
-    for cowrie_field in ("top_usernames", "top_passwords", "top_commands",
-                          "top_download_urls", "top_download_hashes"):
+    for cowrie_field in (
+        "top_usernames",
+        "top_passwords",
+        "top_commands",
+        "top_download_urls",
+        "top_download_hashes",
+    ):
         value = row.get(cowrie_field)
         assert value is None or value == [], (
             f"{cowrie_field} should be absent / empty without cowrie, got {value!r}"
@@ -803,10 +823,20 @@ async def test_pipeline_and_brief_survive_missing_cowrie(
     # must NOT render — no cowrie partition = no file_hash_sha256 column.
     all_silver = pl.concat(
         [
-            pl.read_parquet(silver_root / "dataset=suricata" / f"date={date_str}"
-                            / "server=sn-01" / "events.parquet"),
-            pl.read_parquet(silver_root / "dataset=nftables" / f"date={date_str}"
-                            / "server=sn-01" / "events.parquet"),
+            pl.read_parquet(
+                silver_root
+                / "dataset=suricata"
+                / f"date={date_str}"
+                / "server=sn-01"
+                / "events.parquet"
+            ),
+            pl.read_parquet(
+                silver_root
+                / "dataset=nftables"
+                / f"date={date_str}"
+                / "server=sn-01"
+                / "events.parquet"
+            ),
         ],
         how="diagonal",
     )

@@ -120,11 +120,13 @@ def generate_and_send() -> None:
 
     # Per-step duration from systemd. Report self-timing is intentionally
     # skipped (see notify/timing.py).
-    timings = collect_step_timings([
-        "lantana-prune",
-        "lantana-enrich",
-        "lantana-transform",
-    ])
+    timings = collect_step_timings(
+        [
+            "lantana-prune",
+            "lantana-enrich",
+            "lantana-transform",
+        ]
+    )
 
     # Read gold tables. geographic_summary + detection_findings are
     # optional in generate_daily_brief (they gate the Geographic Origin
@@ -171,7 +173,11 @@ def generate_and_send() -> None:
         silver=silver,
     )
     embed_text = generate_embed_summary(
-        yesterday, summary, progression, buckets=buckets, timing=timings,
+        yesterday,
+        summary,
+        progression,
+        buckets=buckets,
+        timing=timings,
     )
     level = max_severity(buckets)
 

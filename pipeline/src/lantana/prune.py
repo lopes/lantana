@@ -155,8 +155,8 @@ def main() -> None:
 
         secrets = load_secrets()
         webhook_url = secrets.discord_webhook or None
-    except Exception:
-        logger.debug("no_secrets_for_notify")
+    except Exception as exc:
+        logger.warning("no_secrets_for_notify", error=repr(exc))
 
     if usage > DISK_CRITICAL_THRESHOLD:
         # Emergency prune: keep only 14 days of artifacts. Same ownership
@@ -177,17 +177,19 @@ def main() -> None:
         if webhook_url:
             from lantana.notify.discord import send_notification
 
-            asyncio.run(send_notification(
-                webhook_url=webhook_url,
-                level="critical",
-                title="Lantana: Disk Critical",
-                message=(
-                    f"Disk usage at {usage:.1f}%. Emergency prune executed.\n"
-                    f"Deleted {emergency_deleted} artifacts "
-                    f"(kept last {EMERGENCY_RETENTION_DAYS} days).\n"
-                    f"Usage after prune: {after_usage:.1f}%."
-                ),
-            ))
+            asyncio.run(
+                send_notification(
+                    webhook_url=webhook_url,
+                    level="critical",
+                    title="Lantana: Disk Critical",
+                    message=(
+                        f"Disk usage at {usage:.1f}%. Emergency prune executed.\n"
+                        f"Deleted {emergency_deleted} artifacts "
+                        f"(kept last {EMERGENCY_RETENTION_DAYS} days).\n"
+                        f"Usage after prune: {after_usage:.1f}%."
+                    ),
+                )
+            )
 
     elif usage > DISK_WARNING_THRESHOLD:
         logger.warning("disk_warning", percent=round(usage, 1))
@@ -195,9 +197,11 @@ def main() -> None:
         if webhook_url:
             from lantana.notify.discord import send_notification
 
-            asyncio.run(send_notification(
-                webhook_url=webhook_url,
-                level="warning",
-                title="Lantana: Disk Warning",
-                message=f"Disk usage at {usage:.1f}%. Threshold is {DISK_WARNING_THRESHOLD}%.",
-            ))
+            asyncio.run(
+                send_notification(
+                    webhook_url=webhook_url,
+                    level="warning",
+                    title="Lantana: Disk Warning",
+                    message=f"Disk usage at {usage:.1f}%. Threshold is {DISK_WARNING_THRESHOLD}%.",
+                )
+            )

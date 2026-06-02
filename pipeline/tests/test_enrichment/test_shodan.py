@@ -35,7 +35,10 @@ class TestShodanProvider:
     async def test_enrich_ip_returns_normalized_fields(self, provider: ShodanProvider) -> None:
         """200 OK populates the five shodan_* fields."""
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=_ok_response(),
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=_ok_response(),
         ):
             result = await provider.enrich_ip("1.2.3.4")
 
@@ -59,7 +62,10 @@ class TestShodanProvider:
             request=httpx.Request("GET", "https://api.shodan.io/shodan/host/9.9.9.9"),
         )
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=not_found,
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=not_found,
         ):
             result = await provider.enrich_ip("9.9.9.9")
 
@@ -73,7 +79,8 @@ class TestShodanProvider:
 
     @pytest.mark.asyncio()
     async def test_200_without_asn_and_org_returns_empty_strings(
-        self, provider: ShodanProvider,
+        self,
+        provider: ShodanProvider,
     ) -> None:
         """Some 200 responses are sparse — `asn`/`org` may simply be absent.
 
@@ -86,7 +93,10 @@ class TestShodanProvider:
             request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
         )
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=sparse,
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=sparse,
         ):
             result = await provider.enrich_ip("1.2.3.4")
 
@@ -99,12 +109,15 @@ class TestShodanProvider:
         """5xx server errors are retried; with reraise=True the original
         HTTPStatusError surfaces after the retry budget is exhausted."""
         bad_gateway = httpx.Response(
-            502, text="bad gateway",
+            502,
+            text="bad gateway",
             request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
         )
         mock_get = AsyncMock(return_value=bad_gateway)
-        with patch.object(provider._client, "get", mock_get), \
-             pytest.raises(httpx.HTTPStatusError) as exc_info:
+        with (
+            patch.object(provider._client, "get", mock_get),
+            pytest.raises(httpx.HTTPStatusError) as exc_info,
+        ):
             await provider.enrich_ip("1.2.3.4")
         assert exc_info.value.response.status_code == 502
         # Confirm retried at least twice (tenacity stop_after_attempt(3))
@@ -114,12 +127,12 @@ class TestShodanProvider:
     async def test_401_fails_fast_without_retry(self, provider: ShodanProvider) -> None:
         """4xx auth errors must NOT be retried — wastes the rate budget."""
         unauthorized = httpx.Response(
-            401, json={"error": "No API key"},
+            401,
+            json={"error": "No API key"},
             request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
         )
         mock_get = AsyncMock(return_value=unauthorized)
-        with patch.object(provider._client, "get", mock_get), \
-             pytest.raises(httpx.HTTPStatusError):
+        with patch.object(provider._client, "get", mock_get), pytest.raises(httpx.HTTPStatusError):
             await provider.enrich_ip("1.2.3.4")
         assert mock_get.await_count == 1
 
@@ -163,7 +176,8 @@ class TestShodanRiskScoreInResult:
     @pytest.mark.asyncio()
     async def test_404_response_score_is_zero(self, provider: ShodanProvider) -> None:
         not_found = httpx.Response(
-            404, json={},
+            404,
+            json={},
             request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
         )
         mock_get = AsyncMock(return_value=not_found)

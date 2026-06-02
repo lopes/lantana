@@ -184,9 +184,7 @@ def test_redact_replaces_wan_substring_in_message(
     df = pl.DataFrame(
         {
             "src_endpoint_ip": ["203.0.113.50"],
-            "message": [
-                "[LANTANA_INPUT_DROP] SRC=203.0.113.50 DST=172.31.99.129 PROTO=TCP"
-            ],
+            "message": ["[LANTANA_INPUT_DROP] SRC=203.0.113.50 DST=172.31.99.129 PROTO=TCP"],
         }
     )
     result = redact_infrastructure_ips(df, redaction_config)
@@ -200,11 +198,13 @@ def test_redact_replaces_wan_substring_in_message(
 
 def test_drop_source_rows_filters_wan_origin(redaction_config: RedactionConfig) -> None:
     """Suricata events where src_endpoint_ip is the honeypot WAN are dropped."""
-    df = pl.DataFrame({
-        "src_endpoint_ip": ["203.0.113.50", "172.31.99.129", "198.51.100.22"],
-        "dst_endpoint_ip": ["172.31.99.129", "203.0.113.50", "172.31.99.129"],
-        "event": ["scan", "outbound-response", "scan"],
-    })
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50", "172.31.99.129", "198.51.100.22"],
+            "dst_endpoint_ip": ["172.31.99.129", "203.0.113.50", "172.31.99.129"],
+            "event": ["scan", "outbound-response", "scan"],
+        }
+    )
     result = drop_infrastructure_source_rows(df, redaction_config)
     assert result.height == 2
     assert "172.31.99.129" not in result.get_column("src_endpoint_ip").to_list()
@@ -214,10 +214,12 @@ def test_drop_source_rows_handles_src_ip_pre_normalize(
     redaction_config: RedactionConfig,
 ) -> None:
     """Works on bronze-shaped `src_ip` column too (before normalize rename)."""
-    df = pl.DataFrame({
-        "src_ip": ["203.0.113.50", "172.31.99.129"],
-        "event": ["scan", "outbound-response"],
-    })
+    df = pl.DataFrame(
+        {
+            "src_ip": ["203.0.113.50", "172.31.99.129"],
+            "event": ["scan", "outbound-response"],
+        }
+    )
     result = drop_infrastructure_source_rows(df, redaction_config)
     assert result.height == 1
     assert result.get_column("src_ip").to_list() == ["203.0.113.50"]
@@ -236,10 +238,12 @@ def test_drop_source_rows_noop_when_no_infra_match(
     redaction_config: RedactionConfig,
 ) -> None:
     """Pure attacker traffic is not affected."""
-    df = pl.DataFrame({
-        "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
-        "event": ["scan", "login"],
-    })
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
+            "event": ["scan", "login"],
+        }
+    )
     result = drop_infrastructure_source_rows(df, redaction_config)
     assert result.height == 2
     assert result.equals(df)
@@ -248,10 +252,12 @@ def test_drop_source_rows_noop_when_no_infra_match(
 def test_drop_source_rows_handles_ipv6_infrastructure(
     redaction_config: RedactionConfig,
 ) -> None:
-    df = pl.DataFrame({
-        "src_endpoint_ip": ["fd99:10:50:99::100", "2001:db8:1::beef"],
-        "event": ["outbound-response", "scan"],
-    })
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["fd99:10:50:99::100", "2001:db8:1::beef"],
+            "event": ["outbound-response", "scan"],
+        }
+    )
     result = drop_infrastructure_source_rows(df, redaction_config)
     assert result.height == 1
     assert result.get_column("src_endpoint_ip").to_list() == ["2001:db8:1::beef"]

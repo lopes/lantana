@@ -18,10 +18,10 @@ DEFAULT_REPORTING_PATH = Path("/etc/lantana/collector/reporting.json")
 # pre-2026-05 vaults still parse — production templates always render the
 # canonical form, so `load_secrets()` itself stays strict.
 _LEGACY_KEYS: dict[str, str] = {
-    "vault_virustotal_api_key":  "vault_apikey_virustotal",
-    "vault_shodan_api_key":      "vault_apikey_shodan",
-    "vault_abuseipdb_api_key":   "vault_apikey_abuseipdb",
-    "vault_greynoise_api_key":   "vault_apikey_greynoise",
+    "vault_virustotal_api_key": "vault_apikey_virustotal",
+    "vault_shodan_api_key": "vault_apikey_shodan",
+    "vault_abuseipdb_api_key": "vault_apikey_abuseipdb",
+    "vault_greynoise_api_key": "vault_apikey_greynoise",
     "vault_maxmind_license_key": "vault_apikey_maxmind",
     "vault_discord_webhook_url": "vault_webhook_discord",
 }
@@ -29,10 +29,12 @@ _LEGACY_KEYS: dict[str, str] = {
 # Keys silently dropped when loading a secrets.json — providers that used to
 # exist but have been removed from Lantana. Keeps existing vault files parsing
 # cleanly instead of failing Pydantic validation on a now-unknown field.
-_DROPPED_KEYS: frozenset[str] = frozenset({
-    "vault_apikey_phishstats",
-    "vault_phishstats_api_key",
-})
+_DROPPED_KEYS: frozenset[str] = frozenset(
+    {
+        "vault_apikey_phishstats",
+        "vault_phishstats_api_key",
+    }
+)
 
 
 class SecretsConfig(BaseModel):
@@ -50,12 +52,12 @@ class SecretsConfig(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    virustotal:      str        = Field(alias="vault_apikey_virustotal")
-    shodan:          str        = Field(alias="vault_apikey_shodan")
-    abuseipdb:       str        = Field(alias="vault_apikey_abuseipdb")
-    greynoise:       str | None = Field(alias="vault_apikey_greynoise",  default=None)
-    maxmind:         str | None = Field(alias="vault_apikey_maxmind",    default=None)
-    discord_webhook: str        = Field(alias="vault_webhook_discord",   default="")
+    virustotal: str = Field(alias="vault_apikey_virustotal")
+    shodan: str = Field(alias="vault_apikey_shodan")
+    abuseipdb: str = Field(alias="vault_apikey_abuseipdb")
+    greynoise: str | None = Field(alias="vault_apikey_greynoise", default=None)
+    maxmind: str | None = Field(alias="vault_apikey_maxmind", default=None)
+    discord_webhook: str = Field(alias="vault_webhook_discord", default="")
 
 
 class OperatorConfig(BaseModel):

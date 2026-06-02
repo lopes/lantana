@@ -30,8 +30,8 @@ def _resolve_webhook_url(cli_url: str | None) -> str | None:
         secrets = load_secrets()
         if secrets.discord_webhook:
             return secrets.discord_webhook
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("secrets_load_failed", error=repr(exc))
 
     return None
 
@@ -54,10 +54,12 @@ def main() -> None:
         )
         sys.exit(1)
 
-    asyncio.run(send_notification(
-        webhook_url=webhook_url,
-        level=args.level,
-        title=args.title,
-        message=args.message,
-        attachment_path=args.attachment,
-    ))
+    asyncio.run(
+        send_notification(
+            webhook_url=webhook_url,
+            level=args.level,
+            title=args.title,
+            message=args.message,
+            attachment_path=args.attachment,
+        )
+    )

@@ -161,9 +161,7 @@ def redact_infrastructure_ips(
 
     dst_columns = [col for col in DST_IP_COLUMNS if col in df.columns]
     content_columns = [
-        col
-        for col in ATTACKER_CONTENT_COLUMNS
-        if col in df.columns and df.schema[col] == pl.Utf8
+        col for col in ATTACKER_CONTENT_COLUMNS if col in df.columns and df.schema[col] == pl.Utf8
     ]
 
     if not dst_columns and not content_columns:
@@ -220,10 +218,7 @@ def validate_no_leaks(df: pl.DataFrame, config: RedactionConfig) -> bool:
                 continue  # Not an IP literal — pseudonym or junk, skip.
             for net in cidr_nets:
                 if addr in net:
-                    msg = (
-                        f"Infrastructure IP leak: {val} (in {net}) "
-                        f"found in column '{col_name}'"
-                    )
+                    msg = f"Infrastructure IP leak: {val} (in {net}) found in column '{col_name}'"
                     raise ValueError(msg)
 
     return True

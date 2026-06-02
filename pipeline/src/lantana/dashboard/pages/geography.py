@@ -120,9 +120,7 @@ def render(selected_date: date) -> None:
         if cities_caption:
             st.caption(cities_caption)
         cities = (
-            df.filter(
-                pl.col("geo_city").is_not_null() & pl.col("geo_country").is_not_null()
-            )
+            df.filter(pl.col("geo_city").is_not_null() & pl.col("geo_country").is_not_null())
             .group_by("geo_city", "geo_country")
             .agg(
                 pl.col("src_endpoint_ip").n_unique().alias("Unique IPs"),

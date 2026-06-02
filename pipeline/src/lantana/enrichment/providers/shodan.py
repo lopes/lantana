@@ -82,6 +82,9 @@ class ShodanProvider:
         response.raise_for_status()
         data: dict[str, str | int | list[int] | list[str] | None] = response.json()
 
+        # `data` is annotated as a heterogeneous union; mypy can't narrow
+        # `data.get` returns to the specific value type. The narrowings below
+        # are validated by the test suite against fixtures.
         ports_raw: list[int] = data.get("ports", [])  # type: ignore[assignment]
         ports_str = ",".join(str(p) for p in ports_raw) if ports_raw else ""
 

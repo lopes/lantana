@@ -53,14 +53,18 @@ logger = structlog.get_logger()
 DEFAULT_ERRORS_PATH = Path("/var/lib/lantana/datalake/enrichment_errors.json")
 DEFAULT_STATE_PATH = Path("/var/lib/lantana/datalake/.last_alerted")
 
-CRITICAL_ERROR_TYPES: frozenset[str] = frozenset({
-    "dataset_processing_failed",
-    "transform_failed",
-})
+CRITICAL_ERROR_TYPES: frozenset[str] = frozenset(
+    {
+        "dataset_processing_failed",
+        "transform_failed",
+    }
+)
 
-INFO_ERROR_TYPES: frozenset[str] = frozenset({
-    "rate_limit",
-})
+INFO_ERROR_TYPES: frozenset[str] = frozenset(
+    {
+        "rate_limit",
+    }
+)
 
 MESSAGE_TRUNCATE = 200
 TOP_N_CRITICAL = 5
@@ -138,9 +142,7 @@ def _truncate(value: str, limit: int = MESSAGE_TRUNCATE) -> str:
     return value[: limit - 1] + "…"
 
 
-def _grouped_summary(
-    rows: list[dict[str, Any]], top_n: int
-) -> list[tuple[str, str, int]]:
+def _grouped_summary(rows: list[dict[str, Any]], top_n: int) -> list[tuple[str, str, int]]:
     """Aggregate rows by ``(provider, error_type)``, return top-N by total count."""
     by_key: dict[tuple[str, str], int] = {}
     for row in rows:
@@ -148,9 +150,9 @@ def _grouped_summary(
         by_key[key] = by_key.get(key, 0) + int(row.get("count", 1))
     return [
         (provider, etype, count)
-        for (provider, etype), count in sorted(
-            by_key.items(), key=lambda kv: kv[1], reverse=True
-        )[:top_n]
+        for (provider, etype), count in sorted(by_key.items(), key=lambda kv: kv[1], reverse=True)[
+            :top_n
+        ]
     ]
 
 

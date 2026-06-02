@@ -115,15 +115,11 @@ def _make_indicators(
                 asn_str += f" ({row['geo_isp']})"
             description_parts.append(f"ASN: {asn_str}")
         if row["auth_attempts"] > 0:
-            description_parts.append(
-                f"Auth: {row.get('auth_successes', 0)}/{row['auth_attempts']}"
-            )
+            description_parts.append(f"Auth: {row.get('auth_successes', 0)}/{row['auth_attempts']}")
         if row["commands_executed"] > 0:
             description_parts.append(f"Commands: {row['commands_executed']}")
         if row.get("vt_malicious") and row["vt_malicious"] > 0:
-            description_parts.append(
-                f"VT detections: {row['vt_malicious']}"
-            )
+            description_parts.append(f"VT detections: {row['vt_malicious']}")
         if row.get("shodan_vulns") and row["shodan_vulns"]:
             vuln_count = len(str(row["shodan_vulns"]).split(","))
             description_parts.append(f"Known CVEs: {vuln_count}")
@@ -347,6 +343,7 @@ def generate_bundle(
 
     # Create a Report wrapping all objects
     if len(objects) > 1:  # more than just the identity
+        # stix2 STIX-DO instances expose `.id`, but mypy only sees the abstract base.
         object_refs = [o.id for o in objects]  # type: ignore[attr-defined]
         report = stix2.Report(
             name=f"Lantana Daily Intel — {gold_date.isoformat()}",

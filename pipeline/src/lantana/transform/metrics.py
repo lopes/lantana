@@ -38,6 +38,21 @@ STAGE_LABELS: dict[int, str] = {
 # Top-N limit for summary lists
 TOP_N: int = 10
 
+# Behavioral risk-score factors (composite formula in docs/risk-scoring.md §Gold composite).
+# Tuning any of these requires updating the doc and the regression tests in
+# tests/test_transform/test_metrics.py::TestRiskScoreDecomposition.
+BEHAVIORAL_AUTH_FACTOR: float = 20.0
+BEHAVIORAL_COMMAND_FACTOR: float = 25.0
+BEHAVIORAL_FINDING_FACTOR: float = 15.0
+BEHAVIORAL_DOWNLOAD_FACTOR: float = 20.0
+BEHAVIORAL_AUTH_ATTEMPT_CAP: float = 100.0
+BEHAVIORAL_AUTH_ATTEMPT_WEIGHT: float = 0.1
+
+# Automated-actor heuristic thresholds (compute_behavioral_progression).
+AUTOMATED_AUTH_ATTEMPTS_MIN: int = 10
+AUTOMATED_UNIQUE_PASSWORDS_MIN: int = 5
+AUTOMATED_WINDOW_SECONDS_MAX: int = 120
+
 # Dataset-specific columns that gold aggregations reference. The
 # diagonal-concat in ``read_silver_partition`` produces a frame containing
 # the UNION of columns across all datasets present that day; on days when
@@ -110,9 +125,7 @@ def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[dict[str, str | i
     )
 
 
-def _top_n_credential_pairs(
-    df: pl.DataFrame, n: int = TOP_N
-) -> list[dict[str, str | int]]:
+def _top_n_credential_pairs(df: pl.DataFrame, n: int = TOP_N) -> list[dict[str, str | int]]:
     """Top-N username/password pairs, ranked by event count.
 
     Returns `[{"username": str, "password": str, "count": int}, ...]`, stored
@@ -140,9 +153,7 @@ def _top_n_credential_pairs(
     )
 
 
-def _top_n_countries_by_unique_ips(
-    df: pl.DataFrame, n: int = TOP_N
-) -> list[dict[str, str | int]]:
+def _top_n_countries_by_unique_ips(df: pl.DataFrame, n: int = TOP_N) -> list[dict[str, str | int]]:
     """Top-N source countries + unique-IP counts.
 
     Ranked by unique attacker IPs (not event count) to match `geographic_summary`.
@@ -295,11 +306,15 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     # later expressions can reference the earlier aliases (polars resolves
     # within one with_columns left-to-right via the expression chain).
     behavioral_expr = (
-        pl.when(pl.col("auth_successes") > 0).then(20.0).otherwise(0.0)
-        + pl.when(pl.col("commands_executed") > 0).then(25.0).otherwise(0.0)
-        + pl.when(pl.col("findings_triggered") > 0).then(15.0).otherwise(0.0)
-        + pl.when(pl.col("downloads") > 0).then(20.0).otherwise(0.0)
-        + pl.min_horizontal(pl.col("auth_attempts").cast(pl.Float64), pl.lit(100.0)) * 0.1
+        pl.when(pl.col("auth_successes") > 0).then(BEHAVIORAL_AUTH_FACTOR).otherwise(0.0)
+        + pl.when(pl.col("commands_executed") > 0).then(BEHAVIORAL_COMMAND_FACTOR).otherwise(0.0)
+        + pl.when(pl.col("findings_triggered") > 0).then(BEHAVIORAL_FINDING_FACTOR).otherwise(0.0)
+        + pl.when(pl.col("downloads") > 0).then(BEHAVIORAL_DOWNLOAD_FACTOR).otherwise(0.0)
+        + pl.min_horizontal(
+            pl.col("auth_attempts").cast(pl.Float64),
+            pl.lit(BEHAVIORAL_AUTH_ATTEMPT_CAP),
+        )
+        * BEHAVIORAL_AUTH_ATTEMPT_WEIGHT
     ).clip(0.0, 100.0)
 
     enrichment_expr = pl.mean_horizontal(
@@ -313,11 +328,9 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
         enrichment_expr.alias("enrichment_risk_score"),
         behavioral_expr.alias("behavioral_risk_score"),
     ).with_columns(
-        (
-            (pl.col("enrichment_risk_score").fill_null(0.0)
-             + pl.col("behavioral_risk_score"))
-            / 2.0
-        ).clip(0.0, 100.0).alias("risk_score"),
+        ((pl.col("enrichment_risk_score").fill_null(0.0) + pl.col("behavioral_risk_score")) / 2.0)
+        .clip(0.0, 100.0)
+        .alias("risk_score"),
     )
 
     return result.sort(
@@ -422,9 +435,9 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
     result = result.with_columns(
         (
             (
-                (pl.col("auth_attempts") > 10)
-                & (pl.col("unique_passwords") > 5)
-                & (time_window <= 120)
+                (pl.col("auth_attempts") > AUTOMATED_AUTH_ATTEMPTS_MIN)
+                & (pl.col("unique_passwords") > AUTOMATED_UNIQUE_PASSWORDS_MIN)
+                & (time_window <= AUTOMATED_WINDOW_SECONDS_MAX)
             )
             | (pl.col("greynoise_noise").fill_null(False))
         ).alias("is_automated"),
@@ -647,20 +660,22 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
         .sort("unique_ips", descending=True)
         .head(TOP_N)
     )
-    top_countries = countries.select(
-        pl.concat_str(
-            [pl.col("geo.country_code"), pl.lit(":"), pl.col("unique_ips").cast(pl.Utf8)],
-            separator="",
-        ).alias("entry")
-    ).get_column("entry").to_list()
+    top_countries = (
+        countries.select(
+            pl.concat_str(
+                [pl.col("geo.country_code"), pl.lit(":"), pl.col("unique_ips").cast(pl.Utf8)],
+                separator="",
+            ).alias("entry")
+        )
+        .get_column("entry")
+        .to_list()
+    )
 
     # Top cities by unique IPs (with lat/lon for mapping)
     top_cities: list[str] = []
     if "geo.city" in silver.columns:
         cities = (
-            silver.filter(
-                pl.col("geo.city").is_not_null() & (pl.col("geo.city") != "")
-            )
+            silver.filter(pl.col("geo.city").is_not_null() & (pl.col("geo.city") != ""))
             .group_by("geo.city", "geo.country_code", "geo.latitude", "geo.longitude")
             .agg(
                 pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
@@ -669,25 +684,33 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
             .sort("unique_ips", descending=True)
             .head(20)
         )
-        top_cities = cities.select(
-            pl.concat_str(
-                [
-                    pl.col("geo.city"), pl.lit(","),
-                    pl.col("geo.country_code"), pl.lit(":"),
-                    pl.col("unique_ips").cast(pl.Utf8),
-                ],
-                separator="",
-            ).alias("entry")
-        ).get_column("entry").to_list()
+        top_cities = (
+            cities.select(
+                pl.concat_str(
+                    [
+                        pl.col("geo.city"),
+                        pl.lit(","),
+                        pl.col("geo.country_code"),
+                        pl.lit(":"),
+                        pl.col("unique_ips").cast(pl.Utf8),
+                    ],
+                    separator="",
+                ).alias("entry")
+            )
+            .get_column("entry")
+            .to_list()
+        )
 
     # Top ASNs by unique IPs
     top_asns: list[str] = []
     if "geo.asn" not in silver.columns:
-        return pl.DataFrame({
-            "top_countries": [top_countries],
-            "top_cities": [top_cities],
-            "top_asns": [top_asns],
-        })
+        return pl.DataFrame(
+            {
+                "top_countries": [top_countries],
+                "top_cities": [top_cities],
+                "top_asns": [top_asns],
+            }
+        )
 
     # geo.asn is Int64 in production (MaxMind ASN MMDB returns int); is_not_null
     # is the only validity check needed. The previous `!= ""` comparison worked
@@ -702,22 +725,30 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
         .sort("unique_ips", descending=True)
         .head(TOP_N)
     )
-    top_asns = asns.select(
-        pl.concat_str(
-            [
-                pl.col("geo.asn").cast(pl.Utf8), pl.lit("|"),
-                pl.col("geo.isp").fill_null(""), pl.lit(":"),
-                pl.col("unique_ips").cast(pl.Utf8),
-            ],
-            separator="",
-        ).alias("entry")
-    ).get_column("entry").to_list()
+    top_asns = (
+        asns.select(
+            pl.concat_str(
+                [
+                    pl.col("geo.asn").cast(pl.Utf8),
+                    pl.lit("|"),
+                    pl.col("geo.isp").fill_null(""),
+                    pl.lit(":"),
+                    pl.col("unique_ips").cast(pl.Utf8),
+                ],
+                separator="",
+            ).alias("entry")
+        )
+        .get_column("entry")
+        .to_list()
+    )
 
-    return pl.DataFrame({
-        "top_countries": [top_countries],
-        "top_cities": [top_cities],
-        "top_asns": [top_asns],
-    })
+    return pl.DataFrame(
+        {
+            "top_countries": [top_countries],
+            "top_cities": [top_cities],
+            "top_asns": [top_asns],
+        }
+    )
 
 
 def compute_detection_findings(silver: pl.DataFrame) -> pl.DataFrame:

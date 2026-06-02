@@ -155,6 +155,7 @@ def render_timing_section(timings: list[StepTiming]) -> list[str]:
     if not timings:
         return []
     from lantana.notify.explanations import BRIEF_SECTIONS
+
     lines: list[str] = ["## Pipeline Timing\n"]
     triplet = BRIEF_SECTIONS.get("Pipeline Timing")
     if triplet is not None:

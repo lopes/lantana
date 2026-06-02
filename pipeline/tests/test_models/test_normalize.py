@@ -233,22 +233,24 @@ class TestNormalizeSuricata:
         production with ColumnNotFoundError until _flatten_suricata_alert_struct
         was added. This test pins that behaviour.
         """
-        nested = pl.DataFrame({
-            "event_type": ["alert", "flow"],
-            "src_ip": ["203.0.113.50", "203.0.113.51"],
-            "dest_ip": ["10.50.99.100", "10.50.99.100"],
-            "proto": ["TCP", "TCP"],
-            "alert": [
-                {
-                    "severity": 2,
-                    "signature": "ET SCAN Potential SSH Scan",
-                    "signature_id": 2001219,
-                    "category": "Attempted Information Leak",
-                    "action": "allowed",
-                },
-                None,
-            ],
-        })
+        nested = pl.DataFrame(
+            {
+                "event_type": ["alert", "flow"],
+                "src_ip": ["203.0.113.50", "203.0.113.51"],
+                "dest_ip": ["10.50.99.100", "10.50.99.100"],
+                "proto": ["TCP", "TCP"],
+                "alert": [
+                    {
+                        "severity": 2,
+                        "signature": "ET SCAN Potential SSH Scan",
+                        "signature_id": 2001219,
+                        "category": "Attempted Information Leak",
+                        "action": "allowed",
+                    },
+                    None,
+                ],
+            }
+        )
         result = normalize_suricata(nested)
         alerts = result.filter(pl.col("class_uid") == CLASS_DETECTION_FINDING)
         assert alerts.height == 1
@@ -263,12 +265,14 @@ class TestNormalizeSuricata:
         alert events at all; the normaliser must still complete and just
         leave the detection columns null on every row.
         """
-        flow_only = pl.DataFrame({
-            "event_type": ["flow", "flow"],
-            "src_ip": ["203.0.113.50", "198.51.100.22"],
-            "dest_ip": ["10.50.99.100", "10.50.99.100"],
-            "proto": ["TCP", "TCP"],
-        })
+        flow_only = pl.DataFrame(
+            {
+                "event_type": ["flow", "flow"],
+                "src_ip": ["203.0.113.50", "198.51.100.22"],
+                "dest_ip": ["10.50.99.100", "10.50.99.100"],
+                "proto": ["TCP", "TCP"],
+            }
+        )
         result = normalize_suricata(flow_only)
         # All rows classified as network activity (no alerts present)
         assert (result.get_column("class_uid") != CLASS_DETECTION_FINDING).all()
@@ -282,17 +286,19 @@ class TestNormalizeSuricata:
         subfields, otherwise every silver alert row drops its detection
         metadata even when Suricata populated it.
         """
-        stringified = pl.DataFrame({
-            "event_type": ["alert"],
-            "src_ip": ["203.0.113.50"],
-            "dest_ip": ["10.50.99.100"],
-            "proto": ["TCP"],
-            "alert": [
-                '{"severity": 1, "signature": "ET EXPLOIT Possible CVE-2021-44228",'
-                ' "signature_id": 2024897, "category": "Attempted Administrator'
-                ' Privilege Gain", "action": "allowed"}'
-            ],
-        })
+        stringified = pl.DataFrame(
+            {
+                "event_type": ["alert"],
+                "src_ip": ["203.0.113.50"],
+                "dest_ip": ["10.50.99.100"],
+                "proto": ["TCP"],
+                "alert": [
+                    '{"severity": 1, "signature": "ET EXPLOIT Possible CVE-2021-44228",'
+                    ' "signature_id": 2024897, "category": "Attempted Administrator'
+                    ' Privilege Gain", "action": "allowed"}'
+                ],
+            }
+        )
         result = normalize_suricata(stringified)
         alerts = result.filter(pl.col("class_uid") == CLASS_DETECTION_FINDING)
         assert alerts.height == 1
@@ -311,32 +317,44 @@ class TestGeoStructFlattening:
     """
 
     def test_nested_geo_struct_is_flattened(self) -> None:
-        nested = pl.DataFrame({
-            "eventid": ["cowrie.session.connect"],
-            "src_ip": ["203.0.113.50"],
-            "dst_ip": ["10.50.99.100"],
-            "session": ["abc"],
-            "protocol": ["ssh"],
-            "username": [""],
-            "password": [""],
-            "input": [""],
-            "message": ["new connection"],
-            "timestamp": ["2026-05-19T20:48:48Z"],
-            "geo": [{
-                "asn": 12345,
-                "isp": "Example ISP",
-                "country_code": "BR",
-                "region_code": "SP",
-                "city": "São Paulo",
-                "latitude": -23.5,
-                "longitude": -46.6,
-                "timezone": "America/Sao_Paulo",
-            }],
-        })
+        nested = pl.DataFrame(
+            {
+                "eventid": ["cowrie.session.connect"],
+                "src_ip": ["203.0.113.50"],
+                "dst_ip": ["10.50.99.100"],
+                "session": ["abc"],
+                "protocol": ["ssh"],
+                "username": [""],
+                "password": [""],
+                "input": [""],
+                "message": ["new connection"],
+                "timestamp": ["2026-05-19T20:48:48Z"],
+                "geo": [
+                    {
+                        "asn": 12345,
+                        "isp": "Example ISP",
+                        "country_code": "BR",
+                        "region_code": "SP",
+                        "city": "São Paulo",
+                        "latitude": -23.5,
+                        "longitude": -46.6,
+                        "timezone": "America/Sao_Paulo",
+                    }
+                ],
+            }
+        )
         result = normalize_dataset(nested, "cowrie")
         assert "geo" not in result.columns
-        for field in ("country_code", "region_code", "city", "latitude",
-                      "longitude", "timezone", "asn", "isp"):
+        for field in (
+            "country_code",
+            "region_code",
+            "city",
+            "latitude",
+            "longitude",
+            "timezone",
+            "asn",
+            "isp",
+        ):
             assert f"geo.{field}" in result.columns
         assert result.get_column("geo.country_code").to_list() == ["BR"]
         assert result.get_column("geo.asn").to_list() == [12345]
@@ -345,18 +363,20 @@ class TestGeoStructFlattening:
         """Bronze without any geo enrichment still produces the flat columns
         (typed null) so downstream code can rely on the schema.
         """
-        no_geo = pl.DataFrame({
-            "eventid": ["cowrie.session.connect"],
-            "src_ip": ["203.0.113.50"],
-            "dst_ip": ["10.50.99.100"],
-            "session": ["abc"],
-            "protocol": ["ssh"],
-            "username": [""],
-            "password": [""],
-            "input": [""],
-            "message": ["connect"],
-            "timestamp": ["2026-05-19T20:48:48Z"],
-        })
+        no_geo = pl.DataFrame(
+            {
+                "eventid": ["cowrie.session.connect"],
+                "src_ip": ["203.0.113.50"],
+                "dst_ip": ["10.50.99.100"],
+                "session": ["abc"],
+                "protocol": ["ssh"],
+                "username": [""],
+                "password": [""],
+                "input": [""],
+                "message": ["connect"],
+                "timestamp": ["2026-05-19T20:48:48Z"],
+            }
+        )
         result = normalize_dataset(no_geo, "cowrie")
         for field in ("country_code", "asn", "isp"):
             assert f"geo.{field}" in result.columns
@@ -368,23 +388,25 @@ class TestGeoStructFlattening:
         the string back into a Struct before extracting subfields — otherwise
         every silver row gets null geo even when Vector populated the data.
         """
-        stringified = pl.DataFrame({
-            "eventid": ["cowrie.session.connect"],
-            "src_ip": ["203.0.113.50"],
-            "dst_ip": ["10.50.99.100"],
-            "session": ["abc"],
-            "protocol": ["ssh"],
-            "username": [""],
-            "password": [""],
-            "input": [""],
-            "message": ["new connection"],
-            "timestamp": ["2026-05-19T20:48:48Z"],
-            "geo": [
-                '{"country_code": "BR", "region_code": "SP", "city": "Sao Paulo",'
-                ' "latitude": -23.5, "longitude": -46.6,'
-                ' "timezone": "America/Sao_Paulo", "asn": 12345, "isp": "Example"}'
-            ],
-        })
+        stringified = pl.DataFrame(
+            {
+                "eventid": ["cowrie.session.connect"],
+                "src_ip": ["203.0.113.50"],
+                "dst_ip": ["10.50.99.100"],
+                "session": ["abc"],
+                "protocol": ["ssh"],
+                "username": [""],
+                "password": [""],
+                "input": [""],
+                "message": ["new connection"],
+                "timestamp": ["2026-05-19T20:48:48Z"],
+                "geo": [
+                    '{"country_code": "BR", "region_code": "SP", "city": "Sao Paulo",'
+                    ' "latitude": -23.5, "longitude": -46.6,'
+                    ' "timezone": "America/Sao_Paulo", "asn": 12345, "isp": "Example"}'
+                ],
+            }
+        )
         result = normalize_dataset(stringified, "cowrie")
         assert "geo" not in result.columns
         assert result.get_column("geo.country_code").to_list() == ["BR"]
@@ -398,24 +420,28 @@ class TestNormalizeNftablesDefensive:
         bronze only carries metadata + raw `message`. Normaliser returns
         empty rather than crashing on missing columns.
         """
-        unparsed = pl.DataFrame({
-            "dataset": ["nftables"],
-            "host": ["sn-01"],
-            "message": ["[chain] IN=eth0 OUT= SRC=203.0.113.50 ..."],
-            "timestamp": ["2026-05-19T20:48:00Z"],
-        })
+        unparsed = pl.DataFrame(
+            {
+                "dataset": ["nftables"],
+                "host": ["sn-01"],
+                "message": ["[chain] IN=eth0 OUT= SRC=203.0.113.50 ..."],
+                "timestamp": ["2026-05-19T20:48:00Z"],
+            }
+        )
         result = normalize_nftables(unparsed)
         assert result.is_empty()
 
     def test_missing_one_required_field_returns_empty(self) -> None:
         """Even partial parsing (e.g. has action but not chain) is rejected."""
-        partial = pl.DataFrame({
-            "action": ["drop"],
-            "protocol": ["tcp"],
-            "src_ip": ["203.0.113.50"],
-            "dst_ip": ["10.50.99.100"],
-            # chain missing
-        })
+        partial = pl.DataFrame(
+            {
+                "action": ["drop"],
+                "protocol": ["tcp"],
+                "src_ip": ["203.0.113.50"],
+                "dst_ip": ["10.50.99.100"],
+                # chain missing
+            }
+        )
         result = normalize_nftables(partial)
         assert result.is_empty()
 

@@ -45,9 +45,11 @@ class TestExtractIps:
 
 class TestExtractHashesFromBronze:
     def test_returns_unique_shasum_values(self) -> None:
-        df = pl.DataFrame({
-            "shasum": ["abc" * 21 + "f", "abc" * 21 + "f", "deadbeef" * 8],
-        })
+        df = pl.DataFrame(
+            {
+                "shasum": ["abc" * 21 + "f", "abc" * 21 + "f", "deadbeef" * 8],
+            }
+        )
         assert extract_hashes_from_bronze(df) == {"abc" * 21 + "f", "deadbeef" * 8}
 
     def test_no_shasum_column(self) -> None:
@@ -105,7 +107,9 @@ class TestExtractHashesFromDisk:
         assert result == {expected}
 
     def test_file_vanishes_mid_scan_skipped(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """If cowrie deletes a file between iterdir() and read_bytes(),
         treat as a benign race and continue.

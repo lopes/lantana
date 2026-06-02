@@ -87,20 +87,20 @@ def extract_hashes_from_disk(sensor_dir: Path) -> set[str]:
 # are reserved-but-not-private, valid stand-ins for attacker addresses in tests
 # and docs.
 _NON_ROUTABLE_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
-    ipaddress.ip_network("10.0.0.0/8"),         # RFC1918
-    ipaddress.ip_network("172.16.0.0/12"),      # RFC1918
-    ipaddress.ip_network("192.168.0.0/16"),     # RFC1918
-    ipaddress.ip_network("100.64.0.0/10"),      # CGNAT (RFC6598)
-    ipaddress.ip_network("169.254.0.0/16"),     # link-local IPv4
-    ipaddress.ip_network("127.0.0.0/8"),        # loopback IPv4
-    ipaddress.ip_network("0.0.0.0/8"),          # current network / unspecified
-    ipaddress.ip_network("224.0.0.0/4"),        # multicast IPv4
-    ipaddress.ip_network("240.0.0.0/4"),        # reserved IPv4
-    ipaddress.ip_network("fc00::/7"),           # ULA IPv6
-    ipaddress.ip_network("fe80::/10"),          # link-local IPv6
-    ipaddress.ip_network("::1/128"),            # loopback IPv6
-    ipaddress.ip_network("::/128"),             # unspecified IPv6
-    ipaddress.ip_network("ff00::/8"),           # multicast IPv6
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC1918
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC1918
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC1918
+    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT (RFC6598)
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local IPv4
+    ipaddress.ip_network("127.0.0.0/8"),  # loopback IPv4
+    ipaddress.ip_network("0.0.0.0/8"),  # current network / unspecified
+    ipaddress.ip_network("224.0.0.0/4"),  # multicast IPv4
+    ipaddress.ip_network("240.0.0.0/4"),  # reserved IPv4
+    ipaddress.ip_network("fc00::/7"),  # ULA IPv6
+    ipaddress.ip_network("fe80::/10"),  # link-local IPv6
+    ipaddress.ip_network("::1/128"),  # loopback IPv6
+    ipaddress.ip_network("::/128"),  # unspecified IPv6
+    ipaddress.ip_network("ff00::/8"),  # multicast IPv6
 ]
 
 

@@ -298,9 +298,9 @@ def _flatten_suricata_alert_struct(df: pl.DataFrame) -> pl.DataFrame:
     alert_dtype = df.schema.get("alert") if "alert" in df.columns else None
 
     if alert_dtype == pl.Utf8():
-        decode_schema = pl.Struct([
-            pl.Field(sub, dtype) for sub, _flat, dtype in _ALERT_FLAT_TARGETS
-        ])
+        decode_schema = pl.Struct(
+            [pl.Field(sub, dtype) for sub, _flat, dtype in _ALERT_FLAT_TARGETS]
+        )
         df = df.with_columns(pl.col("alert").str.json_decode(decode_schema).alias("alert"))
         alert_dtype = df.schema.get("alert")
 

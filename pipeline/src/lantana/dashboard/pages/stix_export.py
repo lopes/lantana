@@ -89,7 +89,8 @@ def render(selected_date: date) -> None:
     cols[0].metric("IP Indicators", ip_n, help=_metric_help("IP Indicators"))
     cols[1].metric("Hash Indicators", hash_n, help=_metric_help("Hash Indicators"))
     cols[2].metric(
-        "Network-rule Indicators", rule_n,
+        "Network-rule Indicators",
+        rule_n,
         help=_metric_help("Network-rule Indicators"),
     )
     cols[3].metric("Campaigns", campaign_n, help=_metric_help("Campaigns"))

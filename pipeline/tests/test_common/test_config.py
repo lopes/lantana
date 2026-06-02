@@ -25,9 +25,9 @@ def secrets_file(tmp_path: Path) -> Path:
     """Canonical secrets.json — vault-style keys, mirrors the Ansible vault."""
     data = {
         "vault_apikey_virustotal": "vt-key-123",
-        "vault_apikey_shodan":     "shodan-key-456",
-        "vault_apikey_abuseipdb":  "abuse-key-789",
-        "vault_apikey_greynoise":  "gn-key-012",
+        "vault_apikey_shodan": "shodan-key-456",
+        "vault_apikey_abuseipdb": "abuse-key-789",
+        "vault_apikey_greynoise": "gn-key-012",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -75,10 +75,10 @@ def test_load_secrets_with_discord_webhook(tmp_path: Path) -> None:
     """Secrets file with discord webhook parses correctly."""
     data = {
         "vault_apikey_virustotal": "vt",
-        "vault_apikey_shodan":     "sh",
-        "vault_apikey_abuseipdb":  "ab",
-        "vault_apikey_greynoise":  "gn",
-        "vault_webhook_discord":   "https://discord.com/api/webhooks/123/abc",
+        "vault_apikey_shodan": "sh",
+        "vault_apikey_abuseipdb": "ab",
+        "vault_apikey_greynoise": "gn",
+        "vault_webhook_discord": "https://discord.com/api/webhooks/123/abc",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -98,8 +98,8 @@ def test_load_secrets_greynoise_optional(tmp_path: Path) -> None:
     """greynoise is optional and defaults to None when omitted."""
     data = {
         "vault_apikey_virustotal": "vt",
-        "vault_apikey_shodan":     "sh",
-        "vault_apikey_abuseipdb":  "ab",
+        "vault_apikey_shodan": "sh",
+        "vault_apikey_abuseipdb": "ab",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -111,9 +111,9 @@ def test_load_secrets_greynoise_null_means_disabled(tmp_path: Path) -> None:
     """Explicit JSON null disables the provider."""
     data = {
         "vault_apikey_virustotal": "vt",
-        "vault_apikey_shodan":     "sh",
-        "vault_apikey_abuseipdb":  "ab",
-        "vault_apikey_greynoise":  None,
+        "vault_apikey_shodan": "sh",
+        "vault_apikey_abuseipdb": "ab",
+        "vault_apikey_greynoise": None,
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -125,9 +125,9 @@ def test_load_secrets_empty_string_means_anonymous(tmp_path: Path) -> None:
     """Empty string keeps the provider enabled in unauthenticated mode."""
     data = {
         "vault_apikey_virustotal": "vt",
-        "vault_apikey_shodan":     "sh",
-        "vault_apikey_abuseipdb":  "ab",
-        "vault_apikey_greynoise":  "",
+        "vault_apikey_shodan": "sh",
+        "vault_apikey_abuseipdb": "ab",
+        "vault_apikey_greynoise": "",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -142,8 +142,8 @@ def test_load_secrets_drops_removed_provider_keys(tmp_path: Path) -> None:
     """
     data = {
         "vault_apikey_virustotal": "vt",
-        "vault_apikey_shodan":     "sh",
-        "vault_apikey_abuseipdb":  "ab",
+        "vault_apikey_shodan": "sh",
+        "vault_apikey_abuseipdb": "ab",
         "vault_apikey_phishstats": "leftover-key",
     }
     path = tmp_path / "secrets.json"
@@ -158,8 +158,8 @@ def test_load_secrets_accepts_short_field_names(tmp_path: Path) -> None:
     """populate_by_name=True keeps the short-key form usable (existing fixtures)."""
     data = {
         "virustotal": "vt",
-        "shodan":     "sh",
-        "abuseipdb":  "ab",
+        "shodan": "sh",
+        "abuseipdb": "ab",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -173,9 +173,9 @@ def test_load_secrets_maxmind_optional(tmp_path: Path) -> None:
     """vault_apikey_maxmind is optional and populates SecretsConfig.maxmind."""
     data = {
         "vault_apikey_virustotal": "vt",
-        "vault_apikey_shodan":     "sh",
-        "vault_apikey_abuseipdb":  "ab",
-        "vault_apikey_maxmind":    "mm-license-key",
+        "vault_apikey_shodan": "sh",
+        "vault_apikey_abuseipdb": "ab",
+        "vault_apikey_maxmind": "mm-license-key",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -187,8 +187,8 @@ def test_load_secrets_maxmind_defaults_none(tmp_path: Path) -> None:
     """Omitted maxmind line means the field is None."""
     data = {
         "vault_apikey_virustotal": "vt",
-        "vault_apikey_shodan":     "sh",
-        "vault_apikey_abuseipdb":  "ab",
+        "vault_apikey_shodan": "sh",
+        "vault_apikey_abuseipdb": "ab",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -199,10 +199,10 @@ def test_load_secrets_maxmind_defaults_none(tmp_path: Path) -> None:
 def test_load_secrets_tolerant_translates_legacy_keys(tmp_path: Path) -> None:
     """Pre-2026-05 vault key names are auto-translated."""
     data = {
-        "vault_virustotal_api_key":  "vt",
-        "vault_shodan_api_key":      "sh",
-        "vault_abuseipdb_api_key":   "ab",
-        "vault_greynoise_api_key":   "gn",
+        "vault_virustotal_api_key": "vt",
+        "vault_shodan_api_key": "sh",
+        "vault_abuseipdb_api_key": "ab",
+        "vault_greynoise_api_key": "gn",
         "vault_maxmind_license_key": "mm",
         "vault_discord_webhook_url": "https://discord.com/api/webhooks/x/y",
     }
@@ -219,8 +219,8 @@ def test_load_secrets_tolerant_passes_canonical_through(tmp_path: Path) -> None:
     """Files already in the canonical form skip translation."""
     data = {
         "vault_apikey_virustotal": "vt",
-        "vault_apikey_shodan":     "sh",
-        "vault_apikey_abuseipdb":  "ab",
+        "vault_apikey_shodan": "sh",
+        "vault_apikey_abuseipdb": "ab",
     }
     path = tmp_path / "secrets.json"
     path.write_text(json.dumps(data), encoding="utf-8")

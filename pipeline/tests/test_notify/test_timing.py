@@ -16,11 +16,16 @@ from lantana.notify.timing import (
 
 
 def _completed(
-    stdout: str = "", returncode: int = 0, stderr: str = "",
+    stdout: str = "",
+    returncode: int = 0,
+    stderr: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Build a fake systemctl CompletedProcess for patching subprocess.run."""
     return subprocess.CompletedProcess(
-        args=["systemctl"], returncode=returncode, stdout=stdout, stderr=stderr,
+        args=["systemctl"],
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
     )
 
 

@@ -51,7 +51,8 @@ def _auth_donut(successes: int, failures: int) -> go.Figure:
         annotations=[
             {
                 "text": f"<b>{rate:.1f}%</b><br><span style='font-size:0.7em'>success</span>",
-                "x": 0.5, "y": 0.5,
+                "x": 0.5,
+                "y": 0.5,
                 "font": {"size": 24},
                 "showarrow": False,
             },
@@ -83,9 +84,7 @@ def _events_by_type_stacked_bar(counts: dict[str, int]) -> go.Figure:
             name=label,
             orientation="h",
             marker_color=_EVENT_TYPE_COLOURS.get(label, "#888"),
-            hovertemplate=(
-                f"{label}: %{{x:,}} ({pct:.1f}%)<extra></extra>"
-            ),
+            hovertemplate=(f"{label}: %{{x:,}} ({pct:.1f}%)<extra></extra>"),
         )
     fig.update_layout(
         barmode="stack",
@@ -147,7 +146,9 @@ def render(selected_date: date) -> None:
     cols[0].metric("Total Events", f"{row['total_events']:,}", help=_metric_help("Total Events"))
     cols[1].metric("Unique IPs", f"{row['unique_source_ips']:,}", help=_metric_help("Unique IPs"))
     cols[2].metric(
-        "Auth Attempts", f"{row['auth_attempts']:,}", help=_metric_help("Auth Attempts"),
+        "Auth Attempts",
+        f"{row['auth_attempts']:,}",
+        help=_metric_help("Auth Attempts"),
     )
     cols[3].metric("Commands", f"{row['commands_executed']:,}", help=_metric_help("Commands"))
     cols[4].metric("Findings", f"{row['findings_detected']:,}", help=_metric_help("Findings"))
@@ -178,12 +179,14 @@ def render(selected_date: date) -> None:
         if events_caption:
             st.caption(events_caption.tooltip())
         st.plotly_chart(
-            _events_by_type_stacked_bar({
-                "Auth": int(row["auth_attempts"]),
-                "Commands": int(row["commands_executed"]),
-                "Findings": int(row["findings_detected"]),
-                "Network": int(row["network_events"]),
-            }),
+            _events_by_type_stacked_bar(
+                {
+                    "Auth": int(row["auth_attempts"]),
+                    "Commands": int(row["commands_executed"]),
+                    "Findings": int(row["findings_detected"]),
+                    "Network": int(row["network_events"]),
+                }
+            ),
             width="stretch",
         )
 

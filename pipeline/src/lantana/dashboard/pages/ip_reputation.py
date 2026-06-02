@@ -100,13 +100,13 @@ def render(selected_date: date) -> None:
     # _RISK_FORMULA_MD table.
     cols = st.columns(4)
     cols[0].metric(
-        "Total IPs", len(df),
+        "Total IPs",
+        len(df),
         help=_metric_help("Total Scored IPs"),
     )
     high = df.filter(pl.col("risk_score") >= RISK_HIGH_THRESHOLD).height
     med = df.filter(
-        (pl.col("risk_score") >= RISK_THRESHOLD)
-        & (pl.col("risk_score") < RISK_HIGH_THRESHOLD)
+        (pl.col("risk_score") >= RISK_THRESHOLD) & (pl.col("risk_score") < RISK_HIGH_THRESHOLD)
     ).height
     low = df.filter(pl.col("risk_score") < RISK_THRESHOLD).height
     cols[1].metric("High Risk", high, help=_metric_help("High Risk IPs"))
@@ -126,11 +126,13 @@ def render(selected_date: date) -> None:
         chart_cols[0].bar_chart(df.select("risk_score").to_pandas(), y="risk_score")
         chart_cols[1].caption("Enrichment half (mean of populated providers)")
         chart_cols[1].bar_chart(
-            df.select("enrichment_risk_score").to_pandas(), y="enrichment_risk_score",
+            df.select("enrichment_risk_score").to_pandas(),
+            y="enrichment_risk_score",
         )
         chart_cols[2].caption("Behavioral half (auth + commands + downloads + findings)")
         chart_cols[2].bar_chart(
-            df.select("behavioral_risk_score").to_pandas(), y="behavioral_risk_score",
+            df.select("behavioral_risk_score").to_pandas(),
+            y="behavioral_risk_score",
         )
     else:
         # Pre-Phase-D.2 gold partition fallback.
@@ -182,7 +184,9 @@ def render(selected_date: date) -> None:
 
     min_risk = st.slider(
         "Minimum risk score",
-        0, 100, 0,
+        0,
+        100,
+        0,
         help=(
             f"Filter the table below to IPs with risk_score ≥ this value. "
             f"Default 0 shows everything; set to {int(RISK_THRESHOLD)} "

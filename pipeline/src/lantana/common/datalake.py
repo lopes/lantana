@@ -27,9 +27,7 @@ def read_bronze_ndjson(
     date_str = target_date.isoformat()
     pattern = f"dataset={dataset}" if dataset else "dataset=*"
 
-    matching_files = list(bronze_root.glob(
-        f"{pattern}/date={date_str}/server=*/events.json"
-    ))
+    matching_files = list(bronze_root.glob(f"{pattern}/date={date_str}/server=*/events.json"))
 
     if not matching_files:
         return pl.DataFrame()
@@ -60,13 +58,12 @@ def read_bronze_ndjson(
 
         # Normalize IPv4-mapped IPv6 addresses (::ffff:1.2.3.4 -> 1.2.3.4)
         ip_cols = [
-            c for c in ("src_ip", "dst_ip", "dest_ip")
+            c
+            for c in ("src_ip", "dst_ip", "dest_ip")
             if c in df.columns and df.schema[c] == pl.Utf8
         ]
         if ip_cols:
-            df = df.with_columns(
-                pl.col(c).str.replace(r"^::ffff:", "").alias(c) for c in ip_cols
-            )
+            df = df.with_columns(pl.col(c).str.replace(r"^::ffff:", "").alias(c) for c in ip_cols)
 
         # Ensure timestamp is Datetime (raw logs store it as string).
         # Cowrie uses "Z" suffix, Suricata uses "+0000". Strip both
@@ -113,17 +110,12 @@ def read_silver_partition(
     date_str = target_date.isoformat()
     pattern = f"dataset={dataset}" if dataset else "dataset=*"
 
-    matching_files = list(silver_root.glob(
-        f"{pattern}/date={date_str}/server=*/events.parquet"
-    ))
+    matching_files = list(silver_root.glob(f"{pattern}/date={date_str}/server=*/events.parquet"))
 
     if not matching_files:
         return pl.LazyFrame()
 
-    frames = [
-        pl.scan_parquet(f, hive_partitioning=False)
-        for f in matching_files
-    ]
+    frames = [pl.scan_parquet(f, hive_partitioning=False) for f in matching_files]
     return pl.concat(frames, how="diagonal")
 
 
@@ -206,5 +198,5 @@ def _extract_partition_value(parts: tuple[str, ...], key: str) -> str:
     prefix = f"{key}="
     for part in parts:
         if part.startswith(prefix):
-            return part[len(prefix):]
+            return part[len(prefix) :]
     return ""

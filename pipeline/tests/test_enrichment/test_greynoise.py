@@ -41,7 +41,10 @@ class TestGreyNoiseProvider:
     async def test_enrich_ip_returns_full_result(self, keyed_provider: GreyNoiseProvider) -> None:
         """Successful response surfaces classification, noise, riot, name, last_seen, link."""
         with patch.object(
-            keyed_provider._client, "get", new_callable=AsyncMock, return_value=_ok_response(),
+            keyed_provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=_ok_response(),
         ):
             result = await keyed_provider.enrich_ip("212.115.85.236")
 
@@ -58,7 +61,8 @@ class TestGreyNoiseProvider:
 
     @pytest.mark.asyncio()
     async def test_anonymous_request_omits_key_header(
-        self, anonymous_provider: GreyNoiseProvider,
+        self,
+        anonymous_provider: GreyNoiseProvider,
     ) -> None:
         """When no API key is set, the `key` header must not be sent."""
         mock_get = AsyncMock(return_value=_ok_response())
@@ -71,7 +75,8 @@ class TestGreyNoiseProvider:
 
     @pytest.mark.asyncio()
     async def test_keyed_request_includes_key_header(
-        self, keyed_provider: GreyNoiseProvider,
+        self,
+        keyed_provider: GreyNoiseProvider,
     ) -> None:
         """When an API key is set, it must be sent as the `key` header."""
         mock_get = AsyncMock(return_value=_ok_response())
@@ -104,7 +109,10 @@ class TestGreyNoiseProvider:
             request=httpx.Request("GET", "https://api.greynoise.io/v3/community/203.0.113.1"),
         )
         with patch.object(
-            keyed_provider._client, "get", new_callable=AsyncMock, return_value=not_found,
+            keyed_provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=not_found,
         ):
             result = await keyed_provider.enrich_ip("203.0.113.1")
 
@@ -166,7 +174,8 @@ class TestGreyNoiseRiskScore:
 class TestGreyNoiseRiskScoreInResult:
     @pytest.mark.asyncio()
     async def test_200_malicious_includes_risk_score(
-        self, anonymous_provider: GreyNoiseProvider,
+        self,
+        anonymous_provider: GreyNoiseProvider,
     ) -> None:
         """Fixture has classification=malicious → expect 75 risk score."""
         mock_get = AsyncMock(return_value=_ok_response())
@@ -176,7 +185,8 @@ class TestGreyNoiseRiskScoreInResult:
 
     @pytest.mark.asyncio()
     async def test_riot_response_drives_score_to_zero(
-        self, anonymous_provider: GreyNoiseProvider,
+        self,
+        anonymous_provider: GreyNoiseProvider,
     ) -> None:
         """A malicious-classified RIOT IP must still come out at 0 — the
         load-bearing case that justifies separating provider scoring from
@@ -205,11 +215,13 @@ class TestGreyNoiseRiskScoreInResult:
 
     @pytest.mark.asyncio()
     async def test_404_score_is_default_unknown(
-        self, anonymous_provider: GreyNoiseProvider,
+        self,
+        anonymous_provider: GreyNoiseProvider,
     ) -> None:
         """404 → classification=unknown, noise=False, riot=False → 10.0."""
         not_found = httpx.Response(
-            404, json={},
+            404,
+            json={},
             request=httpx.Request("GET", "https://api.greynoise.io/v3/community/9.9.9.9"),
         )
         mock_get = AsyncMock(return_value=not_found)

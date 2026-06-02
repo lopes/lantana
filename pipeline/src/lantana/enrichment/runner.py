@@ -393,13 +393,15 @@ def _write_error_summary(
     errors_path.parent.mkdir(parents=True, exist_ok=True)
     with errors_path.open("a", encoding="utf-8") as f:
         for error in errors.values():
-            line = json.dumps({
-                "date": target_date.isoformat(),
-                "provider": error.provider,
-                "error_type": error.error_type,
-                "count": error.count,
-                "message": error.error_message,
-            })
+            line = json.dumps(
+                {
+                    "date": target_date.isoformat(),
+                    "provider": error.provider,
+                    "error_type": error.error_type,
+                    "count": error.count,
+                    "message": error.error_message,
+                }
+            )
             f.write(line + "\n")
 
 
@@ -516,9 +518,7 @@ def _select_ips_for_provider(
 # -- Enrichment --------------------------------------------------------------
 
 
-_ProviderType = (
-    AbuseIPDBProvider | GreyNoiseProvider | ShodanProvider | VirusTotalProvider
-)
+_ProviderType = AbuseIPDBProvider | GreyNoiseProvider | ShodanProvider | VirusTotalProvider
 
 
 async def _query_provider(
@@ -614,7 +614,10 @@ async def _enrich_iocs_with_provider(
         except Exception as exc:
             _record_error(errors, provider_name, "unknown", repr(exc))
             _log_failure(
-                "unknown", provider=provider_name, exc_repr=repr(exc), **{log_field: value},
+                "unknown",
+                provider=provider_name,
+                exc_repr=repr(exc),
+                **{log_field: value},
             )
     return results, cache_hits
 
@@ -731,7 +734,9 @@ async def run_enrichment(
         if len(raw_ips) != len(unique_ips):
             logger.info("internal_ips_filtered", count=len(raw_ips) - len(unique_ips))
         logger.info(
-            "unique_iocs_found", ioc_type=IOC_TYPE_IP, count=len(unique_ips),
+            "unique_iocs_found",
+            ioc_type=IOC_TYPE_IP,
+            count=len(unique_ips),
         )
 
         unique_hashes: set[str] = set()
@@ -739,7 +744,9 @@ async def run_enrichment(
             unique_hashes.update(extract_hashes_from_bronze(ds_df))
         unique_hashes.update(extract_hashes_from_disk(sensor_dir))
         logger.info(
-            "unique_iocs_found", ioc_type=IOC_TYPE_HASH, count=len(unique_hashes),
+            "unique_iocs_found",
+            ioc_type=IOC_TYPE_HASH,
+            count=len(unique_hashes),
         )
 
         # Phase B: enrich each IOC type once, across the relevant providers.
@@ -777,7 +784,12 @@ async def run_enrichment(
                 )
 
             results, hits = await _enrich_iocs_with_provider(
-                name, provider, IOC_TYPE_IP, selected_ips, cache, errors,
+                name,
+                provider,
+                IOC_TYPE_IP,
+                selected_ips,
+                cache,
+                errors,
             )
             ip_results.extend(results)
             provider_stats[f"{name}:{IOC_TYPE_IP}"] = {
@@ -800,15 +812,18 @@ async def run_enrichment(
             # one means the cache is exhausted enough that further calls
             # are likely to fail.
             if (name, "rate_limit") in errors:
-                provider_state.setdefault(name, {})["last_rate_limited"] = (
-                    target_date.isoformat()
-                )
+                provider_state.setdefault(name, {})["last_rate_limited"] = target_date.isoformat()
 
         hash_results: list[EnrichmentResult] = []
         if unique_hashes:
             vt_provider = providers["virustotal"]
             hash_results, hash_hits = await _enrich_iocs_with_provider(
-                "virustotal", vt_provider, IOC_TYPE_HASH, sorted(unique_hashes), cache, errors,
+                "virustotal",
+                vt_provider,
+                IOC_TYPE_HASH,
+                sorted(unique_hashes),
+                cache,
+                errors,
             )
             provider_stats[f"virustotal:{IOC_TYPE_HASH}"] = {
                 "enriched": len(hash_results),

@@ -48,25 +48,23 @@ def _stage_scatter(df: pl.DataFrame) -> go.Figure:
             # behavioral_progression gold table doesn't carry a pre-summed
             # total — derive it. auth_successes is a subset of auth_attempts,
             # so adding it would double-count.
-            (
-                pl.col("scan_events")
-                + pl.col("auth_attempts")
-                + pl.col("commands_executed")
-            ).alias("total_events"),
+            (pl.col("scan_events") + pl.col("auth_attempts") + pl.col("commands_executed")).alias(
+                "total_events"
+            ),
         )
         .with_columns(
             pl.col("is_automated")
-              .map_elements(
-                  lambda x: "Automated" if x else "Manual",
-                  return_dtype=pl.Utf8,
-              )
-              .alias("Type"),
+            .map_elements(
+                lambda x: "Automated" if x else "Manual",
+                return_dtype=pl.Utf8,
+            )
+            .alias("Type"),
             pl.col("StageNum")
-              .map_elements(
-                  lambda n: _STAGE_LABELS_BY_NUM.get(int(n), str(n)),
-                  return_dtype=pl.Utf8,
-              )
-              .alias("Stage"),
+            .map_elements(
+                lambda n: _STAGE_LABELS_BY_NUM.get(int(n), str(n)),
+                return_dtype=pl.Utf8,
+            )
+            .alias("Stage"),
         )
         .to_pandas()
     )
@@ -143,12 +141,14 @@ def render(selected_date: date) -> None:
     # --- Single-day funnel ---
     st.subheader("Escalation Funnel")
     cols = st.columns(4)
-    for i, (stage, label, metric_key) in enumerate([
-        (1, "Scan", "Stage Scan"),
-        (2, "Credential", "Stage Credential"),
-        (3, "Authenticated", "Stage Authenticated"),
-        (4, "Interactive", "Stage Interactive"),
-    ]):
+    for i, (stage, label, metric_key) in enumerate(
+        [
+            (1, "Scan", "Stage Scan"),
+            (2, "Credential", "Stage Credential"),
+            (3, "Authenticated", "Stage Authenticated"),
+            (4, "Interactive", "Stage Interactive"),
+        ]
+    ):
         count = df.filter(pl.col("max_stage") >= stage).height
         cols[i].metric(label, count, help=_metric_help(metric_key))
 
@@ -159,11 +159,13 @@ def render(selected_date: date) -> None:
     manual_count = len(df) - auto_count
     a_col, m_col, _ = st.columns(3)
     a_col.metric(
-        "Automated Bots", auto_count,
+        "Automated Bots",
+        auto_count,
         help=_metric_help("Automated Bots"),
     )
     m_col.metric(
-        "Manual / Unknown", manual_count,
+        "Manual / Unknown",
+        manual_count,
         help=_metric_help("Manual or Unknown"),
     )
 
@@ -206,7 +208,9 @@ def render(selected_date: date) -> None:
     available_cols = [c for c in display_cols if c in df.columns]
 
     min_stage = st.selectbox(
-        "Minimum stage", [1, 2, 3, 4], index=0,
+        "Minimum stage",
+        [1, 2, 3, 4],
+        index=0,
         help=(
             "Filter the table to IPs that reached at least this stage. "
             "1=Scan · 2=Credential · 3=Authenticated · 4=Interactive."
@@ -235,11 +239,13 @@ def render(selected_date: date) -> None:
     slow_burn = multiday.filter(pl.col("is_slow_burn"))
     sb_col, total_col, _ = st.columns(3)
     sb_col.metric(
-        "Slow-Burn IPs", slow_burn.height,
+        "Slow-Burn IPs",
+        slow_burn.height,
         help=_metric_help("Slow-Burn IPs"),
     )
     total_col.metric(
-        "Total IPs (7-day)", multiday.height,
+        "Total IPs (7-day)",
+        multiday.height,
         help=_metric_help("Total Multi-Day IPs"),
     )
 

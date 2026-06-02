@@ -32,10 +32,6 @@ def _section_caption(key: str) -> str | None:
     if triplet is None:
         return None
     return triplet.italic_one_liner()
-"""Brief sections cap top-N tables at this many rows so the markdown stays
-scannable. Matches the dashboard's ``_render_top_n_table`` width and the
-``TOP_N`` constant in ``transform/metrics.py`` so brief and dashboard
-present the same depth."""
 
 
 def _fmt_provider_risk(row: dict[str, Any]) -> str:
@@ -51,6 +47,7 @@ def _fmt_provider_risk(row: dict[str, Any]) -> str:
     shodan_ports+CVE) — per-provider risk_score is the comparable
     0..100 surfacing that docs/risk-scoring.md defines.
     """
+
     def _cell(key: str) -> str:
         value = row.get(key)
         if value is None:
@@ -97,7 +94,7 @@ def _url_tail(url: str, max_len: int = 60) -> str:
     after_scheme = url.split("://", 1)[-1]
     if len(after_scheme) <= max_len:
         return after_scheme
-    return "…" + after_scheme[-max_len + 1:]
+    return "…" + after_scheme[-max_len + 1 :]
 
 
 def _build_vt_hash_lookup(
@@ -125,8 +122,13 @@ def _build_vt_hash_lookup(
     # Pick up only the columns we actually surface; tolerate any subset
     # being missing (e.g. silver from before vt_file_family was added).
     select_cols: list[str] = ["file_hash_sha256"]
-    for col in ("vt_file_family", "vt_file_type", "vt_file_malicious_count",
-                "vt_file_risk_score", "file_url"):
+    for col in (
+        "vt_file_family",
+        "vt_file_type",
+        "vt_file_malicious_count",
+        "vt_file_risk_score",
+        "file_url",
+    ):
         if col in silver.columns:
             select_cols.append(col)
 
@@ -175,18 +177,16 @@ def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
     warn_n = sum(int(r.get("count", 1)) for r in buckets.warning)
     info_n = sum(int(r.get("count", 1)) for r in buckets.info)
     lines.append(
-        f"🔴 Critical: **{crit_n}**  ·  "
-        f"🟡 Warning: **{warn_n}**  ·  "
-        f"🔵 Info: **{info_n}**\n"
+        f"🔴 Critical: **{crit_n}**  ·  🟡 Warning: **{warn_n}**  ·  🔵 Info: **{info_n}**\n"
     )
 
     if buckets.critical:
         lines.append("**Critical** — file creation failed:\n")
         lines.append("| Provider | Error Type | Count | Message |")
         lines.append("|----------|-----------|-------|---------|")
-        for row in sorted(
-            buckets.critical, key=lambda r: int(r.get("count", 1)), reverse=True
-        )[:10]:
+        for row in sorted(buckets.critical, key=lambda r: int(r.get("count", 1)), reverse=True)[
+            :10
+        ]:
             provider = row.get("provider", "?")
             etype = row.get("error_type", "?")
             count = row.get("count", 1)
@@ -245,6 +245,7 @@ def generate_daily_brief(
     # Pipeline timing — sits next to health since both are ops-self-checks.
     if timing is not None:
         from lantana.notify.timing import render_timing_section
+
         lines.extend(render_timing_section(timing))
 
     # Key metrics
@@ -349,9 +350,11 @@ def generate_daily_brief(
                 f"| {_fmt_provider_risk(r)} |"
             )
         lines.append("")
-        lines.append("_Risk legend: `composite (enrichment+behavioral)/2`. "
-                     "A/V/S/G = AbuseIPDB/VirusTotal/Shodan/GreyNoise per-provider "
-                     "risk (0..100, `-` = provider didn't contribute)._")
+        lines.append(
+            "_Risk legend: `composite (enrichment+behavioral)/2`. "
+            "A/V/S/G = AbuseIPDB/VirusTotal/Shodan/GreyNoise per-provider "
+            "risk (0..100, `-` = provider didn't contribute)._"
+        )
         lines.append("")
 
     # Threat actor attribution
@@ -410,13 +413,9 @@ def generate_daily_brief(
         rank_ips: list[tuple[int, list[str]]] = []
         for rank, r in enumerate(clusters.head(TOP_N).iter_rows(named=True), start=1):
             ips_val = r["ips"]
-            ips_list: list[str] = (
-                [str(x) for x in ips_val] if isinstance(ips_val, list) else []
-            )
+            ips_list: list[str] = [str(x) for x in ips_val] if isinstance(ips_val, list) else []
             lines.append(
-                f"| {rank} "
-                f"| `{r['shared_username']}:{r['shared_password']}` "
-                f"| {r['ip_count']} |"
+                f"| {rank} | `{r['shared_username']}:{r['shared_password']}` | {r['ip_count']} |"
             )
             rank_ips.append((rank, ips_list))
         lines.append("")
@@ -436,9 +435,7 @@ def generate_daily_brief(
         lines.append("|------|------|--------|-----------|")
         for rank, r in enumerate(detection.head(TOP_N).iter_rows(named=True), start=1):
             title = r.get("finding_title", "unknown")
-            lines.append(
-                f"| {rank} | {title} | {r['event_count']:,} | {r['unique_ips']:,} |"
-            )
+            lines.append(f"| {rank} | {title} | {r['event_count']:,} | {r['unique_ips']:,} |")
         lines.append("")
 
     # Malware captured — top-10 hashes with VT enrichment context
@@ -595,6 +592,7 @@ def generate_embed_summary(
 
     if timing is not None:
         from lantana.notify.timing import render_timing_one_liner
+
         timing_line = render_timing_one_liner(timing)
         if timing_line is not None:
             parts.append(timing_line)

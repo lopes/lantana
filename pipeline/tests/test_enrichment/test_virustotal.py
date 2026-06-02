@@ -62,7 +62,10 @@ class TestVirusTotalIP:
     @pytest.mark.asyncio()
     async def test_enrich_ip_returns_normalized_fields(self, provider: VirusTotalProvider) -> None:
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=_ok_ip_response(),
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=_ok_ip_response(),
         ):
             result = await provider.enrich_ip("1.2.3.4")
 
@@ -73,17 +76,23 @@ class TestVirusTotalIP:
 
     @pytest.mark.asyncio()
     async def test_404_ip_returns_zeros_without_raising(
-        self, provider: VirusTotalProvider,
+        self,
+        provider: VirusTotalProvider,
     ) -> None:
         """VT 404 on IP = 'never indexed'. Return empty result, don't error."""
         not_found = httpx.Response(
-            404, json={"error": {"code": "NotFoundError"}},
+            404,
+            json={"error": {"code": "NotFoundError"}},
             request=httpx.Request(
-                "GET", "https://www.virustotal.com/api/v3/ip_addresses/9.9.9.9",
+                "GET",
+                "https://www.virustotal.com/api/v3/ip_addresses/9.9.9.9",
             ),
         )
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=not_found,
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=not_found,
         ):
             result = await provider.enrich_ip("9.9.9.9")
 
@@ -96,10 +105,14 @@ class TestVirusTotalIP:
 class TestVirusTotalHash:
     @pytest.mark.asyncio()
     async def test_enrich_hash_returns_normalized_fields(
-        self, provider: VirusTotalProvider,
+        self,
+        provider: VirusTotalProvider,
     ) -> None:
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=_ok_hash_response(),
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=_ok_hash_response(),
         ):
             result = await provider.enrich_hash("a" * 64)
 
@@ -112,17 +125,23 @@ class TestVirusTotalHash:
 
     @pytest.mark.asyncio()
     async def test_404_hash_returns_zeros_without_raising(
-        self, provider: VirusTotalProvider,
+        self,
+        provider: VirusTotalProvider,
     ) -> None:
         """VT 404 on hash = 'never analysed'. Common for fresh honeypot malware."""
         not_found = httpx.Response(
-            404, json={"error": {"code": "NotFoundError"}},
+            404,
+            json={"error": {"code": "NotFoundError"}},
             request=httpx.Request(
-                "GET", "https://www.virustotal.com/api/v3/files/abc",
+                "GET",
+                "https://www.virustotal.com/api/v3/files/abc",
             ),
         )
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=not_found,
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=not_found,
         ):
             result = await provider.enrich_hash("a" * 64)
 
@@ -135,7 +154,8 @@ class TestVirusTotalHash:
 
     @pytest.mark.asyncio()
     async def test_family_falls_back_to_suggested_label(
-        self, provider: VirusTotalProvider,
+        self,
+        provider: VirusTotalProvider,
     ) -> None:
         """When ``popular_threat_name`` is empty but ``suggested_threat_label``
         is present, the suggested label is the family. Saw this on op_alpha
@@ -156,14 +176,18 @@ class TestVirusTotalHash:
             request=httpx.Request("GET", "https://www.virustotal.com/api/v3/files/abc"),
         )
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=response,
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=response,
         ):
             result = await provider.enrich_hash("a" * 64)
         assert result.data["vt_file_family"] == "downloader.coinminer/xmrig"
 
     @pytest.mark.asyncio()
     async def test_family_empty_when_classification_absent(
-        self, provider: VirusTotalProvider,
+        self,
+        provider: VirusTotalProvider,
     ) -> None:
         """Hash with no consensus and no synthesised label → empty string.
 
@@ -182,14 +206,18 @@ class TestVirusTotalHash:
             request=httpx.Request("GET", "https://www.virustotal.com/api/v3/files/abc"),
         )
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=response,
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=response,
         ):
             result = await provider.enrich_hash("a" * 64)
         assert result.data["vt_file_family"] == ""
 
     @pytest.mark.asyncio()
     async def test_200_ip_without_as_owner_returns_empty_string(
-        self, provider: VirusTotalProvider,
+        self,
+        provider: VirusTotalProvider,
     ) -> None:
         """Some VT 200 responses lack `as_owner` (notably on private-space IPs).
 
@@ -208,11 +236,15 @@ class TestVirusTotalHash:
                 },
             },
             request=httpx.Request(
-                "GET", "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
+                "GET",
+                "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
             ),
         )
         with patch.object(
-            provider._client, "get", new_callable=AsyncMock, return_value=sparse,
+            provider._client,
+            "get",
+            new_callable=AsyncMock,
+            return_value=sparse,
         ):
             result = await provider.enrich_ip("1.2.3.4")
 
@@ -234,14 +266,18 @@ class TestVirusTotalRetry:
         correct authority to decide when to stop hitting the provider.
         """
         rate_limited = httpx.Response(
-            429, json={"error": "Rate limit"},
+            429,
+            json={"error": "Rate limit"},
             request=httpx.Request(
-                "GET", "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
+                "GET",
+                "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
             ),
         )
         mock_get = AsyncMock(return_value=rate_limited)
-        with patch.object(provider._client, "get", mock_get), \
-             pytest.raises(httpx.HTTPStatusError) as exc_info:
+        with (
+            patch.object(provider._client, "get", mock_get),
+            pytest.raises(httpx.HTTPStatusError) as exc_info,
+        ):
             await provider.enrich_ip("1.2.3.4")
         assert exc_info.value.response.status_code == 429
         assert mock_get.await_count == 1  # single attempt, no retry
@@ -250,14 +286,15 @@ class TestVirusTotalRetry:
     async def test_403_fails_fast(self, provider: VirusTotalProvider) -> None:
         """Auth errors must NOT be retried."""
         forbidden = httpx.Response(
-            403, json={"error": "wrong key"},
+            403,
+            json={"error": "wrong key"},
             request=httpx.Request(
-                "GET", "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
+                "GET",
+                "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
             ),
         )
         mock_get = AsyncMock(return_value=forbidden)
-        with patch.object(provider._client, "get", mock_get), \
-             pytest.raises(httpx.HTTPStatusError):
+        with patch.object(provider._client, "get", mock_get), pytest.raises(httpx.HTTPStatusError):
             await provider.enrich_ip("1.2.3.4")
         assert mock_get.await_count == 1
 
@@ -356,7 +393,8 @@ class TestVtIpRiskScoreInResult:
     @pytest.mark.asyncio()
     async def test_404_response_score_is_zero(self, provider: VirusTotalProvider) -> None:
         not_found = httpx.Response(
-            404, json={},
+            404,
+            json={},
             request=httpx.Request("GET", "https://www.virustotal.com/api/v3/ip_addresses/9.9.9.9"),
         )
         mock_get = AsyncMock(return_value=not_found)

@@ -24,16 +24,22 @@ def _ts(minute: int = 0) -> datetime:
 def _reporting() -> ReportingConfig:
     return ReportingConfig(
         operator=OperatorConfig(
-            name="Test Operator", handle="test_op",
-            contact="https://test.example.com", pgp_fingerprint="AABB",
+            name="Test Operator",
+            handle="test_op",
+            contact="https://test.example.com",
+            pgp_fingerprint="AABB",
         ),
         sharing=SharingConfig(
-            tlp="GREEN", community="Test Community",
+            tlp="GREEN",
+            community="Test Community",
             discord_channel="test-intel",
         ),
         operation=OperationConfig(
-            name="Test Operation", description="Test honeypot",
-            sector="Technology", region="US", start_date="2026-01-01",
+            name="Test Operation",
+            description="Test honeypot",
+            sector="Technology",
+            region="US",
+            start_date="2026-01-01",
         ),
         redact=RedactConfig(
             infrastructure_ips=["10.50.99.100"],
@@ -44,51 +50,60 @@ def _reporting() -> ReportingConfig:
 
 
 def _make_reputation() -> pl.DataFrame:
-    return pl.DataFrame({
-        "src_endpoint_ip": ["203.0.113.50", "198.51.100.22", "192.0.2.99"],
-        "risk_score": [87.5, 42.3, 5.0],
-        "total_events": [50, 80, 20],
-        "geo_country": ["CN", "RU", "US"],
-        "auth_attempts": [10, 80, 0],
-        "auth_successes": [2, 0, 0],
-        "commands_executed": [5, 0, 0],
-        "findings_triggered": [3, 0, 0],
-        "datasets": [["cowrie", "suricata", "nftables"], ["cowrie"], ["nftables"]],
-        "first_seen": [_ts(0), _ts(5), _ts(8)],
-        "last_seen": [_ts(10), _ts(6), _ts(9)],
-    })
+    return pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22", "192.0.2.99"],
+            "risk_score": [87.5, 42.3, 5.0],
+            "total_events": [50, 80, 20],
+            "geo_country": ["CN", "RU", "US"],
+            "auth_attempts": [10, 80, 0],
+            "auth_successes": [2, 0, 0],
+            "commands_executed": [5, 0, 0],
+            "findings_triggered": [3, 0, 0],
+            "datasets": [["cowrie", "suricata", "nftables"], ["cowrie"], ["nftables"]],
+            "first_seen": [_ts(0), _ts(5), _ts(8)],
+            "last_seen": [_ts(10), _ts(6), _ts(9)],
+        }
+    )
 
 
 def _make_progression() -> pl.DataFrame:
-    return pl.DataFrame({
-        "src_endpoint_ip": ["203.0.113.50", "198.51.100.22", "192.0.2.99"],
-        "max_stage": [4, 2, 1],
-        "stage_label": ["interactive", "credential", "scan"],
-        "is_automated": [False, True, False],
-        "first_seen": [_ts(0), _ts(5), _ts(8)],
-        "last_seen": [_ts(10), _ts(6), _ts(9)],
-    })
+    return pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22", "192.0.2.99"],
+            "max_stage": [4, 2, 1],
+            "stage_label": ["interactive", "credential", "scan"],
+            "is_automated": [False, True, False],
+            "first_seen": [_ts(0), _ts(5), _ts(8)],
+            "last_seen": [_ts(10), _ts(6), _ts(9)],
+        }
+    )
 
 
 def _make_clusters() -> pl.DataFrame:
-    return pl.DataFrame({
-        "cluster_id": ["abc123"],
-        "shared_username": ["root"],
-        "shared_password": ["admin"],
-        "ip_count": [2],
-        "ips": [["203.0.113.50", "198.51.100.22"]],
-        "total_events": [15],
-        "first_seen": [_ts(0)],
-        "last_seen": [_ts(6)],
-    })
+    return pl.DataFrame(
+        {
+            "cluster_id": ["abc123"],
+            "shared_username": ["root"],
+            "shared_password": ["admin"],
+            "ip_count": [2],
+            "ips": [["203.0.113.50", "198.51.100.22"]],
+            "total_events": [15],
+            "first_seen": [_ts(0)],
+            "last_seen": [_ts(6)],
+        }
+    )
 
 
 class TestGenerateBundle:
     def test_returns_valid_bundle(self) -> None:
         """generate_bundle returns a STIX Bundle."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         assert isinstance(bundle, stix2.Bundle)
         assert len(bundle.objects) > 0
@@ -96,8 +111,11 @@ class TestGenerateBundle:
     def test_contains_identity(self) -> None:
         """Bundle contains an Identity for the operator."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         identities = [o for o in bundle.objects if o.type == "identity"]
         assert len(identities) == 1
@@ -106,8 +124,11 @@ class TestGenerateBundle:
     def test_contains_indicators_for_risky_ips(self) -> None:
         """Bundle has Indicator objects for IPs above risk threshold."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         indicators = [o for o in bundle.objects if o.type == "indicator"]
         # 203.0.113.50 (87.5) and 198.51.100.22 (42.3) are above default threshold
@@ -120,8 +141,11 @@ class TestGenerateBundle:
     def test_indicator_has_pattern(self) -> None:
         """Indicators have valid STIX patterns."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         indicators = [o for o in bundle.objects if o.type == "indicator"]
         for ind in indicators:
@@ -130,8 +154,11 @@ class TestGenerateBundle:
     def test_contains_campaign_from_clusters(self) -> None:
         """Bundle has Campaign objects from credential clusters."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         campaigns = [o for o in bundle.objects if o.type == "campaign"]
         assert len(campaigns) >= 1
@@ -140,8 +167,11 @@ class TestGenerateBundle:
     def test_contains_relationships(self) -> None:
         """Bundle has Relationship objects linking indicators to campaigns."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         relationships = [o for o in bundle.objects if o.type == "relationship"]
         assert len(relationships) > 0
@@ -149,8 +179,11 @@ class TestGenerateBundle:
     def test_contains_report(self) -> None:
         """Bundle contains a Report wrapping all objects."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         reports = [o for o in bundle.objects if o.type == "report"]
         assert len(reports) == 1
@@ -160,8 +193,11 @@ class TestGenerateBundle:
         """OPSEC: no infrastructure IPs appear anywhere in the bundle."""
         reporting = _reporting()
         bundle = generate_bundle(
-            date(2026, 4, 25), reporting,
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            reporting,
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         bundle_str = bundle.serialize()
         for ip in reporting.redact.infrastructure_ips:
@@ -170,8 +206,11 @@ class TestGenerateBundle:
     def test_has_tlp_marking(self) -> None:
         """Indicators reference TLP marking from config."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            _make_reputation(), _make_progression(), _make_clusters(),
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
         )
         indicators = [o for o in bundle.objects if o.type == "indicator"]
         assert len(indicators) > 0
@@ -183,8 +222,11 @@ class TestGenerateBundle:
     def test_empty_data_returns_minimal_bundle(self) -> None:
         """Empty gold data still produces a valid bundle with identity."""
         bundle = generate_bundle(
-            date(2026, 4, 25), _reporting(),
-            pl.DataFrame(), pl.DataFrame(), pl.DataFrame(),
+            date(2026, 4, 25),
+            _reporting(),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            pl.DataFrame(),
         )
         assert isinstance(bundle, stix2.Bundle)
         identities = [o for o in bundle.objects if o.type == "identity"]

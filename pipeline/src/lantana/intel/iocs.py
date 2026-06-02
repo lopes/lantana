@@ -35,16 +35,12 @@ def _is_real_attacker_ip(ip: str) -> bool:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
-    return not (
-        addr.is_unspecified
-        or addr.is_loopback
-        or addr.is_multicast
-        or addr.is_link_local
-    )
+    return not (addr.is_unspecified or addr.is_loopback or addr.is_multicast or addr.is_link_local)
 
 
 def _build_ip_rows(
-    df: pl.DataFrame, reputation: pl.DataFrame,
+    df: pl.DataFrame,
+    reputation: pl.DataFrame,
 ) -> list[dict[str, object]]:
     """Aggregate IP IOCs per ``src_endpoint_ip`` and join risk_score.
 
@@ -57,13 +53,13 @@ def _build_ip_rows(
 
     agg = (
         df.filter(pl.col("src_endpoint_ip").is_not_null())
-          .group_by("src_endpoint_ip")
-          .agg(
-              pl.col("dataset").unique().alias("datasets"),
-              pl.len().alias("count"),
-              pl.col("time").min().alias("first_seen"),
-              pl.col("time").max().alias("last_seen"),
-          )
+        .group_by("src_endpoint_ip")
+        .agg(
+            pl.col("dataset").unique().alias("datasets"),
+            pl.len().alias("count"),
+            pl.col("time").min().alias("first_seen"),
+            pl.col("time").max().alias("last_seen"),
+        )
     )
 
     if not reputation.is_empty() and "risk_score" in reputation.columns:
@@ -82,23 +78,25 @@ def _build_ip_rows(
         ip = r["src_endpoint_ip"]
         if not isinstance(ip, str) or not _is_real_attacker_ip(ip):
             continue
-        datasets = ";".join(sorted(
-            str(d) for d in (r.get("datasets") or []) if d
-        ))
-        rows.append({
-            "ioc_type": "ip",
-            "value": ip,
-            "datasets": datasets,
-            "count": int(r["count"]),
-            "risk_score": r.get("risk_score"),
-            "first_seen": r["first_seen"],
-            "last_seen": r["last_seen"],
-        })
+        datasets = ";".join(sorted(str(d) for d in (r.get("datasets") or []) if d))
+        rows.append(
+            {
+                "ioc_type": "ip",
+                "value": ip,
+                "datasets": datasets,
+                "count": int(r["count"]),
+                "risk_score": r.get("risk_score"),
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+            }
+        )
     return rows
 
 
 def _build_value_rows(
-    df: pl.DataFrame, column: str, ioc_type: str,
+    df: pl.DataFrame,
+    column: str,
+    ioc_type: str,
 ) -> list[dict[str, object]]:
     """Aggregate string-valued IOCs (file hashes, URLs) on ``column``.
 
@@ -111,13 +109,13 @@ def _build_value_rows(
 
     agg = (
         df.filter(pl.col(column).is_not_null())
-          .group_by(column)
-          .agg(
-              pl.col("dataset").unique().alias("datasets"),
-              pl.len().alias("count"),
-              pl.col("time").min().alias("first_seen"),
-              pl.col("time").max().alias("last_seen"),
-          )
+        .group_by(column)
+        .agg(
+            pl.col("dataset").unique().alias("datasets"),
+            pl.len().alias("count"),
+            pl.col("time").min().alias("first_seen"),
+            pl.col("time").max().alias("last_seen"),
+        )
     )
 
     rows: list[dict[str, object]] = []
@@ -125,23 +123,24 @@ def _build_value_rows(
         value = r[column]
         if not isinstance(value, str) or not value:
             continue
-        datasets = ";".join(sorted(
-            str(d) for d in (r.get("datasets") or []) if d
-        ))
-        rows.append({
-            "ioc_type": ioc_type,
-            "value": value,
-            "datasets": datasets,
-            "count": int(r["count"]),
-            "risk_score": None,
-            "first_seen": r["first_seen"],
-            "last_seen": r["last_seen"],
-        })
+        datasets = ";".join(sorted(str(d) for d in (r.get("datasets") or []) if d))
+        rows.append(
+            {
+                "ioc_type": ioc_type,
+                "value": value,
+                "datasets": datasets,
+                "count": int(r["count"]),
+                "risk_score": None,
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+            }
+        )
     return rows
 
 
 def build_raw_ioc_export(
-    silver: pl.LazyFrame, reputation: pl.DataFrame,
+    silver: pl.LazyFrame,
+    reputation: pl.DataFrame,
 ) -> tuple[bytes, int] | None:
     """Build a gzipped CSV containing every IP / hash / URL in silver.
 

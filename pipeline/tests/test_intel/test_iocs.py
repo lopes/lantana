@@ -47,38 +47,54 @@ class TestBuildRawIocExport:
     for IPs, gzips the CSV. Returns None when there's nothing to export."""
 
     def _silver(self) -> pl.DataFrame:
-        return pl.DataFrame({
-            "src_endpoint_ip": [
-                "203.0.113.50", "203.0.113.50", "198.51.100.22",
-                "0.0.0.0",  # noise — must be filtered out
-                "honeypot-sensor-01",  # pseudonym — must be filtered out
-            ],
-            "dataset": ["cowrie", "suricata", "cowrie", "nftables", "cowrie"],
-            "time": [_ts(0), _ts(5), _ts(2), _ts(3), _ts(4)],
-            "file_hash_sha256": [
-                "a" * 64, None, "b" * 64, None, None,
-            ],
-            "file_url": [
-                "http://example.com/x.sh", None, "http://example.net/y.bin", None, None,
-            ],
-        })
+        return pl.DataFrame(
+            {
+                "src_endpoint_ip": [
+                    "203.0.113.50",
+                    "203.0.113.50",
+                    "198.51.100.22",
+                    "0.0.0.0",  # noise — must be filtered out
+                    "honeypot-sensor-01",  # pseudonym — must be filtered out
+                ],
+                "dataset": ["cowrie", "suricata", "cowrie", "nftables", "cowrie"],
+                "time": [_ts(0), _ts(5), _ts(2), _ts(3), _ts(4)],
+                "file_hash_sha256": [
+                    "a" * 64,
+                    None,
+                    "b" * 64,
+                    None,
+                    None,
+                ],
+                "file_url": [
+                    "http://example.com/x.sh",
+                    None,
+                    "http://example.net/y.bin",
+                    None,
+                    None,
+                ],
+            }
+        )
 
     def _reputation(self) -> pl.DataFrame:
-        return pl.DataFrame({
-            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
-            "risk_score": [87.5, 42.3],
-        })
+        return pl.DataFrame(
+            {
+                "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
+                "risk_score": [87.5, 42.3],
+            }
+        )
 
     def _csv_rows(self, data: bytes) -> list[dict[str, str]]:
         text = gzip.decompress(data).decode("utf-8")
         return list(csv.DictReader(io.StringIO(text)))
 
     def test_returns_none_for_empty_silver(self) -> None:
-        empty = pl.DataFrame(schema={
-            "src_endpoint_ip": pl.Utf8,
-            "dataset": pl.Utf8,
-            "time": pl.Datetime,
-        }).lazy()
+        empty = pl.DataFrame(
+            schema={
+                "src_endpoint_ip": pl.Utf8,
+                "dataset": pl.Utf8,
+                "time": pl.Datetime,
+            }
+        ).lazy()
         assert build_raw_ioc_export(empty, self._reputation()) is None
 
     def test_returns_none_when_no_ip_column(self) -> None:
@@ -161,9 +177,12 @@ class TestBuildRawIocExport:
     def test_empty_reputation_leaves_risk_score_null(self) -> None:
         """If reputation is empty (e.g. no enrichment that day), IPs still
         export — they just don't carry a risk_score."""
-        empty_rep = pl.DataFrame(schema={
-            "src_endpoint_ip": pl.Utf8, "risk_score": pl.Float64,
-        })
+        empty_rep = pl.DataFrame(
+            schema={
+                "src_endpoint_ip": pl.Utf8,
+                "risk_score": pl.Float64,
+            }
+        )
         result = build_raw_ioc_export(self._silver().lazy(), empty_rep)
         assert result is not None
         rows = self._csv_rows(result[0])

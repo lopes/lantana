@@ -73,13 +73,17 @@ def render(selected_date: date) -> None:
         with user_col:
             st.subheader("Top Usernames")
             _render_top_n_table(
-                row.get("top_usernames", []) or [], "Username", "No username data.",
+                row.get("top_usernames", []) or [],
+                "Username",
+                "No username data.",
             )
 
         with pass_col:
             st.subheader("Top Passwords")
             _render_top_n_table(
-                row.get("top_passwords", []) or [], "Password", "No password data.",
+                row.get("top_passwords", []) or [],
+                "Password",
+                "No password data.",
             )
 
         with pair_col:
@@ -99,7 +103,8 @@ def render(selected_date: date) -> None:
         return
 
     st.metric(
-        "Active Clusters", len(clusters),
+        "Active Clusters",
+        len(clusters),
         help=_metric_help("Active Clusters"),
     )
 
