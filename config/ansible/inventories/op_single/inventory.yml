@@ -4,7 +4,7 @@ all:
     single_nodes:
       hosts:
         sn-01: # This automatically becomes {{ inventory_hostname }}
-          ansible_host: 172.31.99.129
+          ansible_host: 203.0.113.129
           lantana_profile: "single_node_sensor"
           sensor_honeypots:
             - cowrie

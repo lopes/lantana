@@ -3,14 +3,14 @@ all:
     honeywall_nodes:
       hosts:
         honeywall-01:
-          ansible_host: 192.168.1.11
+          ansible_host: 203.0.113.11
           node_hostname: honeywall-01
           node_role: "honeywall gateway"
 
     sensor_low_nodes:
       hosts:
         low-01:
-          ansible_host: 192.168.1.12
+          ansible_host: 203.0.113.12
           node_hostname: low-01
           node_role: "low-interaction sensor"
           sensor_honeypots:
@@ -20,13 +20,13 @@ all:
     sensor_high_nodes:
       hosts:
         high-01:
-          ansible_host: 192.168.1.13
+          ansible_host: 203.0.113.13
           node_hostname: high-01
           node_role: "high-interaction sensor"
 
     collector_nodes:
       hosts:
         collector-01:
-          ansible_host: 192.168.1.14
+          ansible_host: 203.0.113.14
           node_hostname: collector-01
           node_role: "collector processor"
