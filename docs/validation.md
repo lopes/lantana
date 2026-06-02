@@ -2,7 +2,7 @@
 
 A post-deploy verification walkthrough — from "the playbook said `failed=0`" to "honeypots are actually capturing attacker traffic and the pipeline is producing usable intel." Covers static infrastructure checks, active protocol smoke tests, telemetry, enrichment, reports, and dashboard. Every file, directory, and service is listed explicitly.
 
-> This guide assumes the operation has already been deployed via [`setup.md`](setup.md) (`deploy_single.yml` + `deploy_honeypots.yml`). For the first-deploy walkthrough — provisioning the server, configuring the inventory, vault, narrative — start there.
+> This guide assumes the operation has already been deployed via [`setup.md`](/docs/setup.md) (`deploy_single.yml` + `deploy_honeypots.yml`). For the first-deploy walkthrough — provisioning the server, configuring the inventory, vault, narrative — start there.
 
 ## Executable validation (the fast path)
 
@@ -692,7 +692,7 @@ Then on your workstation, open <http://localhost:8501> and verify each page:
 
 **IP Reputation page:**
 
-- `st.expander("How risk_score is calculated")` below the page caption — formula, bucket thresholds (sourced from `intel/stix.py:RISK_THRESHOLD` and `RISK_HIGH_THRESHOLD`), RIOT short-circuit note, link to [`docs/risk-scoring.md`](risk-scoring.md).
+- `st.expander("How risk_score is calculated")` below the page caption — formula, bucket thresholds (sourced from `intel/stix.py:RISK_THRESHOLD` and `RISK_HIGH_THRESHOLD`), RIOT short-circuit note, link to [`docs/risk-scoring.md`](/docs/risk-scoring.md).
 - High / Medium / Low / Total IPs metric cards with registry-sourced tooltips.
 - Risk Score Distribution — three side-by-side histograms (composite, enrichment, behavioral).
 - Filterable IP table; slider help= notes that `min_risk=40` mirrors the STIX gate.

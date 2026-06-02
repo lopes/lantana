@@ -27,7 +27,7 @@ Commands run and environments tested. Example:
 
 ## Checklist
 
-- [ ] Read [CONTRIBUTING.md](../CONTRIBUTING.md)
+- [ ] Read [CONTRIBUTING.md](/CONTRIBUTING.md)
 - [ ] CI commands pass locally (only those relevant to the change)
 - [ ] No real WAN IPs, hostnames, domains, or ASNs in tracked files (RFC 5737 / RFC 3849 / RFC 2606 / RFC 5398 ranges only)
 - [ ] Docs updated (`docs/*.md`, `CLAUDE.md`, `README.md`) where behavior changed

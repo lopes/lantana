@@ -39,7 +39,7 @@ cd config/ansible
 cp -r inventories/op_single inventories/op_myop
 ```
 
-Customize `inventory.yml`, `main.yml`, `network.yml`, `narrative.yml`, and `reporting.yml` under `inventories/op_myop/group_vars/all/`. See the [setup guide](docs/setup.md) for an annotated walkthrough of each file. Create the encrypted vault:
+Customize `inventory.yml`, `main.yml`, `network.yml`, `narrative.yml`, and `reporting.yml` under `inventories/op_myop/group_vars/all/`. See the [setup guide](/docs/setup.md) for an annotated walkthrough of each file. Create the encrypted vault:
 
 ```bash
 ansible-vault create inventories/op_myop/group_vars/all/vault.yml
@@ -90,15 +90,15 @@ lantana/
 
 | Document | Description |
 |---|---|
-| [Architecture](docs/architecture.md) | Zoned model, deployment modes, network topology, tech stack |
-| [Setup Guide](docs/setup.md) | First-deploy walkthrough: prepare server, clone an operation, vault, narrative, deploy honeypots |
-| [Pipeline](docs/pipeline.md) | Data pipeline: bronze/silver/gold datalake, OCSF normalization, enrichment, reports, STIX |
-| [Integrations](docs/integrations.md) | Third-party threat-intel providers: endpoints, auth, rate limits, field extraction, live-probe workflow |
-| [Validation](docs/validation.md) | Post-deploy verification: protocol smoke tests + day-by-day pipeline/report/dashboard checks |
-| [Risk Scoring](docs/risk-scoring.md) | Composite + per-provider risk score formula, RIOT short-circuit, decomposition |
-| [Honeypots](docs/honeypots.md) | Cowrie + Dionaea: per-honeypot config model, capability allowlist, persona drift notes |
-| [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes (Dionaea startup, nftables, Vector pipeline) |
-| [Glossary](docs/glossary.md) | Terminology and definitions |
+| [Architecture](/docs/architecture.md) | Zoned model, deployment modes, network topology, tech stack |
+| [Setup Guide](/docs/setup.md) | First-deploy walkthrough: prepare server, clone an operation, vault, narrative, deploy honeypots |
+| [Pipeline](/docs/pipeline.md) | Data pipeline: bronze/silver/gold datalake, OCSF normalization, enrichment, reports, STIX |
+| [Integrations](/docs/integrations.md) | Third-party threat-intel providers: endpoints, auth, rate limits, field extraction, live-probe workflow |
+| [Validation](/docs/validation.md) | Post-deploy verification: protocol smoke tests + day-by-day pipeline/report/dashboard checks |
+| [Risk Scoring](/docs/risk-scoring.md) | Composite + per-provider risk score formula, RIOT short-circuit, decomposition |
+| [Honeypots](/docs/honeypots.md) | Cowrie + Dionaea: per-honeypot config model, capability allowlist, persona drift notes |
+| [Troubleshooting](/docs/troubleshooting.md) | Common issues and fixes (Dionaea startup, nftables, Vector pipeline) |
+| [Glossary](/docs/glossary.md) | Terminology and definitions |
 
 ---
 
@@ -106,7 +106,7 @@ lantana/
 
 Lantana intentionally avoids Kubernetes (honeypots are disposable, not HA), SIEM-first architectures (research honeypot data benefits from batch analytics over real-time alerting), and monolithic stacks like T-Pot (Lantana is composable — infrastructure, policy, sensors, and narratives evolve independently).
 
-For the full rationale, see [docs/architecture.md](docs/architecture.md).
+For the full rationale, see [docs/architecture.md](/docs/architecture.md).
 
 ---
 
@@ -124,4 +124,4 @@ Tracked work for post-v1.0.0 — a mix of known gaps deliberately deferred from 
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](/LICENSE).

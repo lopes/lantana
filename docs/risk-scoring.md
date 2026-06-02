@@ -2,7 +2,7 @@
 
 This document is the analyst's reference for how Lantana derives `risk_score` for every source IP in the gold layer. Open it when you're staring at a Discord brief or a dashboard row and wondering *why this IP got this score*.
 
-> **Context:** the per-provider sub-scores below land in silver during the enrichment step described in [`pipeline.md`](pipeline.md), populated from the third-party APIs documented in [`integrations.md`](integrations.md). The gold composite (`risk_score`) is the single number consumed by STIX export, the Discord brief, and the dashboard.
+> **Context:** the per-provider sub-scores below land in silver during the enrichment step described in [`pipeline.md`](/docs/pipeline.md), populated from the third-party APIs documented in [`integrations.md`](/docs/integrations.md). The gold composite (`risk_score`) is the single number consumed by STIX export, the Discord brief, and the dashboard.
 
 ## TL;DR
 
@@ -149,7 +149,7 @@ The `fill_null(0)` on the enrichment side is deliberate: an IP with zero enrichm
 
 ## Downstream consumers
 
-The threshold values live as module-level constants in [`intel/stix.py`](../pipeline/src/lantana/intel/stix.py) — `RISK_THRESHOLD = 40.0` (STIX indicator gate, also the dashboard's Medium-bucket floor) and `RISK_HIGH_THRESHOLD = 70.0` (dashboard's High bucket). Every consumer below imports those constants rather than hardcoding the numbers, so a future re-tune is a single edit.
+The threshold values live as module-level constants in [`intel/stix.py`](/pipeline/src/lantana/intel/stix.py) — `RISK_THRESHOLD = 40.0` (STIX indicator gate, also the dashboard's Medium-bucket floor) and `RISK_HIGH_THRESHOLD = 70.0` (dashboard's High bucket). Every consumer below imports those constants rather than hardcoding the numbers, so a future re-tune is a single edit.
 
 | Consumer | Field read | Threshold / behaviour |
 |---|---|---|

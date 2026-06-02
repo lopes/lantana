@@ -259,7 +259,7 @@ If you re-deploy often, point `ANSIBLE_VAULT_PASSWORD_FILE` at a 0600-mode file 
 - `type` is `apikey` or `webhook`
 - `service` is the lowercase provider name (`virustotal`, `shodan`, `discord`, ...)
 
-The same keys appear unchanged in the rendered `/etc/lantana/collector/secrets.json` on the collector — that file is just the decrypted view of the vault, not a separate schema. See [Vault ↔ secrets.json nomenclature](pipeline.md#vault--secretsjson-nomenclature) for the reasoning.
+The same keys appear unchanged in the rendered `/etc/lantana/collector/secrets.json` on the collector — that file is just the decrypted view of the vault, not a separate schema. See [Vault ↔ secrets.json nomenclature](/docs/pipeline.md#vault--secretsjson-nomenclature) for the reasoning.
 
 ### What goes in the template
 
@@ -297,8 +297,8 @@ So the only way to disable GreyNoise is to **omit the line entirely** — empty 
 ### References
 
 - GreyNoise Community API: https://docs.greynoise.io/docs/using-the-greynoise-community-api (50 searches per 7 days)
-- Endpoints, free-tier limits, extracted fields, and the live-probe workflow: [`integrations.md`](integrations.md)
-- Auth-mode matrix (per-provider behaviour by vault state): [Provider auth modes](pipeline.md#72-provider-auth-modes)
+- Endpoints, free-tier limits, extracted fields, and the live-probe workflow: [`integrations.md`](/docs/integrations.md)
+- Auth-mode matrix (per-provider behaviour by vault state): [Provider auth modes](/docs/pipeline.md#72-provider-auth-modes)
 
 ---
 
@@ -392,7 +392,7 @@ This step must run before step 9: `tests/validate-single-node.yml` asserts the c
 
 ## 9. Verify the Deployment
 
-The deploy commands above (§7, §8) print a play recap. `failed=0` on both means the playbook ran clean — that's the necessary condition. The sufficient condition is in [`validation.md`](validation.md), which walks through:
+The deploy commands above (§7, §8) print a play recap. `failed=0` on both means the playbook ran clean — that's the necessary condition. The sufficient condition is in [`validation.md`](/docs/validation.md), which walks through:
 
 - §0.1 — Static infrastructure checks (`validate-single-node.yml` + manual spot-checks)
 - §0.2 — Active protocol smoke tests (probe each exposed port from your workstation, verify the deception → log → bronze chain end to end)
@@ -439,7 +439,7 @@ ansible-playbook -i inventories/op_<name>/inventory.yml \
   tests/validate-pipeline-cycle.yml --ask-vault-pass
 ```
 
-**Ongoing** — see [`validation.md`](validation.md) for the day-by-day verification walkthrough (Day 1 first-cycle interpretation, Day 7 dashboard + STIX, ongoing health checks).
+**Ongoing** — see [`validation.md`](/docs/validation.md) for the day-by-day verification walkthrough (Day 1 first-cycle interpretation, Day 7 dashboard + STIX, ongoing health checks).
 
 <!-- §11 (Post-deploy first-cycle verification) moved to validation.md (Day 1 + Day 7). -->
 

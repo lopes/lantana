@@ -165,7 +165,7 @@ Defect #11 (2026-05-21): without these, a Shodan re-run with 4670 IPs / 1243 cac
 - **Gold composite is mean-of-two.** `enrichment_risk_score` is `pl.mean_horizontal` of the four per-provider scores (skipping nulls). `behavioral_risk_score` is honeypot-activity (auth + commands + downloads + findings). Final `risk_score = (enrichment.fill_null(0) + behavioral) / 2`, clipped 0..100.
 - **GreyNoise RIOT short-circuits to 0.** RIOT means the IP is on the Rule-It-Out list (known-benign infrastructure — CDNs, NTP, DNS). When set, `greynoise_risk_score=0` overrides classification, pulling the enrichment mean down. The row stays in silver with full enrichment intact; only the score is overridden. This prevents false-positive Indicators in STIX export and is the only place in the formula where one signal can subtract from another.
 
-Full reference (including all per-provider formulas, worked examples, and the FAQ): [docs/risk-scoring.md](docs/risk-scoring.md). Any change to the formula must update that doc and the test fixtures in `pipeline/tests/test_transform/test_metrics.py::TestRiskScoreDecomposition`.
+Full reference (including all per-provider formulas, worked examples, and the FAQ): [docs/risk-scoring.md](/docs/risk-scoring.md). Any change to the formula must update that doc and the test fixtures in `pipeline/tests/test_transform/test_metrics.py::TestRiskScoreDecomposition`.
 
 ## Pipeline verification discipline
 
@@ -318,4 +318,4 @@ Validation tooling:
 - `scripts/probe-mmdb.py` — full-stack MaxMind validation. Reads `vault_apikey_maxmind` from `--secrets <secrets.json>`, downloads the City + ASN tarballs if not already on disk, queries them, and prints raw + Vector-VRL-normalized output. Auto-falls back to `/tmp/lantana/mmdb` when the collector path isn't present.
 - `scripts/probe-enrichment.py` — hits each HTTP provider's live API; prints raw upstream response + normalized `EnrichmentResult.data`.
 
-See [docs/integrations.md](docs/integrations.md) for endpoints, free-tier limits, field-extraction tables, and enablement rules.
+See [docs/integrations.md](/docs/integrations.md) for endpoints, free-tier limits, field-extraction tables, and enablement rules.

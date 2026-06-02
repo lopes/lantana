@@ -118,7 +118,7 @@ left-joined back onto bronze by src_ip → silver Parquet row:
     { src_ip, timestamp, eventid, ..., geo.*, abuseipdb_*, shodan_*, vt_*, greynoise_* }
 ```
 
-The runner code lives in [`enrichment/runner.py`](../pipeline/src/lantana/enrichment/runner.py); IOC extraction helpers in [`enrichment/ioc.py`](../pipeline/src/lantana/enrichment/ioc.py):
+The runner code lives in [`enrichment/runner.py`](/pipeline/src/lantana/enrichment/runner.py); IOC extraction helpers in [`enrichment/ioc.py`](/pipeline/src/lantana/enrichment/ioc.py):
 
 - `_enrich_iocs_with_provider(provider_name, provider, ioc_type, iocs, cache, errors)` iterates IOCs of one type for one provider. For each IOC: cache-first; on miss it calls `provider.enrich_ip(value)` or `provider.enrich_hash(value)` depending on `ioc_type`, caches the result, appends to the returned list. Exceptions don't propagate — they're recorded into the error file and the IOC just doesn't appear in that provider's result list. Returns `(results, cache_hits)`.
 - `_build_lookup(results)` collapses a flat list of `EnrichmentResult` into a per-value merged dict (multiple providers' fields for the same IOC are merged into one entry).
@@ -133,7 +133,7 @@ Entry point: `lantana-transform` (systemd timer at 04:00 UTC, processes yesterda
 
 Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes gold tables covering: daily aggregate statistics, per-IP risk scoring (decomposed into per-provider, enrichment-aggregate, behavioral, and composite scores — see §3.2.1), behavioral progression staging (scan -> credential -> authenticated -> interactive), cross-day slow-burn detection (7-day lookback), credential-sharing campaign clusters, geographic distribution of attack origins, and IDS detection finding statistics.
 
-Gold tables are the single source of truth for all downstream output (STIX, reports, dashboard). Each table is a pure DataFrame transform — no side effects, no external calls. See [`transform/metrics.py`](../pipeline/src/lantana/transform/metrics.py) for table definitions and computation logic, and [`transform/runner.py`](../pipeline/src/lantana/transform/runner.py) for orchestration.
+Gold tables are the single source of truth for all downstream output (STIX, reports, dashboard). Each table is a pure DataFrame transform — no side effects, no external calls. See [`transform/metrics.py`](/pipeline/src/lantana/transform/metrics.py) for table definitions and computation logic, and [`transform/runner.py`](/pipeline/src/lantana/transform/runner.py) for orchestration.
 
 #### 3.2.1 Risk score composition
 
@@ -153,7 +153,7 @@ Per-IP scoring lives in two layers — per-provider sub-scores in silver (one co
 
 **Why RIOT subtracts.** GreyNoise's RIOT (Rule-It-Out) flag marks IPs as known-benign infrastructure (CDNs, NTP, DNS resolvers, Censys, etc.). When RIOT fires, `greynoise_risk_score` short-circuits to 0, pulling the enrichment mean down — but the row stays in silver with all enrichment intact so an analyst can still see what the other providers said. This prevents false-positive Indicators in STIX export.
 
-For full per-provider formulas, value ranges, worked examples, and the FAQ, see [docs/risk-scoring.md](risk-scoring.md).
+For full per-provider formulas, value ranges, worked examples, and the FAQ, see [docs/risk-scoring.md](/docs/risk-scoring.md).
 
 ### 3.3 Intelligence Output
 
@@ -161,7 +161,7 @@ All three output channels read exclusively from gold tables (already OPSEC-redac
 
 #### STIX 2.1 Bundles
 
-Generated from gold data via [`intel/stix.py`](../pipeline/src/lantana/intel/stix.py). Produces a STIX Bundle with IP indicators (risk-based threshold), campaign objects (credential clusters), malware indicators (captured file hashes), IDS finding indicators (broadly-triggered detection rules), and relationship objects linking them. Each indicator includes enrichment context from all available providers (GeoIP, AbuseIPDB, GreyNoise, Shodan, VirusTotal) in its description and labels.
+Generated from gold data via [`intel/stix.py`](/pipeline/src/lantana/intel/stix.py). Produces a STIX Bundle with IP indicators (risk-based threshold), campaign objects (credential clusters), malware indicators (captured file hashes), IDS finding indicators (broadly-triggered detection rules), and relationship objects linking them. Each indicator includes enrichment context from all available providers (GeoIP, AbuseIPDB, GreyNoise, Shodan, VirusTotal) in its description and labels.
 
 OPSEC enforcement: the bundle serializer asserts no infrastructure IPs appear in the output. Gold reads only from redacted silver, providing defense in depth.
 
@@ -169,22 +169,22 @@ Available via the Streamlit dashboard (download button) or programmatic API.
 
 #### Discord Intel Reports
 
-Generated from gold data via [`notify/report.py`](../pipeline/src/lantana/notify/report.py), sent via `lantana-report` (06:00 UTC daily, merged with the legacy `lantana-alert` flow — embed colour follows max enrichment-error severity, brief always posts). The daily brief covers pipeline health + timing (operator self-check), key metrics, geographic origin, escalation funnel with stage legend, top attackers (with the `(enrichment+behavioral)/2` decomposition and per-provider risk quadruplet), threat actor attribution, notable escalations, campaign clusters with a rank-numbered IPs list, detection highlights, malware captured (top hashes + VT context), and top credentials/commands. The brief footer points at the dashboard's **STIX Export** page for the curated STIX 2.1 bundle and the raw IOC CSV — the long-tail IOC inventory lives there, not inline. The Discord embed itself is a short summary; the full Markdown report is attached as a `.md` file.
+Generated from gold data via [`notify/report.py`](/pipeline/src/lantana/notify/report.py), sent via `lantana-report` (06:00 UTC daily, merged with the legacy `lantana-alert` flow — embed colour follows max enrichment-error severity, brief always posts). The daily brief covers pipeline health + timing (operator self-check), key metrics, geographic origin, escalation funnel with stage legend, top attackers (with the `(enrichment+behavioral)/2` decomposition and per-provider risk quadruplet), threat actor attribution, notable escalations, campaign clusters with a rank-numbered IPs list, detection highlights, malware captured (top hashes + VT context), and top credentials/commands. The brief footer points at the dashboard's **STIX Export** page for the curated STIX 2.1 bundle and the raw IOC CSV — the long-tail IOC inventory lives there, not inline. The Discord embed itself is a short summary; the full Markdown report is attached as a `.md` file.
 
-Section captions and dashboard widget tooltips share one source — `WhatWhyHow` triplets in [`notify/explanations.py`](../pipeline/src/lantana/notify/explanations.py) (`BRIEF_SECTIONS` + `METRICS`). Adding inline `help=` or `st.caption()` literals on a dashboard page is drift; route through the registry so the brief can reuse the same text.
+Section captions and dashboard widget tooltips share one source — `WhatWhyHow` triplets in [`notify/explanations.py`](/pipeline/src/lantana/notify/explanations.py) (`BRIEF_SECTIONS` + `METRICS`). Adding inline `help=` or `st.caption()` literals on a dashboard page is drift; route through the registry so the brief can reuse the same text.
 
 #### Streamlit Dashboard
 
-Entry point: `lantana-dashboard`. The dashboard is the operator's personal console — never shared externally. Peers receive Discord reports and STIX bundles. Pages cover operational overview, geographic analysis (world map, country/ASN/city breakdowns), per-IP risk profiles with full enrichment detail, behavioral progression analysis, IDS detection findings, credential intelligence, and STIX export. See [`dashboard/pages/`](../pipeline/src/lantana/dashboard/pages/) for the current page set.
+Entry point: `lantana-dashboard`. The dashboard is the operator's personal console — never shared externally. Peers receive Discord reports and STIX bundles. Pages cover operational overview, geographic analysis (world map, country/ASN/city breakdowns), per-IP risk profiles with full enrichment detail, behavioral progression analysis, IDS detection findings, credential intelligence, and STIX export. See [`dashboard/pages/`](/pipeline/src/lantana/dashboard/pages) for the current page set.
 
-The dashboard binds to `localhost:8501` only (OPSEC Layer 3 — never exposed externally). Reach it via SSH local-port-forwarding from the operator workstation; see [`setup.md` §11 → "Inspect the dashboard + export STIX"](setup.md#inspect-the-dashboard--export-stix) for the exact pattern. STIX bundles are generated on-demand from the dashboard's STIX Export page and streamed to the operator's browser — not stored server-side.
+The dashboard binds to `localhost:8501` only (OPSEC Layer 3 — never exposed externally). Reach it via SSH local-port-forwarding from the operator workstation; see [`setup.md` §11 → "Inspect the dashboard + export STIX"](/docs/setup.md#inspect-the-dashboard--export-stix) for the exact pattern. STIX bundles are generated on-demand from the dashboard's STIX Export page and streamed to the operator's browser — not stored server-side.
 
 #### Verification playbooks
 
 Two Ansible playbooks codify the post-deploy invariants — these are the canonical health checks, not eyeball-driven walkthroughs:
 
-* [`config/ansible/tests/validate-single-node.yml`](../config/ansible/tests/validate-single-node.yml) — runs immediately after `deploy_single.yml`. Asserts users, SSH, network, firewall, logrotate files, GeoIP cron, and the four `lantana-*.timer` units (installed + enabled).
-* [`config/ansible/tests/validate-pipeline-cycle.yml`](../config/ansible/tests/validate-pipeline-cycle.yml) — runs after the first 06:00 UTC cycle. Asserts each pipeline systemd unit's last `Result=success`, `run_summary` in journal, silver+gold parquet presence, `.provider_state.json` exists, no API-key residue in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + the GreyNoise RIOT invariant. `target_date` defaults to yesterday UTC; override via `-e target_date=YYYY-MM-DD`.
+* [`config/ansible/tests/validate-single-node.yml`](/config/ansible/tests/validate-single-node.yml) — runs immediately after `deploy_single.yml`. Asserts users, SSH, network, firewall, logrotate files, GeoIP cron, and the four `lantana-*.timer` units (installed + enabled).
+* [`config/ansible/tests/validate-pipeline-cycle.yml`](/config/ansible/tests/validate-pipeline-cycle.yml) — runs after the first 06:00 UTC cycle. Asserts each pipeline systemd unit's last `Result=success`, `run_summary` in journal, silver+gold parquet presence, `.provider_state.json` exists, no API-key residue in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + the GreyNoise RIOT invariant. `target_date` defaults to yesterday UTC; override via `-e target_date=YYYY-MM-DD`.
 
 Visual / browser-driven checks (Discord report rendering, dashboard pages, STIX bundle download) stay manual — see `setup.md` §11.
 
@@ -199,7 +199,7 @@ The pipeline normalizes bronze events to [OCSF v1.3.0](https://schema.ocsf.io/1.
 3. **OCSF metadata** — Generated columns (`class_uid`, `category_uid`, `severity_id`, `activity_id`, `type_uid`, `status_id`) are added based on the dispatched class and event context.
 4. **Passthrough** — Vector tags (`dataset`, `server`, `operation`), GeoIP fields (`geo.*`), and API enrichment columns (`abuseipdb_*`, `greynoise_*`, `shodan_*`, `vt_*`) pass through untouched.
 
-The OCSF schema contract is defined in [`models/ocsf.py`](../pipeline/src/lantana/models/ocsf.py). Per-dataset normalization logic (class dispatch, field mapping, and metadata generation) is in [`models/normalize.py`](../pipeline/src/lantana/models/normalize.py).
+The OCSF schema contract is defined in [`models/ocsf.py`](/pipeline/src/lantana/models/ocsf.py). Per-dataset normalization logic (class dispatch, field mapping, and metadata generation) is in [`models/normalize.py`](/pipeline/src/lantana/models/normalize.py).
 
 ---
 
@@ -280,7 +280,7 @@ All pipeline services run as the `nectar` user (UID 2002), which owns the datala
 
 ### 7.1 Third-Party Integrations
 
-Enrichment providers, their endpoints, free-tier limits, extracted fields, and live-probe workflows live in [`integrations.md`](integrations.md). Quick reference:
+Enrichment providers, their endpoints, free-tier limits, extracted fields, and live-probe workflows live in [`integrations.md`](/docs/integrations.md). Quick reference:
 
 | Stage | Provider | Auth | Free-tier limit |
 |---|---|---|---|
@@ -290,7 +290,7 @@ Enrichment providers, their endpoints, free-tier limits, extracted fields, and l
 | Daily batch                     | VirusTotal       | `x-apikey:` header, required          | 4 req/min, 500/day |
 | Daily batch                     | GreyNoise        | `key:` header, **optional**           | 50 searches per 7 days (unauthenticated) |
 
-See [`integrations.md`](integrations.md) for endpoint URLs, per-provider field extraction, the probe scripts (`probe-enrichment.py` for HTTP providers, `probe-mmdb.py` for MaxMind), and historical incidents.
+See [`integrations.md`](/docs/integrations.md) for endpoint URLs, per-provider field extraction, the probe scripts (`probe-enrichment.py` for HTTP providers, `probe-mmdb.py` for MaxMind), and historical incidents.
 
 ### 7.2 Provider Auth Modes
 
@@ -315,7 +315,7 @@ Uses the [GreyNoise Community API](https://docs.greynoise.io/docs/using-the-grey
 
 ### How to disable GreyNoise
 
-Omit the vault variable entirely. The Ansible template at [`profile_collector/templates/secrets.json.j2`](../config/ansible/roles/profile_collector/templates/secrets.json.j2) emits JSON `null` when the variable is undefined, and the runner skips any provider whose secret is `null`. A log line `provider_disabled provider=<name> reason=not_configured` is emitted so the operator can confirm the skip.
+Omit the vault variable entirely. The Ansible template at [`profile_collector/templates/secrets.json.j2`](/config/ansible/roles/profile_collector/templates/secrets.json.j2) emits JSON `null` when the variable is undefined, and the runner skips any provider whose secret is `null`. A log line `provider_disabled provider=<name> reason=not_configured` is emitted so the operator can confirm the skip.
 
 ### 7.3 Vault ↔ `secrets.json` nomenclature
 
@@ -331,7 +331,7 @@ Omit the vault variable entirely. The Ansible template at [`profile_collector/te
 }
 ```
 
-Python code keeps short attribute names (`secrets.virustotal`, `secrets.discord_webhook`, ...) via Pydantic `Field(alias=...)` on [`SecretsConfig`](../pipeline/src/lantana/common/config.py). Consumers don't need to know about the on-disk shape.
+Python code keeps short attribute names (`secrets.virustotal`, `secrets.discord_webhook`, ...) via Pydantic `Field(alias=...)` on [`SecretsConfig`](/pipeline/src/lantana/common/config.py). Consumers don't need to know about the on-disk shape.
 
 ---
 

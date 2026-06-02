@@ -66,7 +66,7 @@ When debugging volume mounts in the `.container` files, verify the correct flags
 The dinotools/dionaea image has several startup quirks that produce
 silent or near-silent failures. The container will be `healthy` per
 Podman's healthcheck (which only checks process liveness via `pgrep`)
-even when dionaea has bound zero ports. See [`honeypots.md`](honeypots.md#container-model-and-constraints)
+even when dionaea has bound zero ports. See [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints)
 for the deployment invariants this section troubleshoots.
 
 ### Symptom: Exit status 133 immediately, no log content
@@ -132,7 +132,7 @@ sqlite3.OperationalError: attempt to write a readonly database
 
 `:memory:` doesn't fix it (other on-disk state in the SIP module hits
 the same race). SIP is intentionally not in the v1.0.0 catalog for
-this reason — see [`honeypots.md`](honeypots.md#dionaea). If you see
+this reason — see [`honeypots.md`](/docs/honeypots.md#dionaea). If you see
 this error for any *other* service, the same root cause applies and
 the same `:memory:` / drop-from-catalog escape hatches are your
 options.
@@ -343,7 +343,7 @@ ssh -o PubkeyAuthentication=no -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
 
 ## Third-Party Integrations
 
-Lantana's enrichment depends on four HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](pipeline.md#31-bronze-to-silver-daily-enrichment).
+Lantana's enrichment depends on four HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](/docs/integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](/docs/pipeline.md#31-bronze-to-silver-daily-enrichment).
 
 ### Probe scripts
 
@@ -351,8 +351,8 @@ Two diagnostic scripts mirror the two enrichment paths. Both run from `pipeline/
 
 | Script | What it exercises | Default flags |
 |---|---|---|
-| [`scripts/probe-enrichment.py`](../scripts/probe-enrichment.py) | Live HTTP API call per provider, prints raw upstream response + normalized `EnrichmentResult.data` | `--ip <addr>` repeatable; `--hash <sha256>` for VT only; `--provider <name|all>`; `--secrets <path>`; `--no-raw`; `--insecure` |
-| [`scripts/probe-mmdb.py`](../scripts/probe-mmdb.py) | Downloads City + ASN MMDBs if missing (using `vault_apikey_maxmind` from `--secrets`), then queries them | `--ip <addr>` repeatable; `--mmdb-dir <path>` (auto-falls back to `/tmp/lantana/mmdb` off-collector); `--secrets <path>`; `--force-download`; `--no-raw`; `--insecure` |
+| [`scripts/probe-enrichment.py`](/scripts/probe-enrichment.py) | Live HTTP API call per provider, prints raw upstream response + normalized `EnrichmentResult.data` | `--ip <addr>` repeatable; `--hash <sha256>` for VT only; `--provider <name|all>`; `--secrets <path>`; `--no-raw`; `--insecure` |
+| [`scripts/probe-mmdb.py`](/scripts/probe-mmdb.py) | Downloads City + ASN MMDBs if missing (using `vault_apikey_maxmind` from `--secrets`), then queries them | `--ip <addr>` repeatable; `--mmdb-dir <path>` (auto-falls back to `/tmp/lantana/mmdb` off-collector); `--secrets <path>`; `--force-download`; `--no-raw`; `--insecure` |
 
 Both scripts auto-translate legacy vault key names (`vault_<service>_api_key`, `vault_maxmind_license_key`) to the current `vault_<type>_<service>` form, so a hand-written secrets file from before 2026-05 still parses — they print a stderr `[note: ...]` when translation kicks in.
 

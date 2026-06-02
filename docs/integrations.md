@@ -7,7 +7,7 @@ Lantana enriches honeypot telemetry with external data from five third-party int
 
 This document is the single reference for how each integration works — endpoints/files, authentication, rate limits, docs links, and how to verify them end-to-end.
 
-For where enrichment fits in the pipeline (bronze → silver, OCSF normalization, OPSEC redaction), see [`pipeline.md`](pipeline.md). For how the vault carries provider keys, see [`setup.md`](setup.md#5-create-the-vault).
+For where enrichment fits in the pipeline (bronze → silver, OCSF normalization, OPSEC redaction), see [`pipeline.md`](/docs/pipeline.md). For how the vault carries provider keys, see [`setup.md`](/docs/setup.md#5-create-the-vault).
 
 ---
 
@@ -39,7 +39,7 @@ All four HTTP providers accept an IPv4 / IPv6 address. Only VirusTotal also acce
 Free IP→geography and IP→ASN database from MaxMind. Used by **Vector** (not the Python pipeline) to tag every event with `.geo.*` fields at the moment of ingest — country, region, city, lat/long, timezone, ASN, ISP. This happens at wire speed; the daily Python pipeline never queries MaxMind directly.
 
 - **Files:** `/var/lib/lantana/collector/geoip/GeoLite2-City.mmdb` and `GeoLite2-ASN.mmdb`
-- **How Vector loads them:** as `enrichment_tables` in [`receive.vector.yaml.j2`](../config/ansible/roles/profile_collector/templates/receive.vector.yaml.j2). The VRL transform `enrich_geo` looks up `.src_ip` against both tables and writes `.geo.*` fields.
+- **How Vector loads them:** as `enrichment_tables` in [`receive.vector.yaml.j2`](/config/ansible/roles/profile_collector/templates/receive.vector.yaml.j2). The VRL transform `enrich_geo` looks up `.src_ip` against both tables and writes `.geo.*` fields.
 - **Download:** Ansible role `profile_collector` downloads the City + ASN tarballs at deploy time using `vault_apikey_maxmind` (see vault layout below). A monthly cron at 02:30 UTC on the 1st refreshes them and restarts Vector.
 - **License:** free **with** account signup. See [maxmind.com/en/geolite2/signup](https://www.maxmind.com/en/geolite2/signup). After signup: Account → Manage License Keys → Generate new license key.
 - **Docs:** https://dev.maxmind.com/geoip/docs/databases/city-and-country
@@ -66,7 +66,7 @@ Community-driven abuse reporting database. We use it to surface IPs with known a
 - **Endpoint:** `GET https://api.abuseipdb.com/api/v2/check`
 - **Auth:** `Key: <api_key>` header
 - **Query params:** `ipAddress`, `maxAgeInDays=90`
-- **Provider file:** [`abuseipdb.py`](../pipeline/src/lantana/enrichment/providers/abuseipdb.py)
+- **Provider file:** [`abuseipdb.py`](/pipeline/src/lantana/enrichment/providers/abuseipdb.py)
 - **Free-tier limit:** 1000 checks/day
 - **Docs:** https://docs.abuseipdb.com/
 
@@ -80,7 +80,7 @@ Community-driven abuse reporting database. We use it to surface IPs with known a
 
 Country/ISP/domain are intentionally NOT extracted — MaxMind GeoIP is the source of truth for geo/network attribution, and duplicates created downstream conflicts (commit `328f3aa`).
 
-**Risk-score derivation:** see [risk-scoring.md § AbuseIPDB](risk-scoring.md#abuseipdb).
+**Risk-score derivation:** see [risk-scoring.md § AbuseIPDB](/docs/risk-scoring.md#abuseipdb).
 
 ### Shodan
 
@@ -88,7 +88,7 @@ Internet-wide scanner. We use it for open-port + service + ASN attribution on at
 
 - **Endpoint:** `GET https://api.shodan.io/shodan/host/{ip}`
 - **Auth:** `key=<api_key>` query parameter (not a header)
-- **Provider file:** [`shodan.py`](../pipeline/src/lantana/enrichment/providers/shodan.py)
+- **Provider file:** [`shodan.py`](/pipeline/src/lantana/enrichment/providers/shodan.py)
 - **Free-tier limit:** ~100 host lookups per month on the Membership plan
 - **Docs:** https://developer.shodan.io/api
 
@@ -103,7 +103,7 @@ Internet-wide scanner. We use it for open-port + service + ASN attribution on at
 | `shodan_asn`          | `asn`                | AS number (`AS<n>` form) |
 | `shodan_risk_score`   | computed             | Tri-state: 0 / 25 (ports only) / 100 (CVE present) |
 
-**Risk-score derivation:** see [risk-scoring.md § Shodan](risk-scoring.md#shodan).
+**Risk-score derivation:** see [risk-scoring.md § Shodan](/docs/risk-scoring.md#shodan).
 
 ### VirusTotal
 
@@ -113,7 +113,7 @@ Multi-vendor aggregator (90+ AV/blocklist engines). We query both IPs and file h
   - IP:   `GET https://www.virustotal.com/api/v3/ip_addresses/{ip}`
   - Hash: `GET https://www.virustotal.com/api/v3/files/{sha256}`
 - **Auth:** `x-apikey: <api_key>` header
-- **Provider file:** [`virustotal.py`](../pipeline/src/lantana/enrichment/providers/virustotal.py)
+- **Provider file:** [`virustotal.py`](/pipeline/src/lantana/enrichment/providers/virustotal.py)
 - **Free-tier limit:** 4 requests per minute, 500 per day, 15.5k per month
 - **Docs:** https://docs.virustotal.com/reference/overview
 
@@ -127,7 +127,7 @@ Multi-vendor aggregator (90+ AV/blocklist engines). We query both IPs and file h
 | `vt_as_owner`            | `data.attributes.as_owner` |
 | `virustotal_risk_score`  | computed — bucketed from `vt_malicious_count` (see below) |
 
-**Risk-score derivation:** see [risk-scoring.md § VirusTotal](risk-scoring.md#virustotal-ip).
+**Risk-score derivation:** see [risk-scoring.md § VirusTotal](/docs/risk-scoring.md#virustotal-ip).
 
 **Fields we extract into silver (hash):**
 
@@ -144,7 +144,7 @@ Internet background-noise classifier — identifies IPs that scan the entire int
 
 - **Endpoint:** `GET https://api.greynoise.io/v3/community/{ip}`
 - **Auth:** `key: <api_key>` header — **optional**. The community endpoint accepts anonymous requests; a key only raises the rate limit.
-- **Provider file:** [`greynoise.py`](../pipeline/src/lantana/enrichment/providers/greynoise.py)
+- **Provider file:** [`greynoise.py`](/pipeline/src/lantana/enrichment/providers/greynoise.py)
 - **Free-tier limit:** 50 searches per 7 days (shared with the Visualizer)
 - **Docs:**
   - Community API (what we use): https://docs.greynoise.io/docs/using-the-greynoise-community-api
@@ -164,13 +164,13 @@ Internet background-noise classifier — identifies IPs that scan the entire int
 
 **HTTP 404 behaviour.** A 404 from this endpoint means "IP not in dataset," not an error. The provider returns a normalized result with `greynoise_classification: "unknown"` and all booleans false. Don't treat 404 as a pipeline failure.
 
-**Risk-score derivation:** see [risk-scoring.md § GreyNoise](risk-scoring.md#greynoise-the-only-provider-with-a-negative-override). Note: RIOT is the *benign* signal — when set, `greynoise_risk_score=0` overrides everything else, pulling the gold enrichment mean down.
+**Risk-score derivation:** see [risk-scoring.md § GreyNoise](/docs/risk-scoring.md#greynoise-the-only-provider-with-a-negative-override). Note: RIOT is the *benign* signal — when set, `greynoise_risk_score=0` overrides everything else, pulling the gold enrichment mean down.
 
 ---
 
 ## 3. Enablement and Vault Layout
 
-The vault key `vault_apikey_<service>` controls per-provider behaviour. The rendered `secrets.json` on the collector uses the same keys verbatim, including `vault_apikey_maxmind` — see [Vault ↔ secrets.json nomenclature](pipeline.md#vault--secretsjson-nomenclature). The HTTP daily-batch providers consume their fields from `SecretsConfig` at runtime; MaxMind's field is consumed only by the probe script (`probe-mmdb.py`) and ignored by the Python pipeline. Ansible reads `vault_apikey_maxmind` straight from the vault at deploy time to download the MMDBs.
+The vault key `vault_apikey_<service>` controls per-provider behaviour. The rendered `secrets.json` on the collector uses the same keys verbatim, including `vault_apikey_maxmind` — see [Vault ↔ secrets.json nomenclature](/docs/pipeline.md#vault--secretsjson-nomenclature). The HTTP daily-batch providers consume their fields from `SecretsConfig` at runtime; MaxMind's field is consumed only by the probe script (`probe-mmdb.py`) and ignored by the Python pipeline. Ansible reads `vault_apikey_maxmind` straight from the vault at deploy time to download the MMDBs.
 
 | Vault line state | AbuseIPDB / Shodan / VirusTotal | GreyNoise | MaxMind |
 |---|---|---|---|
@@ -186,8 +186,8 @@ The only way to disable GreyNoise is to **omit the vault line entirely** — its
 
 Two probe scripts mirror the two enrichment paths:
 
-- [`scripts/probe-enrichment.py`](../scripts/probe-enrichment.py) — HTTP API providers (AbuseIPDB, Shodan, VirusTotal, GreyNoise).
-- [`scripts/probe-mmdb.py`](../scripts/probe-mmdb.py) — local MaxMind MMDB files (GeoLite2 City + ASN).
+- [`scripts/probe-enrichment.py`](/scripts/probe-enrichment.py) — HTTP API providers (AbuseIPDB, Shodan, VirusTotal, GreyNoise).
+- [`scripts/probe-mmdb.py`](/scripts/probe-mmdb.py) — local MaxMind MMDB files (GeoLite2 City + ASN).
 
 Both produce raw + normalized output side by side so you can compare against the provider's UI (HTTP) or against another lookup tool (MMDB). The example IPs throughout this section use RFC 5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`); swap them for an IP your providers will actually have records on when you run the probe.
 

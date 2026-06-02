@@ -67,13 +67,13 @@ This separation means an operator can completely destroy and rebuild the Terrafo
 
 ## 3. Architecture
 
-With the hosts provisioned, Lantana is structured around a **zoned architecture**. Each zone enforces a strict security and functional boundary. The terms below are summarised in the [glossary](glossary.md#2-deception-artifacts--infrastructure).
+With the hosts provisioned, Lantana is structured around a **zoned architecture**. Each zone enforces a strict security and functional boundary. The terms below are summarised in the [glossary](/docs/glossary.md#2-deception-artifacts--infrastructure).
 
 ### Logical Zones
 
 - **Honeywall Zone:** The network safeguard. It protects the public interface, enforcing strict egress filtering via [nftables](https://www.netfilter.org/projects/nftables/index.html) to ensure compromised decoys cannot be weaponized. It utilizes an IDS ([Suricata](https://suricata.io/)) to identify attacks and monitors connection logs. The Honeywall never hosts decoys.
 - **Sensor Zone:** The deception runtime. This zone runs the actual honeypots. Low-interaction honeypots run inside isolated, hardened [podman](https://podman.io/) containers. It is responsible for capturing attacker interactions, performing lightweight local log parsing, and forwarding telemetry.
-- **Collector Zone:** The data brain. Explicitly out-of-band and never exposed to adversaries, this zone receives parsed logs from the Honeywall and Sensor zones. It enriches the data, normalizes it into OCSF format, builds the central data lake (bronze → silver → gold; see [`pipeline.md`](pipeline.md)), and periodically persists the data to secure external storage.
+- **Collector Zone:** The data brain. Explicitly out-of-band and never exposed to adversaries, this zone receives parsed logs from the Honeywall and Sensor zones. It enriches the data, normalizes it into OCSF format, builds the central data lake (bronze → silver → gold; see [`pipeline.md`](/docs/pipeline.md)), and periodically persists the data to secure external storage.
 
 ### System Identities & Least Privilege
 
@@ -252,5 +252,5 @@ Lantana favors modern, native Linux tooling over heavy abstractions. This reduce
 - **Podman:** The container engine for Low-Interaction sensors. Chosen over Docker for its daemonless architecture and native rootless capabilities, providing stronger out-of-the-box isolation.
 - **Datadog Vector:** A high-performance, lightweight pipeline tool used across all zones for log ingestion, initial parsing, and fast routing.
 - **Suricata:** The Intrusion Detection System (IDS) deployed in the Honeywall to capture network-level threat signatures.
-- **Python:** Powers the Collector zone. Handles complex log enrichment, OCSF normalization, data lake formatting (Parquet), risk scoring, and the data-exploration tools. See [`pipeline.md`](pipeline.md) for the bronze → silver → gold flow, [`integrations.md`](integrations.md) for each third-party enrichment provider, and [`risk-scoring.md`](risk-scoring.md) for how per-IP risk is composed from per-provider sub-scores plus honeypot-observed behavior.
+- **Python:** Powers the Collector zone. Handles complex log enrichment, OCSF normalization, data lake formatting (Parquet), risk scoring, and the data-exploration tools. See [`pipeline.md`](/docs/pipeline.md) for the bronze → silver → gold flow, [`integrations.md`](/docs/integrations.md) for each third-party enrichment provider, and [`risk-scoring.md`](/docs/risk-scoring.md) for how per-IP risk is composed from per-provider sub-scores plus honeypot-observed behavior.
 - **Terraform & Ansible:** The infrastructure-as-code backbone. Terraform provisions Debian 13 VMs on Proxmox via template cloning and cloud-init, while Ansible applies the "Narrative".
