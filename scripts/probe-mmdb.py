@@ -78,7 +78,7 @@ ASN_DB_NAME = "GeoLite2-ASN.mmdb"
 
 EDITIONS = (
     ("GeoLite2-City", CITY_DB_NAME),
-    ("GeoLite2-ASN",  ASN_DB_NAME),
+    ("GeoLite2-ASN", ASN_DB_NAME),
 )
 DOWNLOAD_URL = (
     "https://download.maxmind.com/app/geoip_download"
@@ -293,8 +293,7 @@ def _probe_one(
         return False
 
     if city_record is None and asn_record is None:
-        print(f"[note: {ip} is not in either MMDB — Vector would emit "
-              "empty .geo.* fields]\n")
+        print(f"[note: {ip} is not in either MMDB — Vector would emit empty .geo.* fields]\n")
         return True
 
     if show_raw:
@@ -373,7 +372,10 @@ def _run(args: argparse.Namespace) -> int:
             return 2
 
     ensure_rc = _ensure_mmdbs(
-        mmdb_dir, license_key, force=args.force_download, insecure=args.insecure,
+        mmdb_dir,
+        license_key,
+        force=args.force_download,
+        insecure=args.insecure,
     )
     if ensure_rc != 0:
         return ensure_rc
@@ -381,8 +383,10 @@ def _run(args: argparse.Namespace) -> int:
     all_ok = True
     show_raw = not args.no_raw
 
-    with maxminddb.open_database(str(city_path)) as city_reader, \
-         maxminddb.open_database(str(asn_path)) as asn_reader:
+    with (
+        maxminddb.open_database(str(city_path)) as city_reader,
+        maxminddb.open_database(str(asn_path)) as asn_reader,
+    ):
         for ip in args.ip:
             ok = _probe_one(ip, city_reader, asn_reader, show_raw=show_raw)
             all_ok = all_ok and ok
@@ -399,34 +403,41 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--ip", action="append", default=[],
+        "--ip",
+        action="append",
+        default=[],
         help="IP to enrich. Repeatable.",
     )
     parser.add_argument(
-        "--mmdb-dir", default=None,
+        "--mmdb-dir",
+        default=None,
         help=f"Directory containing (or to receive) GeoLite2-City.mmdb and "
-             f"GeoLite2-ASN.mmdb. Default: {DEFAULT_MMDB_DIR} on the collector "
-             f"(when it exists), {WORKSTATION_FALLBACK_DIR} otherwise.",
+        f"GeoLite2-ASN.mmdb. Default: {DEFAULT_MMDB_DIR} on the collector "
+        f"(when it exists), {WORKSTATION_FALLBACK_DIR} otherwise.",
     )
     parser.add_argument(
-        "--secrets", default=None,
+        "--secrets",
+        default=None,
         help=f"Path to secrets.json containing vault_apikey_maxmind. Only "
-             f"consulted when an MMDB needs to be downloaded. Default: "
-             f"$LANTANA_SECRETS_PATH or {DEFAULT_SECRETS_PATH}",
+        f"consulted when an MMDB needs to be downloaded. Default: "
+        f"$LANTANA_SECRETS_PATH or {DEFAULT_SECRETS_PATH}",
     )
     parser.add_argument(
-        "--force-download", action="store_true",
+        "--force-download",
+        action="store_true",
         help="Re-download MMDBs even if they exist (mirrors the monthly cron). "
-             "Requires vault_apikey_maxmind in secrets.json.",
+        "Requires vault_apikey_maxmind in secrets.json.",
     )
     parser.add_argument(
-        "--no-raw", action="store_true",
+        "--no-raw",
+        action="store_true",
         help="Suppress raw MaxMind records — only print the normalized geo.* fields.",
     )
     parser.add_argument(
-        "--insecure", action="store_true",
+        "--insecure",
+        action="store_true",
         help="Skip TLS verification during the MMDB download. ONLY for local "
-             "testing on a workstation whose Python trust store is broken.",
+        "testing on a workstation whose Python trust store is broken.",
     )
 
     args = parser.parse_args()

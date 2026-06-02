@@ -187,8 +187,7 @@ async def _probe_one(
         underlying = exc.last_attempt.exception() if exc.last_attempt else None
         if isinstance(underlying, httpx.HTTPStatusError):
             msg = (
-                f"HTTPStatusError {underlying.response.status_code} (after retries): "
-                f"{underlying!s}"
+                f"HTTPStatusError {underlying.response.status_code} (after retries): {underlying!s}"
             )
         elif underlying is not None:
             msg = f"{type(underlying).__name__} (after retries): {underlying!s}"
@@ -259,7 +258,12 @@ async def _run(args: argparse.Namespace) -> int:
         for name in chosen:
             if name in HASH_PROVIDERS:
                 ok = await _probe_one(
-                    name, "hash", digest, secrets, show_raw=show_raw, insecure=insecure,
+                    name,
+                    "hash",
+                    digest,
+                    secrets,
+                    show_raw=show_raw,
+                    insecure=insecure,
                 )
                 all_ok = all_ok and ok
             elif not explicit_all:
@@ -278,32 +282,41 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--ip", action="append", default=[],
+        "--ip",
+        action="append",
+        default=[],
         help="IP address to enrich (IPv4 or IPv6). Repeatable.",
     )
     parser.add_argument(
-        "--hash", action="append", default=[], dest="hash",
+        "--hash",
+        action="append",
+        default=[],
+        dest="hash",
         help="SHA256 file hash to enrich (VirusTotal only). Repeatable.",
     )
     parser.add_argument(
-        "--provider", action="append", default=None,
-        help="Provider name, or 'all'. Comma-separated values accepted. "
-             "Repeatable. Default: all.",
+        "--provider",
+        action="append",
+        default=None,
+        help="Provider name, or 'all'. Comma-separated values accepted. Repeatable. Default: all.",
     )
     parser.add_argument(
-        "--secrets", default=None,
+        "--secrets",
+        default=None,
         help="Path to secrets.json. Default: $LANTANA_SECRETS_PATH or "
-             "/etc/lantana/collector/secrets.json",
+        "/etc/lantana/collector/secrets.json",
     )
     parser.add_argument(
-        "--no-raw", action="store_true",
+        "--no-raw",
+        action="store_true",
         help="Suppress the raw upstream response — only print the normalized fields.",
     )
     parser.add_argument(
-        "--insecure", action="store_true",
+        "--insecure",
+        action="store_true",
         help="Skip TLS certificate verification. ONLY for local testing on a "
-             "workstation whose Python trust store is broken — never use in "
-             "production. Prints a loud warning when active.",
+        "workstation whose Python trust store is broken — never use in "
+        "production. Prints a loud warning when active.",
     )
 
     args = parser.parse_args()

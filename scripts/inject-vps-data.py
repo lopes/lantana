@@ -136,12 +136,7 @@ def write_bronze(
     """Write date-partitioned bronze NDJSON files. Returns total events written."""
     total = 0
     for date_str, lines in sorted(by_date.items()):
-        out_dir = (
-            bronze_root
-            / f"dataset={dataset}"
-            / f"date={date_str}"
-            / f"server={SERVER_NAME}"
-        )
+        out_dir = bronze_root / f"dataset={dataset}" / f"date={date_str}" / f"server={SERVER_NAME}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "events.json"
 
@@ -156,9 +151,7 @@ def write_bronze(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Inject VPS logs into local bronze datalake"
-    )
+    parser = argparse.ArgumentParser(description="Inject VPS logs into local bronze datalake")
     parser.add_argument(
         "--live-root",
         type=Path,
@@ -220,9 +213,7 @@ def main() -> None:
         print("No data found. Check that fetch-vps-data.sh ran successfully.")
         sys.exit(1)
 
-    print(
-        f"Injected {grand_total:,} events from {datasets_found} datasets into {bronze_root}"
-    )
+    print(f"Injected {grand_total:,} events from {datasets_found} datasets into {bronze_root}")
     print()
     print("Next steps:")
     print("  1. Run integration tests:  .venv/bin/pytest -m integration -v")
@@ -231,7 +222,8 @@ def main() -> None:
     print("       from datetime import date")
     print("       from lantana.common.datalake import read_bronze_ndjson")
     print(
-        f"       df = read_bronze_ndjson(date.fromisoformat('<DATE>'), bronze_root=Path('{bronze_root}'))"
+        f"       df = read_bronze_ndjson("
+        f"date.fromisoformat('<DATE>'), bronze_root=Path('{bronze_root}'))"
     )
     print('       print(df)"')
 

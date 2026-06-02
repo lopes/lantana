@@ -26,7 +26,11 @@ os.chdir(PIPELINE_DIR)
 
 import polars as pl  # noqa: E402
 
-from lantana.common.datalake import read_bronze_ndjson, write_gold_table, write_silver_partition  # noqa: E402
+from lantana.common.datalake import (  # noqa: E402
+    read_bronze_ndjson,
+    write_gold_table,
+    write_silver_partition,
+)
 from lantana.common.redact import RedactionConfig, redact_infrastructure_ips  # noqa: E402
 from lantana.models.normalize import normalize_dataset  # noqa: E402
 from lantana.transform.metrics import (  # noqa: E402
@@ -59,16 +63,25 @@ ENRICHMENT_STUBS: dict[str, pl.Expr] = {
 }
 
 OPTIONAL_COLS: dict[str, pl.DataType] = {
-    "session": pl.Utf8,
-    "user_name": pl.Utf8,
-    "unmapped_password": pl.Utf8,
-    "actor_process_cmd_line": pl.Utf8,
-    "finding_title": pl.Utf8,
-    "finding_uid": pl.Utf8,
-    "file_hash_sha256": pl.Utf8,
-    "file_url": pl.Utf8,
-    "file_path": pl.Utf8,
+    "session": pl.Utf8(),
+    "user_name": pl.Utf8(),
+    "unmapped_password": pl.Utf8(),
+    "actor_process_cmd_line": pl.Utf8(),
+    "finding_title": pl.Utf8(),
+    "finding_uid": pl.Utf8(),
+    "file_hash_sha256": pl.Utf8(),
+    "file_url": pl.Utf8(),
+    "file_path": pl.Utf8(),
 }
+
+# Path roots set from CLI args in main(); declared here so module-level
+# function bodies that reference them type-check without the global being
+# guaranteed live until main() runs (in practice, all callers come from
+# main(), so the runtime ordering is fine).
+LIVE_ROOT: Path = Path()
+BRONZE_ROOT: Path = Path()
+SILVER_ROOT: Path = Path()
+GOLD_ROOT: Path = Path()
 
 
 def discover_dates() -> list[date]:
@@ -98,7 +111,9 @@ def build_gold(target_date: date) -> None:
         normalized = normalize_dataset(df, dataset)
         redacted = redact_infrastructure_ips(normalized, REDACT_CONFIG)
 
-        stub_cols = [expr.alias(n) for n, expr in ENRICHMENT_STUBS.items() if n not in redacted.columns]
+        stub_cols = [
+            expr.alias(n) for n, expr in ENRICHMENT_STUBS.items() if n not in redacted.columns
+        ]
         if stub_cols:
             redacted = redacted.with_columns(stub_cols)
         opt_cols = [
@@ -140,12 +155,14 @@ def build_gold(target_date: date) -> None:
 
     multiday = compute_behavioral_progression_multiday([(target_date, silver)])
     if not multiday.is_empty():
-        write_gold_table(multiday, "behavioral_progression_multiday", target_date, gold_root=GOLD_ROOT)
+        write_gold_table(
+            multiday, "behavioral_progression_multiday", target_date, gold_root=GOLD_ROOT
+        )
         print(f"    gold/behavioral_progression_multiday: {len(multiday):,} rows")
 
 
 def main() -> None:
-    global LIVE_ROOT, BRONZE_ROOT, SILVER_ROOT, GOLD_ROOT  # noqa: PLW0603
+    global LIVE_ROOT, BRONZE_ROOT, SILVER_ROOT, GOLD_ROOT
 
     parser = argparse.ArgumentParser(
         description="Build gold tables from live VPS data and launch Streamlit dashboard",
