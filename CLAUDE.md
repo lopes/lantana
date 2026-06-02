@@ -197,17 +197,21 @@ Vector configs span multiple files: `/etc/vector/vector.yaml` (main, with the ke
 
 A broken VRL fragment renders fine via Ansible's `template` module, the `Restart Vector` task succeeds (systemd starts the process), then Vector exits 78/CONFIG, systemd's restart-on-failure policy kicks in, and you get a crashloop with no source ingestion (2026-05-21 10:47 outage — every cowrie/suricata/nftables event for ~4 hours sat in the source files unshipped).
 
-**Every Ansible task that renders a Vector config must be followed by a merged-tree validation BEFORE Vector restarts:**
+**Every Ansible role that renders a Vector config must `notify:` the merged-tree validate handler BEFORE the Vector restart fires.** The handler lives once in `roles/base/handlers/main.yml`:
 
 ```yaml
-- name: "Validate full Vector config tree"
-  ansible.builtin.shell: >-
-    vector validate --no-environment
-    /etc/vector/vector.yaml /etc/vector/conf.d/*.yaml
+- name: "Validate Vector config tree"
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    extra_files=$(find /etc/vector/conf.d -maxdepth 1 -name '*.yaml' 2>/dev/null || true)
+    vector validate --no-environment /etc/vector/vector.yaml $extra_files
   changed_when: false
 ```
 
-This is `shell:` (not `command:`) because `vector validate` doesn't accept directory arguments — the glob must be shell-expanded. `firewall/tasks/main.yml` and `profile_collector/tasks/main.yml` already have this task; new roles that render Vector configs must add their own. If the validate fails, the play stops, Vector keeps running on whatever config was previously loaded, and the operator gets the VRL compile error in Ansible output rather than discovering it from a silently-stopped pipeline hours later.
+`find` enumerates the conf.d files rather than relying on a shell glob because on a **fresh install** the handler can fire from the base role before any `conf.d/*.yaml` has been templated. In that state the glob `/etc/vector/conf.d/*.yaml` is left literal by the shell, Vector receives a path that doesn't exist, and exits 78/CONFIG — the crashloop the validate is supposed to prevent (2026-05-22 fresh-install regression). When `find` returns empty, `vector validate` runs against just `vector.yaml`, which is fine: no sources/transforms exist yet to interact with the sinks.
+
+Every role that renders Vector configs must `notify:` this handler immediately after the render task, ordered before the "Restart Vector" handler. If the validate fails, the play stops, Vector keeps running on whatever config was previously loaded, and the operator gets the VRL compile error in Ansible output rather than discovering it from a silently-stopped pipeline hours later. The 2026-05-21 10:47 outage (every cowrie/suricata/nftables event for ~4 hours sat in the source files unshipped) is the failure mode being prevented.
 
 ## Honeypot deployment discipline
 
