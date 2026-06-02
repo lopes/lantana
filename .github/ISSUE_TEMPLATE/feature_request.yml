@@ -1,4 +1,48 @@
-- title prefix: [feature]
- - Labels: enhancement
- - Body: problem (what gap?), proposed solution, alternatives considered, scope (one component / cross-cutting), why now.
+name: Feature request
+description: Propose a new feature or enhancement for Lantana.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lantana is a honeypot-as-code platform for behavioral intelligence collection. Please consider that scope before opening — features that pull the project toward "general-purpose SIEM" or "managed service" are generally out of scope. See the [README](https://github.com/lopes/lantana#readme) for the v1 design boundaries.
 
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What gap does this address? What can't be done today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you'd like to see implemented.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you ruled out and why.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - single component (pipeline, ansible role, terraform, etc.)
+        - cross-cutting (touches multiple components)
+        - documentation only
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-now
+    attributes:
+      label: Why now?
+      description: Why is this important to land in the current release cycle versus later?

@@ -1,12 +1,93 @@
-- title prefix: [bug]
- - Labels auto-applied: bug
- - Body:
-   - What happened (textarea, required)
-   - Expected behavior (textarea, required)
-   - Repro steps (textarea, required)
-   - Component (dropdown: pipeline, honeywall, sensor, collector, dashboard, ansible roles, terraform, docs, other)
-   - Lantana version / commit SHA (input, required)
-   - Deployment mode (dropdown: single-node, multi-node)
-   - Logs / output (textarea, optional, with explicit warning: scrub WAN IPs, hostnames, API keys before pasting)
-   - OPSEC ack (checkbox: "I confirm this report contains no operator-identifying values")
+name: Bug report
+description: Report a defect in Lantana.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening:
+        - Search existing issues to avoid duplicates.
+        - **Security issues do NOT belong here** — use the [Security Advisory](https://github.com/lopes/lantana/security/advisories/new) channel instead.
+        - Scrub any operator-identifying values (WAN IPs, hostnames, ASNs, API keys) from logs before pasting. See [SECURITY.md](https://github.com/lopes/lantana/blob/main/SECURITY.md) for the OPSEC policy.
 
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the actual behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: Step-by-step instructions to reproduce the issue.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which area of the codebase is affected?
+      options:
+        - pipeline
+        - honeywall
+        - sensor
+        - collector
+        - dashboard
+        - ansible role
+        - terraform
+        - docs
+        - other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Lantana version or commit SHA
+      description: Output of `git rev-parse --short HEAD` or the released tag.
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment-mode
+    attributes:
+      label: Deployment mode
+      options:
+        - single-node
+        - multi-node
+        - not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant log lines, error messages, or terminal output. Scrub WAN IPs, hostnames, and API keys before pasting.
+      render: text
+
+  - type: checkboxes
+    id: opsec-ack
+    attributes:
+      label: OPSEC acknowledgment
+      options:
+        - label: I confirm this report contains no operator-identifying values (real WAN IPs, hostnames, API keys, ASNs).
+          required: true
