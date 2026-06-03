@@ -20,6 +20,35 @@ if TYPE_CHECKING:
 
 TOP_N: int = 10
 
+# Box Drawings Light Vertical — visually a pipe, but ordinary text to every
+# Markdown parser. Replaces ``|`` in attacker-controlled cells; see
+# ``_escape_md_cell``. Module-level so the regression test can import it.
+_PIPE_SUBSTITUTE: str = "│"
+
+
+def _escape_md_cell(value: object) -> str:
+    """Sanitize an attacker-controlled string for a Markdown table cell.
+
+    Replaces ``|`` with ``│`` (U+2502) so the GFM table parser keeps the cell
+    intact. A ``\\|`` backslash escape is the spec-canonical answer but renders
+    literally inside code spans on strict CommonMark parsers — which is what
+    the operator's viewer is — so the backslash would leak onto the screen.
+    U+2502 is ordinary text to every Markdown parser, no escape machinery
+    involved. Tradeoff: copy-paste into a terminal pastes ``│`` not ``|``;
+    the analyst must swap. Acceptable because the brief is a reading document
+    (the canonical IOC source is the dashboard's STIX Export page).
+
+    Also collapses ``\\n`` / ``\\r`` to spaces (a multi-line value would split
+    the table row) and truncates to 200 chars (so a multi-KB payload can't
+    bloat the brief).
+    """
+    text = "" if value is None else str(value)
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = text.replace("|", _PIPE_SUBSTITUTE)
+    if len(text) > 200:
+        text = text[:199] + "…"
+    return text
+
 
 def _section_caption(key: str) -> str | None:
     """Return the italic ``_What: …. Why: …. How: …._`` line for a section.
@@ -190,7 +219,7 @@ def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
             provider = row.get("provider", "?")
             etype = row.get("error_type", "?")
             count = row.get("count", 1)
-            msg = str(row.get("message", ""))[:120]
+            msg = _escape_md_cell(row.get("message", ""))
             lines.append(f"| `{provider}` | `{etype}` | {count} | {msg} |")
         lines.append("")
 
@@ -374,9 +403,9 @@ def generate_daily_brief(
             lines.append("|------|-------|----|---------------|")
             for rank, r in enumerate(named.head(TOP_N).iter_rows(named=True), start=1):
                 lines.append(
-                    f"| {rank} | {r['greynoise_name']} "
+                    f"| {rank} | {_escape_md_cell(r['greynoise_name'])} "
                     f"| {r['src_endpoint_ip']} "
-                    f"| {r.get('greynoise_class', '?')} |"
+                    f"| {_escape_md_cell(r.get('greynoise_class', '?'))} |"
                 )
             lines.append("")
 
@@ -414,8 +443,10 @@ def generate_daily_brief(
         for rank, r in enumerate(clusters.head(TOP_N).iter_rows(named=True), start=1):
             ips_val = r["ips"]
             ips_list: list[str] = [str(x) for x in ips_val] if isinstance(ips_val, list) else []
+            shared_user = _escape_md_cell(r["shared_username"])
+            shared_pass = _escape_md_cell(r["shared_password"])
             lines.append(
-                f"| {rank} | `{r['shared_username']}:{r['shared_password']}` | {r['ip_count']} |"
+                f"| {rank} | `{shared_user}:{shared_pass}` | {r['ip_count']} |"
             )
             rank_ips.append((rank, ips_list))
         lines.append("")
@@ -434,7 +465,7 @@ def generate_daily_brief(
         lines.append("| Rank | Rule | Events | Unique IPs |")
         lines.append("|------|------|--------|-----------|")
         for rank, r in enumerate(detection.head(TOP_N).iter_rows(named=True), start=1):
-            title = r.get("finding_title", "unknown")
+            title = _escape_md_cell(r.get("finding_title", "unknown"))
             lines.append(f"| {rank} | {title} | {r['event_count']:,} | {r['unique_ips']:,} |")
         lines.append("")
 
@@ -460,13 +491,13 @@ def generate_daily_brief(
                 sha = str(entry["value"])
                 count = int(entry["count"])
                 meta = vt_lookup.get(sha, {})
-                family = meta.get("family") or "?"
-                ftype = meta.get("type") or "?"
+                family = _escape_md_cell(meta.get("family") or "?")
+                ftype = _escape_md_cell(meta.get("type") or "?")
                 detections = meta.get("detections")
                 detections_cell = "?" if detections is None else f"{detections}"
                 vt_risk = meta.get("risk_score")
                 vt_risk_cell = "?" if vt_risk is None else f"{vt_risk:.0f}"
-                url_path = meta.get("url_tail") or "?"
+                url_path = _escape_md_cell(meta.get("url_tail") or "?")
                 short_sha = f"`{sha[:16]}…`"
                 lines.append(
                     f"| {rank} | {short_sha} | {family} | {ftype} "
@@ -489,7 +520,9 @@ def generate_daily_brief(
             lines.append("| Rank | URL | Count |")
             lines.append("|------|-----|-------|")
             for rank, entry in enumerate(download_urls[:TOP_N], start=1):
-                lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
+                lines.append(
+                    f"| {rank} | `{_escape_md_cell(entry['value'])}` | {entry['count']:,} |"
+                )
             lines.append("")
 
     # Top credentials — split into two rank/item/count tables (matches dashboard).
@@ -505,14 +538,18 @@ def generate_daily_brief(
             lines.append("| Rank | Username | Count |")
             lines.append("|------|----------|-------|")
             for rank, entry in enumerate(usernames[:TOP_N], start=1):
-                lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
+                lines.append(
+                    f"| {rank} | `{_escape_md_cell(entry['value'])}` | {entry['count']:,} |"
+                )
             lines.append("")
         if passwords:
             lines.append("**Top Passwords:**\n")
             lines.append("| Rank | Password | Count |")
             lines.append("|------|----------|-------|")
             for rank, entry in enumerate(passwords[:TOP_N], start=1):
-                lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
+                lines.append(
+                    f"| {rank} | `{_escape_md_cell(entry['value'])}` | {entry['count']:,} |"
+                )
             lines.append("")
 
     # Top commands
@@ -525,7 +562,9 @@ def generate_daily_brief(
         lines.append("| Rank | Command | Count |")
         lines.append("|------|---------|-------|")
         for rank, entry in enumerate(commands[:TOP_N], start=1):
-            lines.append(f"| {rank} | `{entry['value']}` | {entry['count']:,} |")
+            lines.append(
+                f"| {rank} | `{_escape_md_cell(entry['value'])}` | {entry['count']:,} |"
+            )
         lines.append("")
 
     # IOC export pointer — STIX bundle and raw IOC CSV both live on the

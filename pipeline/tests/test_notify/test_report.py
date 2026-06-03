@@ -7,6 +7,8 @@ from datetime import UTC, date, datetime
 import polars as pl
 
 from lantana.notify.report import (
+    _PIPE_SUBSTITUTE,
+    _escape_md_cell,
     _fmt_provider_risk,
     _fmt_risk_breakdown,
     generate_daily_brief,
@@ -49,6 +51,10 @@ def _make_summary() -> pl.DataFrame:
                 [
                     {"value": "uname -a", "count": 8},
                     {"value": "cat /etc/passwd", "count": 5},
+                    # Regression: pipe-containing command must not split the
+                    # Top Commands table — see 2026-06-02 bug. The renderer
+                    # replaces ``|`` with U+2502 so cell borders stay intact.
+                    {"value": "cat /proc/cpuinfo | grep name | head -1", "count": 3},
                 ]
             ],
             "top_source_countries": [
@@ -222,6 +228,52 @@ class TestGenerateDailyBrief:
         )
         assert isinstance(report, str)
         assert len(report) > 100
+
+    def test_pipe_in_command_does_not_split_table_cell(self) -> None:
+        """Regression for 2026-06-02: a command containing ``|`` split the
+        Top Commands table into 6 columns and bled ``grep name`` into the
+        Count cell. After the fix, ``|`` is replaced with U+2502 so each
+        row stays exactly 3 cells (4 ASCII pipes: borders + 2 separators)."""
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+        )
+        pipe_row = next(
+            line for line in report.splitlines() if "cat /proc/cpuinfo" in line
+        )
+        assert pipe_row.count("|") == 4, (
+            f"Expected 4 ASCII pipes (cell borders only), got "
+            f"{pipe_row.count('|')}: {pipe_row!r}"
+        )
+        assert pipe_row.count(_PIPE_SUBSTITUTE) == 2
+        # Count cell is the last data column — confirm it still holds the int.
+        assert pipe_row.rstrip().endswith("| 3 |")
+
+
+class TestEscapeMdCell:
+    """Unit tests for the helper that sanitizes attacker-controlled cells."""
+
+    def test_none_yields_empty(self) -> None:
+        assert _escape_md_cell(None) == ""
+
+    def test_pipe_replaced_with_substitute(self) -> None:
+        assert _escape_md_cell("a|b") == f"a{_PIPE_SUBSTITUTE}b"
+
+    def test_newline_collapsed_to_space(self) -> None:
+        assert _escape_md_cell("a\nb") == "a b"
+        assert _escape_md_cell("a\r\nb") == "a  b"
+
+    def test_oversize_truncated_with_ellipsis(self) -> None:
+        out = _escape_md_cell("x" * 500)
+        assert len(out) == 200
+        assert out.endswith("…")
+
+    def test_non_string_coerced(self) -> None:
+        assert _escape_md_cell(42) == "42"
 
 
 class TestProviderRiskFormatter:
