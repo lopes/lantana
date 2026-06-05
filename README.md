@@ -21,6 +21,75 @@ The platform covers the full lifecycle: controlled exposure → structured inges
 
 ---
 
+## Platform Preview
+
+<p align="center">
+  <table>
+    <tr>
+      <td align="center">
+        <img src="assets/lantana-screenshot-dashboard-overview.png" alt="Streamlit dashboard — overview page" width="480">
+        <br><sub>Streamlit dashboard — overview</sub>
+      </td>
+      <td align="center">
+        <img src="assets/lantana-screenshot-discord-notifications.png" alt="Discord daily intelligence brief" width="480">
+        <br><sub>Discord daily intelligence brief</sub>
+      </td>
+    </tr>
+  </table>
+</p>
+
+<details>
+<summary>More screenshots</summary>
+
+<p align="center">
+  <table>
+    <tr>
+      <td align="center">
+        <img src="assets/lantana-screenshot-dashboard-credentials.png" alt="Dashboard — credentials page" width="380">
+        <br><sub>Dashboard — credentials</sub>
+      </td>
+      <td align="center">
+        <img src="assets/lantana-screenshot-dashboard-findings.png" alt="Dashboard — findings page" width="380">
+        <br><sub>Dashboard — findings</sub>
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="assets/lantana-screenshot-dashboard-geography.png" alt="Dashboard — geography page" width="380">
+        <br><sub>Dashboard — geography</sub>
+      </td>
+      <td align="center">
+        <img src="assets/lantana-screenshot-dashboard-ipreputation.png" alt="Dashboard — IP reputation page" width="380">
+        <br><sub>Dashboard — IP reputation</sub>
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="assets/lantana-screenshot-dashboard-progression.png" alt="Dashboard — behavioral progression page" width="380">
+        <br><sub>Dashboard — behavioral progression</sub>
+      </td>
+      <td align="center">
+        <img src="assets/lantana-screenshot-dashboard-stix.png" alt="Dashboard — STIX export page" width="380">
+        <br><sub>Dashboard — STIX export</sub>
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="assets/lantana-screenshot-report-header.png" alt="Discord report — embed header" width="380">
+        <br><sub>Report — Discord embed header</sub>
+      </td>
+      <td align="center">
+        <img src="assets/lantana-screenshot-report-keymetrics.png" alt="Discord report — key metrics section" width="380">
+        <br><sub>Report — key metrics</sub>
+      </td>
+    </tr>
+  </table>
+</p>
+
+</details>
+
+---
+
 ## Quick Start
 
 ### 1. Clone and provision
