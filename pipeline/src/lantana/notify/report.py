@@ -445,9 +445,7 @@ def generate_daily_brief(
             ips_list: list[str] = [str(x) for x in ips_val] if isinstance(ips_val, list) else []
             shared_user = _escape_md_cell(r["shared_username"])
             shared_pass = _escape_md_cell(r["shared_password"])
-            lines.append(
-                f"| {rank} | `{shared_user}:{shared_pass}` | {r['ip_count']} |"
-            )
+            lines.append(f"| {rank} | `{shared_user}:{shared_pass}` | {r['ip_count']} |")
             rank_ips.append((rank, ips_list))
         lines.append("")
         lines.append("**IPs by rank:**\n")
@@ -562,9 +560,7 @@ def generate_daily_brief(
         lines.append("| Rank | Command | Count |")
         lines.append("|------|---------|-------|")
         for rank, entry in enumerate(commands[:TOP_N], start=1):
-            lines.append(
-                f"| {rank} | `{_escape_md_cell(entry['value'])}` | {entry['count']:,} |"
-            )
+            lines.append(f"| {rank} | `{_escape_md_cell(entry['value'])}` | {entry['count']:,} |")
         lines.append("")
 
     # IOC export pointer — STIX bundle and raw IOC CSV both live on the

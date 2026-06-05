@@ -242,12 +242,9 @@ class TestGenerateDailyBrief:
             _make_clusters(),
             "Test Op",
         )
-        pipe_row = next(
-            line for line in report.splitlines() if "cat /proc/cpuinfo" in line
-        )
+        pipe_row = next(line for line in report.splitlines() if "cat /proc/cpuinfo" in line)
         assert pipe_row.count("|") == 4, (
-            f"Expected 4 ASCII pipes (cell borders only), got "
-            f"{pipe_row.count('|')}: {pipe_row!r}"
+            f"Expected 4 ASCII pipes (cell borders only), got {pipe_row.count('|')}: {pipe_row!r}"
         )
         assert pipe_row.count(_PIPE_SUBSTITUTE) == 2
         # Count cell is the last data column — confirm it still holds the int.
