@@ -59,7 +59,6 @@ def _make_indicators(
     progression: pl.DataFrame,
     identity: stix2.Identity,
     tlp: stix2.MarkingDefinition,
-    multiday_progression: pl.DataFrame | None = None,
 ) -> list[stix2.Indicator]:
     """Create Indicator objects for high-risk IPs."""
     if reputation.is_empty():
@@ -78,14 +77,6 @@ def _make_indicators(
             if ip_prog.height > 0:
                 stage = ip_prog.row(0, named=True)["stage_label"]
                 labels = list(_STAGE_LABELS.get(stage, labels))
-
-        # Multi-day: add slow-burn label
-        if multiday_progression is not None and not multiday_progression.is_empty():
-            ip_md = multiday_progression.filter(pl.col("src_endpoint_ip") == ip)
-            if ip_md.height > 0:
-                md_row = ip_md.row(0, named=True)
-                if md_row.get("is_slow_burn"):
-                    labels.append("slow-burn-escalation")
 
         # Named threat actor
         if row.get("greynoise_name") and row["greynoise_name"] not in ("", "unknown"):
@@ -124,19 +115,7 @@ def _make_indicators(
             vuln_count = len(str(row["shodan_vulns"]).split(","))
             description_parts.append(f"Known CVEs: {vuln_count}")
 
-        # Multi-day: use first_seen_date for valid_from if available
         valid_from = row.get("first_seen")
-        if multiday_progression is not None and not multiday_progression.is_empty():
-            ip_md = multiday_progression.filter(pl.col("src_endpoint_ip") == ip)
-            if ip_md.height > 0:
-                first_date = ip_md.row(0, named=True).get("first_seen_date")
-                if isinstance(first_date, date):
-                    valid_from = datetime(
-                        first_date.year,
-                        first_date.month,
-                        first_date.day,
-                        tzinfo=UTC,
-                    )
         if valid_from is None or not isinstance(valid_from, datetime):
             valid_from = datetime.now(tz=UTC)
 
@@ -306,7 +285,6 @@ def generate_bundle(
     progression: pl.DataFrame,
     clusters: pl.DataFrame,
     summary: pl.DataFrame | None = None,
-    multiday_progression: pl.DataFrame | None = None,
     detection: pl.DataFrame | None = None,
 ) -> stix2.Bundle:
     """Generate a STIX 2.1 bundle from gold-layer data for a given date."""
@@ -320,7 +298,6 @@ def generate_bundle(
         progression,
         identity,
         tlp,
-        multiday_progression,
     )
     objects.extend(indicators)
 
