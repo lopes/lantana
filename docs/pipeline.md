@@ -58,7 +58,7 @@ All data lives under `/var/lib/lantana/datalake/` in Hive-style partitions:
 
 - **Bronze**: One NDJSON file per dataset/date/server combination. Written by Vector. Contains raw event fields plus Vector-added tags (`dataset`, `server`, `operation`) and GeoIP fields (`geo.*`).
 - **Silver**: One Parquet file per partition. Events have OCSF-normalized column names, API enrichment data, and infrastructure IPs replaced with pseudonyms.
-- **Gold**: Seven aggregated tables per date: `daily_summary`, `ip_reputation`, `behavioral_progression`, `behavioral_progression_multiday`, `campaign_clusters`, `geographic_summary`, `detection_findings`. Read exclusively from silver.
+- **Gold**: Six aggregated tables per date: `daily_summary`, `ip_reputation`, `behavioral_progression`, `campaign_clusters`, `geographic_summary`, `detection_findings`. Read exclusively from silver.
 
 Multiple operations coexist via the `operation` column tag, not filesystem partitions.
 
@@ -131,7 +131,7 @@ Retry semantics: tenacity wraps `provider.enrich_ip` / `enrich_hash` with 3 atte
 
 Entry point: `lantana-transform` (systemd timer at 04:00 UTC, processes yesterday's data).
 
-Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes gold tables covering: daily aggregate statistics, per-IP risk scoring (decomposed into per-provider, enrichment-aggregate, behavioral, and composite scores — see §3.2.1), behavioral progression staging (scan -> credential -> authenticated -> interactive), cross-day slow-burn detection (7-day lookback), credential-sharing campaign clusters, geographic distribution of attack origins, and IDS detection finding statistics.
+Reads all silver Parquet for the target date (cross-dataset), collects into a single DataFrame, and computes gold tables covering: daily aggregate statistics, per-IP risk scoring (decomposed into per-provider, enrichment-aggregate, behavioral, and composite scores — see §3.2.1), behavioral progression staging (scan -> credential -> authenticated -> interactive), credential-sharing campaign clusters, geographic distribution of attack origins, and IDS detection finding statistics. Multi-day rollups are derived on demand in the Streamlit dashboard from a trailing 7-day window of `behavioral_progression` partitions — see README roadmap for the deferred per-stage slow-burn detection.
 
 Gold tables are the single source of truth for all downstream output (STIX, reports, dashboard). Each table is a pure DataFrame transform — no side effects, no external calls. See [`transform/metrics.py`](/pipeline/src/lantana/transform/metrics.py) for table definitions and computation logic, and [`transform/runner.py`](/pipeline/src/lantana/transform/runner.py) for orchestration.
 
@@ -367,7 +367,7 @@ pipeline/
 │   │   └── providers/                # AbuseIPDB, GreyNoise, Shodan, VirusTotal
 │   ├── transform/
 │   │   ├── runner.py                 # Gold aggregation orchestrator
-│   │   └── metrics.py                # 7 metric functions (summary, reputation, progression, multiday, clusters, geographic, findings)
+│   │   └── metrics.py                # 6 metric functions (summary, reputation, progression, clusters, geographic, findings)
 │   ├── intel/
 │   │   └── stix.py                   # STIX 2.1 bundle generation
 │   ├── notify/

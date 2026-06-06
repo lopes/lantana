@@ -45,7 +45,6 @@
       - nftables
     expected_gold_tables:
       - behavioral_progression
-      - behavioral_progression_multiday
       - campaign_clusters
       - daily_summary
       - detection_findings

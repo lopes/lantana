@@ -478,11 +478,10 @@ sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT COUNT(*) FROM cac
 sudo systemctl status lantana-transform.service --no-pager | head
 sudo journalctl -u lantana-transform.service --since '04:00 UTC' | grep run_summary
 
-# Gold tables should exist — seven directories, one per table
+# Gold tables should exist — six directories, one per table
 ls /var/lib/lantana/datalake/gold/
 # daily_summary/, ip_reputation/, behavioral_progression/,
-# behavioral_progression_multiday/, campaign_clusters/,
-# geographic_summary/, detection_findings/
+# campaign_clusters/, geographic_summary/, detection_findings/
 ```
 
 **Inspect gold tables:**
@@ -496,7 +495,6 @@ tables = [
     'daily_summary',
     'ip_reputation',
     'behavioral_progression',
-    'behavioral_progression_multiday',
     'campaign_clusters',
     'geographic_summary',
     'detection_findings',
@@ -636,8 +634,7 @@ reputation = read_gold_table('ip_reputation', yesterday)
 progression = read_gold_table('behavioral_progression', yesterday)
 clusters = read_gold_table('campaign_clusters', yesterday)
 summary = read_gold_table('daily_summary', yesterday)
-multiday = read_gold_table('behavioral_progression_multiday', yesterday)
-bundle = generate_bundle(yesterday, reporting, reputation, progression, clusters, summary=summary, multiday_progression=multiday)
+bundle = generate_bundle(yesterday, reporting, reputation, progression, clusters, summary=summary)
 print(json.dumps(json.loads(bundle.serialize()), indent=2)[:2000])
 print('...')
 print(f'Total STIX objects: {len(bundle.objects)}')
@@ -653,7 +650,6 @@ print(f'Total STIX objects: {len(bundle.objects)}')
 - `campaign` objects for shared credential clusters
 - `relationship` objects linking indicators to campaigns
 - `report` wrapping all objects with TLP marking
-- Slow-burn IPs with `slow-burn-escalation` label (if multi-day data available)
 - No infrastructure IPs in any object
 
 ### 7.3 Streamlit dashboard
@@ -709,7 +705,7 @@ Then on your workstation, open <http://localhost:8501> and verify each page:
 - **Stage vs Time** — Plotly scatter with categorical stage labels on y, Automated (red) vs Manual (blue) colour split, rich hover (IP / stage label / event count).
 - Automated vs Manual metric cards.
 - IP Progression Details table with a `Minimum stage` selectbox + stage-number decoder.
-- **Multi-day progression section**: Slow-Burn IPs + Total IPs (7-day) cards; Plotly histogram of progression_velocity_days; slow-burn details table.
+- **Multi-day progression section**: Multi-Day IPs + Total IPs (7-day) cards; Plotly histogram of progression_velocity_days; Multi-Day Attackers details table (aggregated on demand from a trailing 7-day window of `behavioral_progression` partitions — see README roadmap for the deferred per-stage slow-burn detection).
 
 **Credentials page:**
 
@@ -724,23 +720,7 @@ Then on your workstation, open <http://localhost:8501> and verify each page:
 
 ### 7.4 Multi-day progression
 
-After 7 days, the `behavioral_progression_multiday` gold table should show slow-burn patterns:
-
-```bash
-/opt/lantana/pipeline/venv/bin/python3 -c "
-from datetime import date, timedelta
-from lantana.common.datalake import read_gold_table
-yesterday = date.today() - timedelta(days=1)
-df = read_gold_table('behavioral_progression_multiday', yesterday)
-if not df.is_empty():
-    import polars as pl
-    slow = df.filter(pl.col('is_slow_burn'))
-    print(f'Total IPs (7-day): {len(df)}')
-    print(f'Slow-burn IPs: {len(slow)}')
-    if not slow.is_empty():
-        print(slow.select('src_endpoint_ip', 'max_stage', 'stage_label', 'first_seen_date', 'last_seen_date', 'progression_velocity_days').head(10))
-"
-```
+After 7 days of `behavioral_progression` gold accumulating, the Streamlit dashboard's **Multi-Day Progression** section on the Behavioral Progression page aggregates IPs across the trailing 7-day window and flags those active across 2+ days. There is no `behavioral_progression_multiday` gold table — the previous version was retired (OOM at 7-day silver lookback) and the per-stage slow-burn detection is deferred to a future release. See the README roadmap for the proper fix.
 
 ---
 
