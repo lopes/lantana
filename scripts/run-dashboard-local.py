@@ -35,7 +35,6 @@ from lantana.common.redact import RedactionConfig, redact_infrastructure_ips  # 
 from lantana.models.normalize import normalize_dataset  # noqa: E402
 from lantana.transform.metrics import (  # noqa: E402
     compute_behavioral_progression,
-    compute_behavioral_progression_multiday,
     compute_campaign_clusters,
     compute_daily_summary,
     compute_detection_findings,
@@ -152,13 +151,6 @@ def build_gold(target_date: date) -> None:
         if not result.is_empty():
             write_gold_table(result, name, target_date, gold_root=GOLD_ROOT)
             print(f"    gold/{name}: {len(result):,} rows")
-
-    multiday = compute_behavioral_progression_multiday([(target_date, silver)])
-    if not multiday.is_empty():
-        write_gold_table(
-            multiday, "behavioral_progression_multiday", target_date, gold_root=GOLD_ROOT
-        )
-        print(f"    gold/behavioral_progression_multiday: {len(multiday):,} rows")
 
 
 def main() -> None:

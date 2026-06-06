@@ -125,21 +125,32 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
     ),
     "Progression Velocity": WhatWhyHow(
         what="distribution of days-to-max-stage across the 7-day window.",
-        why="long-tail to the right = slow-burn attackers building access over multiple days.",
-        how="multiday progression_velocity_days bucketed and counted; only IPs with velocity > 0.",
+        why="long-tail to the right = attackers building access over multiple days.",
+        how=(
+            "(last_seen_date - first_seen_date) in days, aggregated per IP over the "
+            "trailing 7 daily behavioral_progression gold partitions; only IPs with velocity > 0."
+        ),
     ),
     "Multi-Day Progression": WhatWhyHow(
         what="7-day-lookback rollup of every IP's deepest stage reached.",
         why="catches attackers who spread reconnaissance across days to evade per-day rate limits.",
-        how="behavioral_progression_multiday gold table, computed over the trailing 7 days.",
-    ),
-    "Slow-Burn Attackers": WhatWhyHow(
-        what="IPs whose progression spanned multiple days before reaching max stage.",
-        why=(
-            "contrasts with same-day burst behaviour — these are the "
-            "patient ones worth a deeper look."
+        how=(
+            "aggregated on demand from daily behavioral_progression gold partitions. "
+            "Multi-day flag is a permissive proxy (active_days > 1) — the silver-derived "
+            "per-stage slow-burn detection was retired with the multiday gold table, "
+            "see README roadmap."
         ),
-        how="multiday rows where is_slow_burn flag is set, ranked by velocity_days.",
+    ),
+    "Multi-Day Attackers": WhatWhyHow(
+        what="IPs observed across 2+ days of the trailing 7-day window.",
+        why=(
+            "contrasts with same-day burst behaviour — these are the patient ones "
+            "worth a deeper look. Proper per-stage slow-burn detection is deferred."
+        ),
+        how=(
+            "behavioral_progression rows aggregated by src_endpoint_ip across 7 daily "
+            "partitions; flagged where active_days > 1, ranked by velocity_days."
+        ),
     ),
     # STIX Export page
     "STIX Export": WhatWhyHow(
@@ -312,15 +323,21 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         why="the higher-effort attacker bucket; worth focused review.",
         how="behavioral_progression.filter(~is_automated).",
     ),
-    "Slow-Burn IPs": WhatWhyHow(
-        what="IPs whose progression spanned multiple days before hitting max stage.",
-        why="patient attackers evading per-day rate limits and chunked detection logic.",
-        how="multiday.filter(is_slow_burn).",
+    "Multi-Day IPs": WhatWhyHow(
+        what="IPs observed across 2+ days of the trailing 7-day window.",
+        why=(
+            "permissive proxy for slow-burn behaviour — patient attackers evading "
+            "per-day rate limits. Proper per-stage detection is deferred."
+        ),
+        how=(
+            "behavioral_progression aggregated over 7 daily partitions, "
+            "filtered to active_days > 1."
+        ),
     ),
     "Total Multi-Day IPs": WhatWhyHow(
         what="distinct IPs seen at least once in the trailing 7-day window.",
-        why="cardinality of the multi-day surface — the universe slow-burn divides.",
-        how="row count of behavioral_progression_multiday.",
+        why="cardinality of the multi-day surface — the universe Multi-Day IPs divides.",
+        how="distinct src_endpoint_ip across 7 daily behavioral_progression partitions.",
     ),
     # STIX Export page metric cards
     "IP Indicators": WhatWhyHow(

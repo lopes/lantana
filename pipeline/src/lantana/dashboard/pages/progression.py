@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 — runtime parameter type
+from datetime import date, timedelta
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -11,6 +11,7 @@ import streamlit as st
 
 from lantana.common.datalake import read_gold_table
 from lantana.notify.explanations import BRIEF_SECTIONS, METRICS
+from lantana.transform.metrics import STAGE_LABELS
 
 _STAGE_LABELS_BY_NUM: dict[int, str] = {
     1: "Scan",
@@ -225,23 +226,57 @@ def render(selected_date: date) -> None:
     )
 
     # --- Multi-day rollup (7-day lookback) ---
+    # Aggregated on demand from daily behavioral_progression gold partitions.
+    # The original silver-derived multiday gold table was retired (OOM at
+    # 7-day silver lookback on 7.6 GB RAM, no swap); per-stage first-date
+    # logic was sacrificed for the rough `active_days > 1` proxy — see
+    # README roadmap.
     st.divider()
     st.header("Multi-Day Progression (7-day lookback)")
     md_caption = _section_caption("Multi-Day Progression")
     if md_caption:
         st.caption(md_caption)
 
-    multiday = read_gold_table("behavioral_progression_multiday", selected_date)
-    if multiday.is_empty():
+    parts: list[pl.DataFrame] = []
+    for offset in range(7):
+        d = selected_date - timedelta(days=offset)
+        day_df = read_gold_table("behavioral_progression", d)
+        if not day_df.is_empty():
+            parts.append(day_df.with_columns(pl.lit(d).alias("report_date")))
+
+    if not parts:
         st.info("No multi-day progression data available for this date.")
         return
 
-    slow_burn = multiday.filter(pl.col("is_slow_burn"))
-    sb_col, total_col, _ = st.columns(3)
-    sb_col.metric(
-        "Slow-Burn IPs",
-        slow_burn.height,
-        help=_metric_help("Slow-Burn IPs"),
+    combined = pl.concat(parts, how="diagonal_relaxed")
+    multiday = (
+        combined.group_by("src_endpoint_ip")
+        .agg(
+            pl.col("report_date").min().alias("first_seen_date"),
+            pl.col("report_date").max().alias("last_seen_date"),
+            pl.col("report_date").n_unique().alias("active_days"),
+            pl.col("max_stage").max().alias("max_stage"),
+        )
+        .with_columns(
+            pl.col("max_stage")
+            .replace_strict(STAGE_LABELS, default="unknown")
+            .alias("stage_label"),
+            (pl.col("last_seen_date") - pl.col("first_seen_date"))
+            .dt.total_days()
+            .cast(pl.Int64)
+            .alias("progression_velocity_days"),
+        )
+        .with_columns(
+            (pl.col("active_days") > 1).alias("is_multi_day"),
+        )
+    )
+
+    multi_day_ips = multiday.filter(pl.col("is_multi_day"))
+    md_col, total_col, _ = st.columns(3)
+    md_col.metric(
+        "Multi-Day IPs",
+        multi_day_ips.height,
+        help=_metric_help("Multi-Day IPs"),
     )
     total_col.metric(
         "Total IPs (7-day)",
@@ -251,7 +286,6 @@ def render(selected_date: date) -> None:
 
     st.divider()
 
-    # Velocity distribution
     if "progression_velocity_days" in multiday.columns:
         st.subheader("Progression Velocity (days to max stage)")
         velocity_caption = _section_caption("Progression Velocity")
@@ -265,12 +299,11 @@ def render(selected_date: date) -> None:
 
     st.divider()
 
-    # Slow-burn details table
-    if not slow_burn.is_empty():
-        st.subheader("Slow-Burn Attackers")
-        slow_burn_caption = _section_caption("Slow-Burn Attackers")
-        if slow_burn_caption:
-            st.caption(slow_burn_caption)
+    if not multi_day_ips.is_empty():
+        st.subheader("Multi-Day Attackers")
+        multi_day_caption = _section_caption("Multi-Day Attackers")
+        if multi_day_caption:
+            st.caption(multi_day_caption)
         multiday_cols = [
             "src_endpoint_ip",
             "max_stage",
@@ -280,9 +313,9 @@ def render(selected_date: date) -> None:
             "active_days",
             "progression_velocity_days",
         ]
-        available = [c for c in multiday_cols if c in slow_burn.columns]
+        available = [c for c in multiday_cols if c in multi_day_ips.columns]
         st.dataframe(
-            slow_burn.select(available)
+            multi_day_ips.select(available)
             .sort("progression_velocity_days", descending=True)
             .to_pandas(),
             hide_index=True,
