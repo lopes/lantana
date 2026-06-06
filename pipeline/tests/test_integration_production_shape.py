@@ -451,7 +451,6 @@ async def test_end_to_end_pipeline_against_production_shape(
         "behavioral_progression",
         "geographic_summary",
         "detection_findings",
-        "behavioral_progression_multiday",
     )
     for table in expected_tables:
         parquet = _gold_parquet(table)

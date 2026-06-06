@@ -14,12 +14,8 @@ import json
 import os
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import structlog
-
-if TYPE_CHECKING:
-    import polars as pl
 
 from lantana.common.datalake import (
     GOLD_ROOT,
@@ -29,15 +25,12 @@ from lantana.common.datalake import (
 )
 from lantana.transform.metrics import (
     compute_behavioral_progression,
-    compute_behavioral_progression_multiday,
     compute_campaign_clusters,
     compute_daily_summary,
     compute_detection_findings,
     compute_geographic_summary,
     compute_ip_reputation,
 )
-
-LOOKBACK_DAYS: int = 7
 
 ERRORS_PATH = Path(
     os.environ.get("LANTANA_ENRICHMENT_ERRORS", "/var/lib/lantana/datalake/enrichment_errors.json")
@@ -118,34 +111,12 @@ def run_transform(
             gold_rows[table_name] = 0
             logger.info("gold_skip_empty", table=table_name)
 
-    # Multi-day behavioral progression (lookback window)
-    lookback_frames: list[tuple[date, pl.DataFrame]] = []
-    for offset in range(LOOKBACK_DAYS):
-        d = target_date - timedelta(days=offset)
-        lf = read_silver_partition(d, silver_root=silver_root)
-        day_df = lf.collect()
-        if not day_df.is_empty():
-            lookback_frames.append((d, day_df))
-
-    if lookback_frames:
-        multiday = compute_behavioral_progression_multiday(lookback_frames)
-        if not multiday.is_empty():
-            write_gold_table(
-                multiday,
-                "behavioral_progression_multiday",
-                target_date,
-                gold_root=gold_root,
-            )
-            gold_rows["behavioral_progression_multiday"] = len(multiday)
-            logger.info("gold_written", table="behavioral_progression_multiday", rows=len(multiday))
-
     logger.info(
         "run_summary",
         date=target_date.isoformat(),
         silver_rows=len(silver),
         silver_columns=len(silver.columns),
         gold_rows=gold_rows,
-        lookback_days_with_data=len(lookback_frames),
     )
     logger.info("transform_done", date=target_date.isoformat())
 
