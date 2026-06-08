@@ -60,6 +60,16 @@
     mode: "0644"
   tags: [cowrie]
 
+- name: "Deploy Cowrie health check script"
+  become: true
+  ansible.builtin.copy:
+    src: healthcheck.py
+    dest: /etc/lantana/sensor/cowrie/healthcheck.py
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  tags: [cowrie]
+
 - name: "Create Quadlet directory for sensor user"
   become: true
   ansible.builtin.file:
@@ -78,6 +88,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  notify: "Restart Cowrie container"
   tags: [cowrie]
 
 - name: "Reload user systemd daemon for Quadlet"
