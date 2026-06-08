@@ -21,8 +21,8 @@ NoNewPrivileges=true
 ReadOnly=true
 VolatileTmp=true
 
-# Health check: python3 is available in the cowrie image; sh/nc are not
-HealthCmd=python3 -c "import socket,sys; s=socket.create_connection(('localhost',2222),timeout=3); d=s.recv(64); sys.exit(0 if b'SSH' in d else 1)"
+# Health check: cowrie image has no sh or nc; use JSON CMD array for direct exec
+HealthCmd=["CMD","python3","-c","import socket,sys; s=socket.create_connection(('localhost',2222),timeout=3); d=s.recv(64); sys.exit(0 if b'SSH' in d else 1)"]
 HealthInterval=30s
 HealthTimeout=5s
 HealthRetries=3
