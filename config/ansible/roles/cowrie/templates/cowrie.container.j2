@@ -21,8 +21,8 @@ NoNewPrivileges=true
 ReadOnly=true
 VolatileTmp=true
 
-# Health check: cowrie image has no sh/nc; script mounted from host, CMD array avoids shell
-HealthCmd=["CMD","python3","/healthcheck.py"]
+# Health check: cowrie image has no sh/nc; CMD prefix = direct exec (no shell needed)
+HealthCmd=CMD python3 /healthcheck.py
 HealthInterval=30s
 HealthTimeout=5s
 HealthRetries=3
