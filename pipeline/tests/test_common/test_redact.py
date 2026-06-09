@@ -263,6 +263,34 @@ def test_drop_source_rows_handles_ipv6_infrastructure(
     assert result.get_column("src_endpoint_ip").to_list() == ["2001:db8:1::beef"]
 
 
+def test_drop_source_rows_drops_expanded_ipv6_in_cidr(
+    redaction_config: RedactionConfig,
+) -> None:
+    """Expanded-form IPv6 in infrastructure_cidrs must be dropped.
+
+    The Linux kernel writes IPv6 in fully-expanded form
+    (fd99:0010:0050:0099:0000:0000:0000:0100). That string is not in
+    infrastructure_ips (which stores the compressed form fd99:10:50:99::100),
+    so exact-match alone misses it. CIDR membership via ipaddress.ip_address()
+    handles the format mismatch.
+
+    Defect from op_alpha 2026-06-08: Dionaea output responses slipped through
+    because the kernel logged the sensor's ULA address in expanded form.
+    """
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": [
+                "fd99:0010:0050:0099:0000:0000:0000:0100",
+                "2001:db8:1::beef",
+            ],
+            "event": ["outbound-response", "scan"],
+        }
+    )
+    result = drop_infrastructure_source_rows(df, redaction_config)
+    assert result.height == 1
+    assert result.get_column("src_endpoint_ip").to_list() == ["2001:db8:1::beef"]
+
+
 def test_drop_source_rows_empty_dataframe(redaction_config: RedactionConfig) -> None:
     df = pl.DataFrame(
         schema={"src_endpoint_ip": pl.Utf8, "event": pl.Utf8},

@@ -91,25 +91,43 @@ def drop_infrastructure_source_rows(
     behaviour. Without this filter, `validate_no_leaks` catches the
     infrastructure IP in `src_endpoint_ip` and aborts the whole run.
 
-    Exact-match only against `config.infrastructure_ips`. CIDR membership
-    is intentionally not checked here: the internal `infrastructure_cidrs`
-    are already dropped at Vector's Layer-1 filter, so any survivor in a
-    source column is one of the discrete WAN addresses.
+    Checks both exact-match against `config.infrastructure_ips` AND CIDR
+    membership against `config.infrastructure_cidrs`. The CIDR check is
+    required because the Linux kernel writes IPv6 in fully-expanded form
+    (e.g. ``fd99:0010:0050:0099:0000:0000:0000:0100``) while
+    `infrastructure_ips` stores the compressed form (``fd99:10:50:99::100``).
+    Both forms parse to the same address under `ipaddress.ip_address()`, so
+    CIDR membership handles the format mismatch without requiring the config
+    to enumerate every expanded variant.
     """
     if df.is_empty():
         return df
 
     infra_set = set(config.infrastructure_ips)
-    if not infra_set:
+    cidr_nets = [ipaddress.ip_network(cidr) for cidr in config.infrastructure_cidrs]
+
+    if not infra_set and not cidr_nets:
         return df
 
     src_columns_present = [col for col in SRC_IP_COLUMNS if col in df.columns]
     if not src_columns_present:
         return df
 
+    def _is_infra(val: str) -> bool:
+        if val in infra_set:
+            return True
+        try:
+            addr = ipaddress.ip_address(val)
+            return any(addr in net for net in cidr_nets)
+        except ValueError:
+            return False
+
     keep_mask: pl.Expr = pl.lit(value=True)
     for col in src_columns_present:
-        keep_mask = keep_mask & ~pl.col(col).is_in(list(infra_set))
+        unique_vals = df.get_column(col).drop_nulls().unique().to_list()
+        infra_in_col = {v for v in unique_vals if isinstance(v, str) and _is_infra(v)}
+        if infra_in_col:
+            keep_mask = keep_mask & ~pl.col(col).is_in(list(infra_in_col))
 
     return df.filter(keep_mask)
 
