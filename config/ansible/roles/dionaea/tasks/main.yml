@@ -199,6 +199,31 @@
   notify: "Reload nftables"
   tags: [dionaea, nftables]
 
+# --- PIPELINE BRIDGE ---
+# Dionaea's store ihandler writes captured binaries at mode 0600 (owned by
+# stigma). The lantana pipeline (running as nectar) needs to read them for
+# SHA256 hashing and VirusTotal enrichment via extract_hashes_from_disk().
+# This cron relaxes permissions once a day, just before the 01:00 UTC
+# enrichment run — same pattern as roles/cowrie/tasks/main.yml.
+#
+# Note: the store ihandler logs no JSON event when a binary is captured, so
+# these hashes are enriched and cached but cannot be linked to a source IP.
+# They do NOT appear in top_download_hashes, downloads_captured, or STIX
+# indicators (all of which require a silver file_hash_sha256 row). VT
+# enrichment is the extent of the coverage for Dionaea binaries.
+- name: "Schedule daily read-permission fix for Dionaea binaries"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cron.d/lantana-dionaea-binaries
+    content: |
+      # Grant nectar read access to Dionaea binaries (0600 from store ihandler) before
+      # the daily enrichment run. Managed by Ansible.
+      30 0 * * * root /usr/local/sbin/lantana-grant-read /var/lib/lantana/sensor/dionaea/binaries
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [dionaea]
+
 # --- LOGGING ---
 - name: "Deploy Vector configuration"
   become: true
