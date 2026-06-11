@@ -172,6 +172,60 @@ are unusual and worth pasting into a bug report.
 
 ---
 
+## Cowrie Sensor
+
+The `cowrie/cowrie:latest` image is a rolling tag and has historically bumped the in-container `cowrie` user UID across rebuilds (998 → 999 around 2026-06-08). Lantana handles UID drift declaratively via `UserNS=keep-id:uid=999,gid=999` in the Quadlet (see CLAUDE.md "Honeypot deployment discipline"), but the mapping only works if the host-side bind-mount contents are already owned by `stigma`. Two failure modes flow from this — the second is the silent one and the more painful.
+
+### Symptom: cowrie accepts logins but logs zero `cowrie.command.*` events
+
+Bronze contains `cowrie.session.connect`, `cowrie.login.success`, and `cowrie.session.closed` but no `cowrie.command.input` rows for the whole day. Attackers are landing — they just can't run a command that ever reaches the JSON log. Downstream this surfaces as the cowrie normaliser crashing on `ColumnNotFoundError: unable to find column "input"` (defect of the 2026-06-08 → 2026-06-10 incident, fixed structurally by the conditional-column guard in `pipeline/src/lantana/models/normalize.py`, but the bronze-side absence is the upstream symptom worth recognising).
+
+Two distinct root causes share this symptom:
+
+1. **TTY transcript write fails.** Every command-exec session opens `/cowrie/cowrie-git/var/lib/cowrie/tty/<sid>-Ne.log` for writing. If the `tty/` directory or its files are owned by a host UID that doesn't match the container `cowrie` user's mapping, Twisted aborts the exec path **before** emitting `cowrie.command.input`. Auth events still log because they fire earlier in the session lifecycle. Diagnose:
+   ```bash
+   sudo journalctl _SYSTEMD_USER_UNIT=cowrie.service --since=-1h | grep PermissionError
+   # Expect: lines like  [twisted.conch.ssh.session#critical] Error executing command "..."
+   #                     builtins.PermissionError: [Errno 13] Permission denied: '/.../tty/...-e.log'
+   ```
+   Fix is the chown recipe below.
+
+2. **`jsonlog` output plugin failed at startup.** Twisted loads output plugins exactly once when cowrie's `twistd` process initialises. `cowrie/output/jsonlog.py` opens the JSON log with `mode="w"` — needs write permission on an existing file. If the file is owned by a stale UID at process-start time, the plugin raises `PermissionError`, Twisted disables it for the rest of the process lifetime, and cowrie keeps running with only the systemd-journal sink. The container appears healthy. SSH/Telnet auth works. The journal shows traffic. But `cowrie.json` mtime stops dead and Vector ships nothing to bronze, because Vector tails the file, not the journal. Diagnose:
+   ```bash
+   sudo journalctl _SYSTEMD_USER_UNIT=cowrie.service --since='<container-restart-time>' | grep -E 'Failed to load|jsonlog'
+   # Expect: "Failed to load output engine: jsonlog"  immediately followed by a PermissionError traceback.
+   sudo stat /var/log/lantana/sensor/cowrie/cowrie.json
+   # Compare mtime to container .StartedAt — if they match the container restart and nothing later, jsonlog is dead.
+   ```
+   Crucially, chowning the file **after** cowrie has already started does NOT bring jsonlog back — the plugin is gone until the container is restarted. The chown still has to happen first; the restart cements it.
+
+### Recovery recipe — image rebase or first `UserNS=keep-id` deploy
+
+Run **before** the Quadlet restart fires, not after. Ad-hoc only, not in Ansible (per repo policy):
+
+```bash
+# 1. Survey orphan ownership (anything not stigma in the cowrie state tree).
+sudo find /var/lib/lantana/sensor/cowrie /var/log/lantana/sensor/cowrie \
+     ! -user stigma -printf '%u:%g %p\n'
+
+# 2. Chown the orphans to stigma (they appear as cowrie inside the container under keep-id).
+sudo find /var/lib/lantana/sensor/cowrie /var/log/lantana/sensor/cowrie \
+     ! -user stigma -exec chown stigma:stigma {} +
+
+# 3. THEN deploy / restart cowrie.
+ansible-playbook -i inventories/<op>/inventory.yml playbooks/deploy_honeypots.yml
+# OR if the container is already running with jsonlog disabled:
+sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user restart cowrie.service
+
+# 4. Verify jsonlog loaded cleanly (no PermissionError traceback).
+sudo journalctl _SYSTEMD_USER_UNIT=cowrie.service --since=-1min \
+    | grep -E 'Loaded output engine: jsonlog|Failed to load'
+```
+
+If step 4 shows "Loaded output engine: jsonlog" with no preceding traceback, the plugin is healthy. Validate end-to-end with the active SSH probe in `docs/validation.md` §0.2 — the `cowrie.command.input` event must appear in `cowrie.json` within 1–2 seconds of the command landing.
+
+---
+
 ## Nftables Filtering & Routing
 
 Lantana uses `nftables` for strict blast-radius containment and routing traffic to the rootless decoys.
