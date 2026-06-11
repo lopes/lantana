@@ -6,11 +6,12 @@ A post-deploy verification walkthrough — from "the playbook said `failed=0`" t
 
 ## Executable validation (the fast path)
 
-Most of the checks below are encoded in two Ansible playbooks. Run those first; drop into the manual day-by-day walkthrough only when you need to debug a failure or want to learn the architecture.
+Most of the checks below are encoded in three Ansible playbooks. Run those first; drop into the manual day-by-day walkthrough only when you need to debug a failure or want to learn the architecture.
 
 | When | Playbook | What it checks |
 |---|---|---|
 | Immediately after `deploy_single.yml` | `tests/validate-single-node.yml` | Users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, systemd timers for the four pipeline jobs (enabled and present), GeoIP cron entry |
+| Immediately after `deploy_honeypots.yml` (or `deploy_single.yml`), with a ~30 s settle | `tests/validate-sensor-runtime.yml` | Cowrie + dionaea Quadlet ownership invariants (`UserNS=keep-id` for cowrie, no `,U` for either); each container's Status / Health / RestartCount; zero log-plugin failure tracebacks since each container's `StartedAt`; worker holds a write FD on `cowrie.json` / `dionaea.json`; today's bronze NDJSON fresh within the freshness window (default 120 s); zero orphan-UID files under sensor state trees |
 | After the first 06:00 UTC cycle (day 2+) | `tests/validate-pipeline-cycle.yml` | Each pipeline unit's last `Result=success`, `run_summary` events in journal, silver written for cowrie/suricata/nftables, all 7 gold tables present, `.provider_state.json` exists, no API-key leak in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + GreyNoise RIOT invariant |
 
 Run them via:
@@ -18,12 +19,16 @@ Run them via:
 ```bash
 cd config/ansible
 ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml --ask-vault-pass
+sleep 30  # let sensors bind and Vector discover their JSON logs
+ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-sensor-runtime.yml --ask-vault-pass
+# Tune the bronze freshness window when running long after a deploy:
+#   -e sensor_freshness_window_seconds=900
 ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass
 # Override target_date if not yesterday-UTC:
 #   -e target_date=2026-05-23
 ```
 
-If both pass, the deployment is healthy. The visual checks (Discord report rendering, dashboard pages, STIX bundle generation — §7.2 / §7.3) are the one thing the playbooks can't automate; walk those manually after a green automated run.
+If all three pass, the deployment is healthy. The one thing the playbooks can't automate is the **live attacker-side probes** (§0.2 below) — they require a runner outside the operation's prefix so the Vector `filter_<honeypot>` transform doesn't drop the traffic — and the **visual checks** for Discord report rendering, dashboard pages, and STIX bundle generation (§7.2 / §7.3). Walk those manually after a green automated run.
 
 ---
 
@@ -31,14 +36,19 @@ If both pass, the deployment is healthy. The visual checks (Discord report rende
 
 ### 0.1 Static infrastructure checks
 
-Run the validation playbook:
+Run the two automated playbooks:
 
 ```bash
 ansible-playbook -i inventories/op_<name>/inventory.yml \
   tests/validate-single-node.yml -vvv --ask-vault-pass
+
+sleep 30  # let sensors settle
+
+ansible-playbook -i inventories/op_<name>/inventory.yml \
+  tests/validate-sensor-runtime.yml -vvv --ask-vault-pass
 ```
 
-A green run covers users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, the four pipeline timers, and the GeoIP cron entry. If anything below the playbook's scope is in doubt, SSH to the host and check manually:
+The first covers the **static** surface — users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, the four pipeline timers, and the GeoIP cron entry. The second covers the **runtime** surface — Quadlet ownership invariants, container Health, no log-plugin failure tracebacks since the last `StartedAt`, the worker holds the JSON-log FD, today's bronze NDJSON is fresh, and zero orphan-UID files under sensor state trees. Together they are the executable counterpart to the manual recipe an operator would otherwise run by hand after a sensor restart. If anything below the playbooks' scope is in doubt, SSH to the host and check manually:
 
 **System users:**
 
@@ -133,9 +143,12 @@ sudo systemctl list-timers --all | grep lantana
 
 ### 0.2 Active protocol smoke tests
 
-Section 0.1 confirms the platform is *installed*. The probes below
-actively exercise each exposed protocol from your workstation and
-confirm the full chain works end-to-end:
+Section 0.1 confirms the platform is *installed and writing*. What it
+can't do from inside the operation is **drive an attacker-side
+connection through the full DNAT → sensor → JSON log → bronze chain**
+— that requires a runner outside the operation's prefix, otherwise
+the Vector `filter_<honeypot>` transform drops the traffic. The probes
+below close that loop manually. For each protocol:
 
 1. The port answers and the banner matches the narrative persona.
 2. Cowrie or Dionaea writes a structured event to its JSON log.
@@ -143,8 +156,7 @@ confirm the full chain works end-to-end:
 
 Replace `<host>` with `network.honeywall.wan.ipv4` from your
 inventory. Run probes from a workstation outside the operation's
-internal prefixes (otherwise the Vector `filter_<honeypot>` transform
-drops your traffic — see CLAUDE.md "OPSEC Layer 1"). Note your
+internal prefixes (see CLAUDE.md "OPSEC Layer 1"). Note your
 workstation's egress IP first — you'll match against it in the logs:
 
 ```bash

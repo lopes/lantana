@@ -394,8 +394,8 @@ This step must run before step 9: `tests/validate-single-node.yml` asserts the c
 
 The deploy commands above (§7, §8) print a play recap. `failed=0` on both means the playbook ran clean — that's the necessary condition. The sufficient condition is in [`validation.md`](/docs/validation.md), which walks through:
 
-- §0.1 — Static infrastructure checks (`validate-single-node.yml` + manual spot-checks)
-- §0.2 — Active protocol smoke tests (probe each exposed port from your workstation, verify the deception → log → bronze chain end to end)
+- §0.1 — Static + runtime infrastructure checks (`validate-single-node.yml` + `validate-sensor-runtime.yml`, plus manual spot-checks for anything outside their scope)
+- §0.2 — Active protocol smoke tests (probe each exposed port from your workstation, verify the deception → log → bronze chain end to end — the live attacker-side path the playbooks intentionally can't drive from inside the operation)
 - Day 0 + 1 hour through Day 7 — telemetry, enrichment, reports, dashboard, STIX
 
 Move to step 10 only after `validation.md` §0.1 and §0.2 pass cleanly.
@@ -465,6 +465,7 @@ Two common follow-ups:
 | Deploy base | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_single.yml --ask-vault-pass` |
 | Deploy honeypots | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_honeypots.yml --ask-vault-pass` |
 | Validate stack | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv --ask-vault-pass` |
+| Validate sensor runtime | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-sensor-runtime.yml --ask-vault-pass` (run ~30 s after `deploy_honeypots.yml`) |
 | Validate pipeline cycle | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass` |
 | Dashboard tunnel | `ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>` → on sensor: `sudo -u nectar XDG_CACHE_HOME=/tmp /opt/lantana/pipeline/venv/bin/lantana-dashboard` → browse to <http://localhost:8501> |
 | Export STIX bundle | Dashboard → STIX Export page → pick date → **Generate** → **Download** (`.json`) |

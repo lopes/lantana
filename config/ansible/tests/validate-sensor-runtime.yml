@@ -1,0 +1,277 @@
+---
+# Post-deploy runtime health validation — the executable counterpart to
+# the manual check pattern documented in docs/troubleshooting.md after a
+# sensor restart. Run after deploy_honeypots.yml (or deploy_single.yml)
+# with a ~30 s settle window so Vector has time to discover new files.
+#
+# Asserts:
+#
+#   * Deployed Quadlets carry the ownership invariants that guard against
+#     the 2026-06-08 → 2026-06-11 cowrie + dionaea incidents:
+#       - cowrie has UserNS=keep-id:uid=<N>,gid=<N> and no ,U volume flag
+#       - dionaea has no ,U volume flag
+#   * Each sensor container reports Status=running, Health=healthy,
+#     RestartCount=0.
+#   * Neither sensor's startup journal carries a log-plugin failure
+#     (Failed to load output engine | PermissionError | Could not open
+#     logfile | Unable to open file) since the container's StartedAt.
+#   * Each sensor's worker process holds a write FD on its structured
+#     JSON log (cowrie.json | dionaea.json).
+#   * Today's bronze NDJSON for every active honeypot was written within
+#     the freshness window (default 120 s).
+#   * Sensor state trees have no orphan-owned files (cowrie tree =
+#     stigma-only; dionaea tree = stigma OR worker subuid 100999).
+#
+# All checks are read-only. Live external attacker-probe sentinels (SSH,
+# FTP, SMB) are NOT included — they require a runner outside the
+# operation's prefix, otherwise the Vector filter_<honeypot> transform
+# drops the traffic. See docs/validation.md §0.2 for the manual probes.
+#
+# Defaults target_date to today UTC. Override the freshness window via:
+#   ansible-playbook ... -e sensor_freshness_window_seconds=30
+
+- name: "VALIDATION: Sensor runtime health"
+  hosts: single_nodes
+  gather_facts: false
+  vars:
+    target_date: "{{ lookup('pipe', 'date -u +%Y-%m-%d') }}"
+    sensor_freshness_window_seconds: 120
+    active_honeypots: "{{ sensor_honeypots | default(['cowrie', 'dionaea']) }}"
+    datalake_root: /var/lib/lantana/datalake
+    # Per-honeypot probes. The worker_grep is what pgrep -f matches against
+    # the worker process command line; intentionally specific enough to
+    # avoid catching the conmon supervisor (whose argv contains the
+    # container name but not these binary paths).
+    sensor_probes:
+      cowrie:
+        state_paths:
+          - /var/lib/lantana/sensor/cowrie
+          - /var/log/lantana/sensor/cowrie
+        # Under UserNS=keep-id, cowrie's worker writes appear as stigma on host.
+        orphan_find_args: "! -user stigma"
+        json_log: /var/log/lantana/sensor/cowrie/cowrie.json
+        worker_grep: "twistd.*cowrie"
+      dionaea:
+        state_paths:
+          - /var/lib/lantana/sensor/dionaea
+          - /var/log/lantana/sensor/dionaea
+        # Dionaea's supervisor writes as container UID 0 → host stigma;
+        # dionaea worker writes as container UID 1000 → host subuid 100999.
+        orphan_find_args: "! -user stigma ! -uid 100999"
+        json_log: /var/log/lantana/sensor/dionaea/dionaea.json
+        worker_grep: "/opt/dionaea/bin/dionaea"
+
+  tasks:
+    - name: "Validation context"
+      ansible.builtin.debug:
+        msg: >-
+          Verifying sensor runtime for target_date={{ target_date }};
+          freshness window {{ sensor_freshness_window_seconds }} s;
+          active honeypots={{ active_honeypots | join(', ') }}
+
+    # === 1. Quadlet drift: cowrie carries UserNS=keep-id, no ,U ===
+    - name: "Read deployed cowrie Quadlet"
+      become: true
+      ansible.builtin.slurp:
+        src: "/etc/containers/systemd/users/{{ system.users.sensor.uid }}/cowrie.container"
+      register: cowrie_quadlet
+      when: "'cowrie' in active_honeypots"
+
+    - name: "Assert cowrie Quadlet declares UserNS=keep-id"
+      ansible.builtin.assert:
+        that: "(cowrie_quadlet.content | b64decode) is regex('(?m)^UserNS=keep-id:uid=[0-9]+,gid=[0-9]+$')"
+        fail_msg: >-
+          cowrie.container is missing UserNS=keep-id:uid=<N>,gid=<N>.
+          Without it the worker cannot write its TTY transcripts and
+          command sessions abort silently before logging.
+          See CLAUDE.md "Honeypot deployment discipline" + the 2026-06-08 incident.
+      when: "'cowrie' in active_honeypots"
+
+    - name: "Assert cowrie Quadlet has no ,U flag on rw volumes"
+      ansible.builtin.assert:
+        that: "(cowrie_quadlet.content | b64decode) is not regex('(?m)^Volume=.*:rw,U$')"
+        fail_msg: >-
+          cowrie.container carries a ,U volume flag. With UserNS=keep-id
+          this is redundant; without it, ,U re-triggers the 2026-06-08
+          incident pattern. Drop the suffix.
+      when: "'cowrie' in active_honeypots"
+
+    # === 2. Quadlet drift: dionaea has no ,U ===
+    - name: "Read deployed dionaea Quadlet"
+      become: true
+      ansible.builtin.slurp:
+        src: "/etc/containers/systemd/users/{{ system.users.sensor.uid }}/dionaea.container"
+      register: dionaea_quadlet
+      when: "'dionaea' in active_honeypots"
+
+    - name: "Assert dionaea Quadlet has no ,U flag on rw volumes"
+      ansible.builtin.assert:
+        that: "(dionaea_quadlet.content | b64decode) is not regex('(?m)^Volume=.*:rw,U$')"
+        fail_msg: >-
+          dionaea.container carries a ,U volume flag. ,U races the
+          entrypoint's own chown of /opt/dionaea/var/log/dionaea and
+          breaks the worker's reopen of dionaea.json on every restart.
+          See troubleshooting.md "Dionaea Sensor — log_json silent fail."
+      when: "'dionaea' in active_honeypots"
+
+    # === 3. Container state: running + healthy + RestartCount=0 ===
+    - name: "podman inspect each sensor container (JSON)"
+      become: true
+      become_user: "{{ system.users.sensor.name }}"
+      ansible.builtin.command: "podman inspect sensor-{{ honeypot }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+        HOME: "/home/{{ system.users.sensor.name }}"
+      loop: "{{ active_honeypots }}"
+      loop_control:
+        loop_var: honeypot
+      register: container_inspect
+      changed_when: false
+
+    - name: "Assert each container is running + healthy + no restarts"
+      ansible.builtin.assert:
+        that:
+          - "(result.stdout | from_json)[0].State.Status == 'running'"
+          - "(result.stdout | from_json)[0].State.Health.Status == 'healthy'"
+          - "(result.stdout | from_json)[0].RestartCount | int == 0"
+        fail_msg: >-
+          sensor-{{ result.honeypot }} is not in the expected state.
+          Inspect with: sudo -u {{ system.users.sensor.name }}
+          XDG_RUNTIME_DIR=/run/user/{{ system.users.sensor.uid }}
+          podman inspect sensor-{{ result.honeypot }}
+      loop: "{{ container_inspect.results }}"
+      loop_control:
+        loop_var: result
+        label: "{{ result.honeypot }}"
+
+    # === 4. Plugin-load failures absent from each container's startup journal ===
+    - name: "Count plugin-failure lines since each container's StartedAt"
+      become: true
+      ansible.builtin.shell: |
+        set -o pipefail
+        journalctl _SYSTEMD_USER_UNIT={{ result.honeypot }}.service \
+            --since "{{ (result.stdout | from_json)[0].State.StartedAt | regex_replace('T', ' ') | regex_replace('\\..*$', '') }}" \
+            --no-pager 2>/dev/null \
+          | grep -cE "Failed to load output engine|PermissionError|Could not open logfile|Unable to open file" \
+          || true
+      loop: "{{ container_inspect.results }}"
+      loop_control:
+        loop_var: result
+        label: "{{ result.honeypot }}"
+      register: plugin_failures
+      changed_when: false
+
+    - name: "Assert zero plugin-load failures since container start"
+      ansible.builtin.assert:
+        that: "result.stdout | int == 0"
+        fail_msg: >-
+          sensor-{{ result.item.honeypot }} journal carries
+          {{ result.stdout }} plugin-load failure line(s) since
+          container start. Investigate with:
+          sudo journalctl _SYSTEMD_USER_UNIT={{ result.item.honeypot }}.service
+          | grep -E "Failed to load|PermissionError|Could not open|Unable to open"
+          Recovery in docs/troubleshooting.md.
+      loop: "{{ plugin_failures.results }}"
+      loop_control:
+        loop_var: result
+        label: "{{ result.item.honeypot }}"
+
+    # === 5. Worker holds a write FD on the structured JSON log ===
+    - name: "Probe worker FDs for each sensor's JSON log"
+      become: true
+      ansible.builtin.shell: |
+        set -o pipefail
+        for p in $(pgrep -f "{{ sensor_probes[honeypot].worker_grep }}"); do
+          if ls -la /proc/$p/fd/ 2>/dev/null | grep -qE "{{ sensor_probes[honeypot].json_log | basename }}$"; then
+            echo 1; exit 0
+          fi
+        done
+        echo 0
+      loop: "{{ active_honeypots }}"
+      loop_control:
+        loop_var: honeypot
+      register: worker_fd_probe
+      changed_when: false
+
+    - name: "Assert a worker holds the JSON log FD per honeypot"
+      ansible.builtin.assert:
+        that: "result.stdout.strip() == '1'"
+        fail_msg: >-
+          No process matching '{{ sensor_probes[result.honeypot].worker_grep }}'
+          holds a write FD on {{ sensor_probes[result.honeypot].json_log }}.
+          Container may be running but the log-output plugin failed at init.
+          Recovery: rm the stale json log + restart container — see
+          docs/troubleshooting.md.
+      loop: "{{ worker_fd_probe.results }}"
+      loop_control:
+        loop_var: result
+        label: "{{ result.honeypot }}"
+
+    # === 6. Bronze NDJSON written within freshness window per honeypot ===
+    - name: "Find today's fresh bronze NDJSON per honeypot"
+      become: true
+      ansible.builtin.find:
+        paths: "{{ datalake_root }}/bronze/dataset={{ honeypot }}/date={{ target_date }}"
+        patterns: "events.json"
+        recurse: true
+        age: "-{{ sensor_freshness_window_seconds }}s"
+      loop: "{{ active_honeypots }}"
+      loop_control:
+        loop_var: honeypot
+      register: bronze_find
+
+    - name: "Assert fresh bronze NDJSON exists per honeypot"
+      ansible.builtin.assert:
+        that: "result.matched > 0"
+        fail_msg: >-
+          No bronze NDJSON for dataset={{ result.honeypot }} date={{ target_date }}
+          written within the last {{ sensor_freshness_window_seconds }} s.
+          Either Vector isn't ingesting or the sensor isn't producing.
+          Inspect: sudo stat {{ datalake_root }}/bronze/dataset={{ result.honeypot }}/date={{ target_date }}/server=*/events.json
+          and sudo journalctl -u vector --since=-5min | grep -iE error
+      loop: "{{ bronze_find.results }}"
+      loop_control:
+        loop_var: result
+        label: "{{ result.honeypot }}"
+
+    # === 7. Orphan UID check across sensor state trees ===
+    - name: "Count orphan-owned files in cowrie state tree"
+      become: true
+      ansible.builtin.shell: |
+        set -o pipefail
+        find {{ sensor_probes.cowrie.state_paths | join(' ') }} \
+          {{ sensor_probes.cowrie.orphan_find_args }} 2>/dev/null | wc -l
+      register: cowrie_orphans
+      changed_when: false
+      when: "'cowrie' in active_honeypots"
+
+    - name: "Assert cowrie state tree has zero orphan-owned files"
+      ansible.builtin.assert:
+        that: "cowrie_orphans.stdout | int == 0"
+        fail_msg: >-
+          {{ cowrie_orphans.stdout }} files under cowrie state trees not
+          owned by stigma. Under UserNS=keep-id everything cowrie writes
+          must appear as stigma on host. Mismatches suggest a deploy
+          ordering issue or a manual chown that didn't take.
+      when: "'cowrie' in active_honeypots"
+
+    - name: "Count orphan-owned files in dionaea state tree"
+      become: true
+      ansible.builtin.shell: |
+        set -o pipefail
+        find {{ sensor_probes.dionaea.state_paths | join(' ') }} \
+          {{ sensor_probes.dionaea.orphan_find_args }} 2>/dev/null | wc -l
+      register: dionaea_orphans
+      changed_when: false
+      when: "'dionaea' in active_honeypots"
+
+    - name: "Assert dionaea state tree has only stigma or worker (100999) ownership"
+      ansible.builtin.assert:
+        that: "dionaea_orphans.stdout | int == 0"
+        fail_msg: >-
+          {{ dionaea_orphans.stdout }} files under dionaea state trees
+          owned neither by stigma nor by the worker subuid 100999.
+          This is the failure mode from 2026-06-08 — an upstream image
+          rebase may have shifted the dionaea user UID. See
+          docs/troubleshooting.md "Dionaea Sensor — log_json silent fail".
+      when: "'dionaea' in active_honeypots"
