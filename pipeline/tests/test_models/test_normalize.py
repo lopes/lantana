@@ -160,6 +160,43 @@ class TestNormalizeCowrie:
         assert "malware.example.com" in downloads.get_column("file_url").to_list()[0]
         assert downloads.get_column("file_path").to_list()[0] == "/tmp/payload.sh"
 
+    def test_conditional_columns_absent_does_not_crash(self) -> None:
+        """Bronze without command/login/file_download rows lacks ``input``, ``username``,
+        ``password``, ``protocol``, ``shasum``, ``url``, ``outfile`` — normalize must
+        tolerate every absence and emit typed-null OCSF columns. Regression for
+        2026-06-10 critical: quiet day with zero ``cowrie.command.*`` events crashed
+        the cowrie normaliser on unguarded ``pl.col("input")``.
+        """
+        df = pl.DataFrame(
+            {
+                "timestamp": ["2026-06-10T12:00:00Z", "2026-06-10T12:00:01Z"],
+                "eventid": ["cowrie.session.connect", "cowrie.session.closed"],
+                "src_ip": ["198.51.100.5", "198.51.100.5"],
+                "dst_ip": ["203.0.113.10", "203.0.113.10"],
+                "src_port": [54321, 54321],
+                "dst_port": [22, 22],
+                "session": ["abc123", "abc123"],
+                "message": ["New connection", "Connection lost"],
+                "sensor": ["sn-01", "sn-01"],
+            }
+        )
+        result = normalize_cowrie(df)
+        assert result.height == 2
+        for col in (
+            "actor_process_cmd_line",
+            "user_name",
+            "unmapped_password",
+            "auth_protocol",
+            "connection_info_protocol_name",
+            "file_hash_sha256",
+            "file_url",
+            "file_path",
+        ):
+            assert col in result.columns, f"missing OCSF column: {col}"
+            assert result.get_column(col).null_count() == result.height, (
+                f"{col} should be all-null when bronze lacks the source field"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Suricata normalization

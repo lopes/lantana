@@ -186,25 +186,25 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         pl.lit(PRODUCT_NAME).alias("metadata_product_name"),
         # Auth-specific: user_name
         pl.when(is_login)
-        .then(pl.col("username"))
+        .then(pl.col("username") if "username" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("user_name"),
         # Auth-specific: unmapped_password (intel for credential analysis)
         pl.when(is_login)
-        .then(pl.col("password"))
+        .then(pl.col("password") if "password" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("unmapped_password"),
         # Auth-specific: auth_protocol (login events)
         pl.when(is_login)
-        .then(pl.col("protocol"))
+        .then(pl.col("protocol") if "protocol" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("auth_protocol"),
         # Protocol name for non-login events
         pl.when(~is_login)
-        .then(pl.col("protocol"))
+        .then(pl.col("protocol") if "protocol" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("connection_info_protocol_name"),
@@ -212,7 +212,7 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         pl.when(is_login).then(pl.lit(True)).otherwise(pl.lit(None)).alias("is_cleartext"),
         # Process-specific: actor_process_cmd_line
         pl.when(is_command)
-        .then(pl.col("input"))
+        .then(pl.col("input") if "input" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("actor_process_cmd_line"),
