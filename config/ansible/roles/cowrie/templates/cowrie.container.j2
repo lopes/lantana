@@ -10,6 +10,11 @@ Image=docker.io/cowrie/cowrie:latest
 ContainerName=sensor-cowrie
 Network=pasta
 
+# Map the rootless host user (stigma) to the image's cowrie user (UID 999) so
+# stigma-owned bind-mount paths appear inside the container as cowrie-owned.
+# UID coupling is explicit: review on cowrie image rebase (see CLAUDE.md).
+UserNS=keep-id:uid=999,gid=999
+
 PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:2222:2222
 PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:2222:2222
 PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:2223:2223
@@ -30,11 +35,11 @@ HealthRetries=3
 # Resource limits
 PodmanArgs=--cpus=0.5 --memory=256m
 
-# Volumes: U for subUID ownership mapping in rootless container
+# Volumes: ownership flows via UserNS=keep-id above; no :U needed.
 Volume=/etc/lantana/sensor/cowrie/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
 Volume=/etc/lantana/sensor/cowrie/healthcheck.py:/healthcheck.py:ro
-Volume=/var/log/lantana/sensor/cowrie:/cowrie/cowrie-git/var/log/cowrie:rw,U
-Volume=/var/lib/lantana/sensor/cowrie:/cowrie/cowrie-git/var/lib/cowrie:rw,U
+Volume=/var/log/lantana/sensor/cowrie:/cowrie/cowrie-git/var/log/cowrie:rw
+Volume=/var/lib/lantana/sensor/cowrie:/cowrie/cowrie-git/var/lib/cowrie:rw
 
 [Service]
 Restart=always
