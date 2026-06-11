@@ -1,0 +1,9 @@
+- name: "Restart Dionaea container"
+  become: true
+  become_user: "{{ system.users.sensor.name }}"
+  ansible.builtin.systemd:
+    name: "dionaea"
+    state: restarted
+    scope: user
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"

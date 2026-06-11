@@ -164,6 +164,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  notify: "Restart Dionaea container"
   tags: [dionaea]
 
 - name: "Reload user systemd daemon for Quadlet"
