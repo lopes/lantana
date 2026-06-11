@@ -137,6 +137,52 @@ this error for any *other* service, the same root cause applies and
 the same `:memory:` / drop-from-catalog escape hatches are your
 options.
 
+### Symptom: log_json silent fail — bronze receives zero events for days
+
+`dionaea.json` stops being written after a container restart, but the container is `active (running)`, no `enrichment_errors.json` entries fire, and the daily Discord brief stays green because the pipeline reads `enrichment_skip_empty dataset=dionaea` as "no work" rather than "broken sensor". Captured-binary collection in `binaries/` keeps working — only the JSON event sink is dead.
+
+Trigger: a container start where the existing `dionaea.json` on the host is owned by host stigma (i.e. container UID 0) instead of the dionaea worker (UID 1000 inside = host 100999). The worker calls `open(file, "w")`, which requires write permission on the existing file; permission is denied; the log_json ihandler is disabled for the lifetime of the process. Dionaea's C-level `dionaea.log` and `dionaea-errors.log` fail the same way.
+
+The historical `,U` flag on the bind-mount volumes was the recurring trigger: at every container start, `,U` chowned the source tree to the container's `User=` (root → host stigma), racing the entrypoint's own chown of those dirs to `dionaea:dionaea`. The entrypoint only chowns directories, not files inside them — so the log file ended up stigma-owned, breaking the worker's reopen. The Quadlet no longer uses `,U`; the entrypoint is now the single source of truth for ownership.
+
+Confirm the failure mode:
+
+```bash
+# 1. Log file timestamps stuck at the last container start.
+sudo stat /var/log/lantana/sensor/dionaea/dionaea.json
+# Compare mtime against the container's started-at — if they match, no writes since.
+
+# 2. The journal carries the failure (buffered, sometimes only flushed on restart).
+sudo journalctl _SYSTEMD_USER_UNIT=dionaea.service --since='<container-restart-time>' \
+    | grep -E 'log_json|Could not open|Unable to open|Permission denied'
+
+# 3. The dionaea worker has no log-file FD open.
+DPID=$(sudo pgrep -f '/opt/dionaea/bin/dionaea' | head -1)
+sudo ls -la /proc/$DPID/fd/ | grep -E 'dionaea\.json|dionaea\.log|dionaea-errors'
+# Expect: zero rows when broken; one row per file when healthy.
+```
+
+Recovery:
+
+```bash
+# 1. Delete the wrongly-owned log file. The rotated history (.1, .2.gz, ...)
+#    is harmless and can stay — only the live target must be removed so the
+#    worker recreates it fresh under its own UID.
+sudo rm /var/log/lantana/sensor/dionaea/dionaea.json
+
+# 2. Restart the container. log_json reinitialises and worker creates the
+#    file at correct ownership.
+sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user restart dionaea.service
+
+# 3. Verify the worker now holds the json FD and the file is growing.
+sleep 5
+DPID=$(sudo pgrep -f '/opt/dionaea/bin/dionaea' | head -1)
+sudo ls -la /proc/$DPID/fd/ | grep dionaea.json
+sudo stat /var/log/lantana/sensor/dionaea/dionaea.json
+```
+
+A live FTP probe (`curl -v --user anonymous:test ftp://<host>/`) from outside the operation's network should produce a `ftpd` event in `dionaea.json` within 1-2 seconds. If it does and Vector is healthy, bronze NDJSON will be appended shortly after.
+
 ### Symptom: Half-deployed state from earlier failed run
 
 The state directory `/var/lib/lantana/sensor/dionaea/` keeps seed

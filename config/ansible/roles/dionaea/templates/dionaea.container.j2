@@ -73,14 +73,19 @@ PodmanArgs=--cpus=1.0 --memory=512m
 #   loaded — overriding the image's default 16 services (including
 #   blackhole on port 23, which would conflict with Cowrie) and 6
 #   ihandlers (none of which is log_json).
-#   log + lib bind-mounts use U for subUID ownership mapping in rootless
-#   container. The entrypoint's init_lib + init_log copy seed dirs
-#   (binaries, bistreams, ftp, http, ...) into these mounts on first
-#   boot via cp -van (no-clobber).
+#   log + lib bind-mounts have NO ,U flag: the dionaea entrypoint chowns
+#   /opt/dionaea/var/log/dionaea and /opt/dionaea/var/lib/dionaea to
+#   dionaea:dionaea (UID 1000) at every start. ,U would fire on every start
+#   too, racing the entrypoint and chowning the source back to the container
+#   user (root → host stigma), leaving the worker (UID 1000) unable to
+#   reopen its log files on restart. The entrypoint's init_lib + init_log
+#   copy seed dirs (binaries, bistreams, ftp, http, ...) into these mounts
+#   on first boot via cp -van (no-clobber). See docs/troubleshooting.md
+#   "Dionaea Sensor — log_json silent fail" for the failure mode + recovery.
 Volume=/etc/lantana/sensor/dionaea/services-enabled:/opt/dionaea/etc/dionaea/services-enabled:ro
 Volume=/etc/lantana/sensor/dionaea/ihandlers-enabled:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro
-Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw,U
-Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw,U
+Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw
+Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw
 
 [Service]
 Restart=always
