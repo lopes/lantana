@@ -37,7 +37,22 @@ These are documented constraints in the v1.0.0 honeypot surface — not bugs. Ea
 - **Dionaea download URL + binary metadata stops at the dionaea bus.** Captured payloads land in `/var/lib/lantana/sensor/dionaea/binaries/` but the URL + hash never reach `dionaea.json` (and therefore never reach bronze → silver → STIX). Surfacing this needs a small custom ihandler; tracked on the project Roadmap in the [README](/README.md#roadmap).
 - **Dionaea MSSQL / MySQL command bodies stop at the dionaea bus.** Same upstream constraint — the bundled `log_json` ihandler emits connection lifecycle + credentials only. Tracked on the Roadmap.
 - **Dionaea binary hashing uses MD5 (and SHA-512 via `store`) — not SHA-256.** The IOC pipeline (`file_hash_sha256`, STIX file indicators, VT lookup) assumes SHA-256. Fix is on the Roadmap.
-- **Dionaea restart breaks log_json on existing containers.** Initial start works because the file descriptor is acquired before the privilege drop; subsequent restarts can't reopen the stigma-owned file. Operationally invisible on fresh deploys; only surfaces when an operator bounces the container. Fix is on the Roadmap.
+- **~~Dionaea restart breaks log_json on existing containers.~~** Fixed 2026-06-11 by removing the `,U` flag from the dionaea Quadlet volumes. The root cause was a race between `,U` (which Podman re-applies on every container start, chowning the bind-mount source to the container `User=`) and the dionaea entrypoint's own chown of its log/lib dirs to `dionaea:dionaea`. Without `,U`, the entrypoint is the single source of ownership truth and restarts are clean. Recovery for any host still in the broken state is one `rm` + restart; recipe in [troubleshooting.md → Dionaea Sensor → log_json silent fail](/docs/troubleshooting.md#symptom-log_json-silent-fail--bronze-receives-zero-events-for-days).
+
+## Image sourcing strategy
+
+Both honeypots run from rolling upstream tags: cowrie pulls `docker.io/cowrie/cowrie:latest`, dionaea pulls `docker.io/dinotools/dionaea:nightly` (NOT `:latest` for dionaea — that tag is frozen at 0.11.0 from 2020-11-30 and ships a half-empty config tree). Rolling tags get us free security updates and protocol fixes from upstream without operator effort.
+
+**The tradeoff is operational risk during image rebases.** Two incidents on 2026-06-08 → 2026-06-10 traced back to upstream image changes silently flowing in:
+
+- Cowrie's in-image `cowrie` user UID shifted 998 → 999 across a rebuild. The Quadlet's `,U` volume flag chowned the bind-mount source to the OLD UID once at first volume init and never refreshed, so the new container couldn't write its TTY transcripts. Result: four days of zero `cowrie.command.input` events captured (auth still worked, commands aborted silently before logging).
+- Dionaea's two-user runtime model (root supervisor + dionaea worker) interacted badly with `,U`: every container restart re-raced the entrypoint's chown, leaving the worker unable to reopen its JSON log. Result: seven days of zero dionaea events to bronze.
+
+Both are now patched at the Quadlet level: cowrie uses `UserNS=keep-id:uid=999,gid=999` to map the rootless host user (`stigma`) onto the in-image cowrie user, removing the need for `,U`. Dionaea has `,U` dropped entirely, letting the entrypoint own ownership. Detection-and-recovery recipes for both are in [troubleshooting.md](/docs/troubleshooting.md).
+
+**The longer-term fix is to stop relying on third-party rolling tags entirely.** Building our own images from a pinned upstream git ref would let us treat the in-container UID/GID as a repo-owned constant, eliminate the operational risk during rebases, and decouple our release cadence from upstream's. Tracked at [TODO.md → Self-built honeypot images](/TODO.md#self-built-honeypot-images-effort-medium). Until that lands, every upstream rebase is an operational risk that may surface only days later via the runner-kill-blind-spot path — silent sensor failure looks identical to a quiet attack day from the pipeline's perspective.
+
+**Operational discipline for the current state:** after any deploy that recreates a sensor container, run the post-deploy probes in [validation.md §0.2](/docs/validation.md#02-active-protocol-smoke-tests) within 15 minutes. A working SSH/FTP/SMB probe that doesn't land in bronze means an image change has shifted something underneath.
 
 ## Cowrie
 
