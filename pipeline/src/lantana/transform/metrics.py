@@ -68,6 +68,7 @@ _OPTIONAL_GOLD_COLUMNS: dict[str, pl.DataType] = {
     "file_url": pl.Utf8(),
     "file_path": pl.Utf8(),
     "file_hash_sha256": pl.Utf8(),
+    "file_name": pl.Utf8(),
     # Suricata detection metadata
     "finding_title": pl.Utf8(),
     "finding_uid": pl.Utf8(),

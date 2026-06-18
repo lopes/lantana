@@ -160,6 +160,36 @@ class TestNormalizeCowrie:
         assert "malware.example.com" in downloads.get_column("file_url").to_list()[0]
         assert downloads.get_column("file_path").to_list()[0] == "/tmp/payload.sh"
 
+    def test_file_upload_maps_to_file_activity(self) -> None:
+        """cowrie.session.file_upload -> class_uid=1001, activity_id=1, severity=HIGH.
+
+        SFTP-uploaded malware (e.g. redtail.x86_64) must surface in file_hash_sha256
+        and file_name so the gold top_download_hashes table captures implants, not
+        just wget/curl downloads.
+        """
+        ndjson = (
+            '{"timestamp":"2026-06-13T20:59:29Z","eventid":"cowrie.session.file_upload",'
+            '"src_ip":"130.12.180.51","src_port":54321,"dst_ip":"10.50.99.100",'
+            '"dst_port":22,"session":"abc999","protocol":"ssh",'
+            '"filename":"redtail.x86_64",'
+            '"outfile":"/cowrie/cowrie-git/var/lib/cowrie/downloads/59c29436755b0778e968d49feeae20ed65f5fa5e35f9f7965b8ed93420db91e5",'
+            '"shasum":"59c29436755b0778e968d49feeae20ed65f5fa5e35f9f7965b8ed93420db91e5",'
+            '"message":"SFTP Uploaded file \\"redtail.x86_64\\"","sensor":"sn-01"}\n'
+        )
+        df = _ndjson_to_df(ndjson)
+        result = normalize_cowrie(df)
+        assert result.height == 1
+        row = result.row(0, named=True)
+        assert row["class_uid"] == CLASS_FILE_ACTIVITY
+        assert row["category_uid"] == 1  # CATEGORY_SYSTEM
+        assert row["severity_id"] == 4  # HIGH
+        assert row["activity_id"] == 1  # Create
+        assert row["file_hash_sha256"] == "59c29436755b0778e968d49feeae20ed65f5fa5e35f9f7965b8ed93420db91e5"
+        assert row["file_name"] == "redtail.x86_64"
+        assert row["file_url"] is None
+        assert "filename" not in result.columns
+        assert "shasum" not in result.columns
+
     def test_conditional_columns_absent_does_not_crash(self) -> None:
         """Bronze without command/login/file_download rows lacks ``input``, ``username``,
         ``password``, ``protocol``, ``shasum``, ``url``, ``outfile`` — normalize must
@@ -191,6 +221,7 @@ class TestNormalizeCowrie:
             "file_hash_sha256",
             "file_url",
             "file_path",
+            "file_name",
         ):
             assert col in result.columns, f"missing OCSF column: {col}"
             assert result.get_column(col).null_count() == result.height, (

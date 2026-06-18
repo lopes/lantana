@@ -125,7 +125,8 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
     Event dispatch:
     - cowrie.login.*                -> Authentication (3002)
     - cowrie.command.*              -> Process Activity (1007)
-    - cowrie.session.file_download  -> File Activity (1001)
+    - cowrie.session.file_download  -> File Activity (1001), activity_id=2 (Read)
+    - cowrie.session.file_upload    -> File Activity (1001), activity_id=1 (Create)
     - other                         -> Network Activity (4001)
     """
     if df.is_empty():
@@ -136,6 +137,8 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
     is_login = eventid_col.str.starts_with("cowrie.login")
     is_command = eventid_col.str.starts_with("cowrie.command")
     is_file_download = eventid_col == "cowrie.session.file_download"
+    is_file_upload = eventid_col == "cowrie.session.file_upload"
+    is_file_event = is_file_download | is_file_upload
     is_login_success = eventid_col == "cowrie.login.success"
 
     # OCSF metadata columns + conditional field mappings
@@ -145,19 +148,19 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit(CLASS_AUTHENTICATION))
         .when(is_command)
         .then(pl.lit(CLASS_PROCESS_ACTIVITY))
-        .when(is_file_download)
+        .when(is_file_event)
         .then(pl.lit(CLASS_FILE_ACTIVITY))
         .otherwise(pl.lit(CLASS_NETWORK_ACTIVITY))
         .alias("class_uid"),
         # category_uid
         pl.when(is_login)
         .then(pl.lit(CATEGORY_IAM))
-        .when(is_command | is_file_download)
+        .when(is_command | is_file_event)
         .then(pl.lit(CATEGORY_SYSTEM))
         .otherwise(pl.lit(CATEGORY_NETWORK))
         .alias("category_uid"),
-        # severity_id: file_download=HIGH (malware delivery)
-        pl.when(is_file_download)
+        # severity_id: file events = HIGH (malware delivery / attacker implant)
+        pl.when(is_file_event)
         .then(pl.lit(SEVERITY_HIGH))
         .when(is_login_success)
         .then(pl.lit(SEVERITY_MEDIUM))
@@ -165,10 +168,12 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit(SEVERITY_MEDIUM))
         .otherwise(pl.lit(SEVERITY_LOW))
         .alias("severity_id"),
-        # activity_id: 1=Logon for login, 1=Launch for command, 2=Read for download
+        # activity_id: 1=Create for upload, 2=Read for download, 1=Logon/Launch for auth/cmd
         pl.when(is_login)
         .then(pl.lit(1))
         .when(is_command)
+        .then(pl.lit(1))
+        .when(is_file_upload)
         .then(pl.lit(1))
         .when(is_file_download)
         .then(pl.lit(2))
@@ -216,24 +221,30 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("actor_process_cmd_line"),
-        # File-specific: file_hash_sha256 (from shasum)
-        pl.when(is_file_download)
+        # File-specific: file_hash_sha256 (from shasum, both download and upload)
+        pl.when(is_file_event)
         .then(pl.col("shasum") if "shasum" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("file_hash_sha256"),
-        # File-specific: file_url
+        # File-specific: file_url (downloads only; uploads have no source URL)
         pl.when(is_file_download)
         .then(pl.col("url") if "url" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("file_url"),
-        # File-specific: file_path (from outfile)
-        pl.when(is_file_download)
+        # File-specific: file_path (outfile path where Cowrie saved the file)
+        pl.when(is_file_event)
         .then(pl.col("outfile") if "outfile" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("file_path"),
+        # File-specific: file_name (attacker's original filename for SFTP uploads)
+        pl.when(is_file_upload)
+        .then(pl.col("filename") if "filename" in df.columns else pl.lit(None))
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("file_name"),
     )
 
     # type_uid = class_uid * 100 + activity_id
@@ -264,6 +275,7 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
             "shasum",
             "url",
             "outfile",
+            "filename",
         )
         if c in result.columns
     ]
