@@ -45,15 +45,44 @@ class TestExtractIps:
 
 class TestExtractHashesFromBronze:
     def test_returns_unique_shasum_values(self) -> None:
+        h1 = "abc" * 21 + "f"
+        h2 = "deadbeef" * 8
         df = pl.DataFrame(
             {
-                "shasum": ["abc" * 21 + "f", "abc" * 21 + "f", "deadbeef" * 8],
+                "eventid": [
+                    "cowrie.session.file_download",
+                    "cowrie.session.file_download",
+                    "cowrie.session.file_upload",
+                ],
+                "shasum": [h1, h1, h2],
             }
         )
-        assert extract_hashes_from_bronze(df) == {"abc" * 21 + "f", "deadbeef" * 8}
+        assert extract_hashes_from_bronze(df) == {h1, h2}
+
+    def test_excludes_tty_log_hashes(self) -> None:
+        """cowrie.log.closed shasum values are TTY recordings, not malware — must be dropped."""
+        malware_hash = "a8460f44" * 8
+        tty_hash = "c32b4937" * 8
+        df = pl.DataFrame(
+            {
+                "eventid": [
+                    "cowrie.session.file_download",
+                    "cowrie.log.closed",
+                    "cowrie.log.closed",
+                ],
+                "shasum": [malware_hash, tty_hash, tty_hash],
+            }
+        )
+        result = extract_hashes_from_bronze(df)
+        assert result == {malware_hash}
+        assert tty_hash not in result
 
     def test_no_shasum_column(self) -> None:
         df = pl.DataFrame({"src_ip": ["203.0.113.50"]})
+        assert extract_hashes_from_bronze(df) == set()
+
+    def test_no_eventid_column(self) -> None:
+        df = pl.DataFrame({"shasum": ["abc" * 21 + "f"]})
         assert extract_hashes_from_bronze(df) == set()
 
 

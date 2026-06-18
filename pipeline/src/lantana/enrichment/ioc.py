@@ -34,18 +34,24 @@ def extract_ips(df: pl.DataFrame) -> set[str]:
     return {ip for ip in values if ip}
 
 
-def extract_hashes_from_bronze(df: pl.DataFrame) -> set[str]:
-    """Return unique non-null shasum values from a bronze DataFrame.
+_FILE_EVENT_IDS: frozenset[str] = frozenset(
+    {"cowrie.session.file_download", "cowrie.session.file_upload"}
+)
 
-    Cowrie's `cowrie.session.file_download` events carry the SHA256 of
-    the downloaded artifact in the `shasum` field; the field is absent
-    on other event types and on datasets that don't track downloads
-    (suricata, nftables, dionaea), in which case the function returns
-    an empty set.
+
+def extract_hashes_from_bronze(df: pl.DataFrame) -> set[str]:
+    """Return unique non-null shasum values from file_download/file_upload events only.
+
+    Filters to cowrie.session.file_download and cowrie.session.file_upload
+    specifically. cowrie.log.closed events also carry a shasum (SHA256 of the
+    TTY recording file) which is not a malware artifact — including those would
+    send ~200 junk hashes/day to VirusTotal, exhausting the free-tier rate limit
+    before any real malware hash is reached.
     """
-    if "shasum" not in df.columns:
+    if "shasum" not in df.columns or "eventid" not in df.columns:
         return set()
-    values = df.get_column("shasum").drop_nulls().unique().cast(pl.Utf8).to_list()
+    filtered = df.filter(pl.col("eventid").is_in(list(_FILE_EVENT_IDS)))
+    values = filtered.get_column("shasum").drop_nulls().unique().cast(pl.Utf8).to_list()
     return {h for h in values if h}
 
 
