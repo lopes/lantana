@@ -69,6 +69,7 @@ _OPTIONAL_GOLD_COLUMNS: dict[str, pl.DataType] = {
     "file_path": pl.Utf8(),
     "file_hash_sha256": pl.Utf8(),
     "file_name": pl.Utf8(),
+    "file_intent": pl.Utf8(),
     # Suricata detection metadata
     "finding_title": pl.Utf8(),
     "finding_uid": pl.Utf8(),
@@ -198,6 +199,23 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
         (cls == CLASS_FILE_ACTIVITY).sum().alias("downloads_captured"),
     )
 
+    # Restrict the malware top-N to events tagged ``file_intent='malware'``
+    # so attacker SSH-pubkey persistence and probe-byte writes don't
+    # dominate the brief's "captured malware" table. ``_ensure_gold_columns``
+    # has already backfilled file_intent as typed-null on legacy silver
+    # that lacks the column; a literal-null filter excludes nothing on a
+    # purely-null column, so we re-check is_not_null to gate the filter
+    # on real classification data. Legacy silver → falls through to the
+    # unfiltered behaviour (no regression on partial-coverage days).
+    has_real_intent = (
+        "file_intent" in silver.columns
+        and silver.get_column("file_intent").null_count() < silver.height
+    )
+    if has_real_intent:
+        malware_silver = silver.filter(pl.col("file_intent") == "malware")
+    else:
+        malware_silver = silver
+
     # Top-N lists as list columns
     lists = pl.DataFrame(
         {
@@ -207,8 +225,8 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
             "top_commands": [_top_n(silver, "actor_process_cmd_line")],
             "top_source_countries": [_top_n_countries_by_unique_ips(silver)],
             "top_source_ips": [_top_n(silver, "src_endpoint_ip")],
-            "top_download_urls": [_top_n(silver, "file_url")],
-            "top_download_hashes": [_top_n(silver, "file_hash_sha256")],
+            "top_download_urls": [_top_n(malware_silver, "file_url")],
+            "top_download_hashes": [_top_n(malware_silver, "file_hash_sha256")],
         }
     )
 

@@ -44,6 +44,47 @@ from lantana.models.ocsf import (
 # Format: raw_field -> (ocsf_field, action, notes)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# File-intent classification
+#
+# Cowrie's file_download/file_upload events fire for *any* byte transfer
+# attackers initiate — not just malware. The vast majority on op_alpha are
+# attacker SSH-pubkey drops into ``~/.ssh/authorized_keys`` (persistence)
+# or zero-byte / single-char probe writes (probe). Without a tag, gold's
+# ``top_download_hashes`` ranks those above real ELF samples — the
+# Discord brief reads "120x a8460f44… (SSH pubkey)" as if it were the
+# top malware family of the day.
+#
+# Classification is destfile- and hash-driven so it works without any
+# disk-side IO and stays inside the bronze→silver normaliser:
+#   * persistence  — destfile points at well-known persistence targets
+#                    (`~/.ssh/*`, shell rc/history files, sudoers)
+#   * probe        — shasum matches a known-noise sha256 (empty file,
+#                    "1\n", etc.) regardless of destfile
+#   * malware      — default for any other file_download / file_upload
+#                    event (SFTP-uploaded ELF samples land here)
+#   * NULL         — non-file events
+#
+# Why a hash-set rather than a size threshold: normalize.py is a pure
+# data transform with no filesystem access (silver writes happen on the
+# collector, which in multi-node mode can't stat sensor-side downloads).
+# Hash-based probe detection is exact, doesn't depend on the file still
+# being on disk, and survives multi-node deployment.
+_PERSISTENCE_DESTFILE_REGEX = (
+    r"/\.ssh/|/\.bash_history$|/\.bashrc$|/\.bash_profile$|/\.zshrc$|/\.profile$|/sudoers"
+)
+
+# sha256 of common attacker probe payloads. Extend conservatively — every
+# hash here is a permanent declaration that this content is "not malware",
+# so only well-understood noise patterns should land in this set.
+_PROBE_SHA256: frozenset[str] = frozenset(
+    {
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",  # empty file
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",  # "1\n"
+    }
+)
+
+
 COWRIE_FIELD_MAP: dict[str, tuple[str, str, str]] = {
     # --- Renamed (1:1 column rename) ---
     "timestamp": ("time", "rename", "Event timestamp"),
@@ -245,6 +286,28 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("file_name"),
+        # File-intent: persistence / probe / malware (see header comment).
+        # Ordering matters — probe-hash overrides destfile because some
+        # attackers `wget` empty-file probes into auth paths to check
+        # write permission (e.g. ``> ~/.ssh/authorized_keys``), and that
+        # is probe activity not a persistence attempt.
+        pl.when(~is_file_event)
+        .then(pl.lit(None, dtype=pl.Utf8))
+        .when(
+            pl.col("shasum").is_in(list(_PROBE_SHA256))
+            if "shasum" in df.columns
+            else pl.lit(False)
+        )
+        .then(pl.lit("probe"))
+        .when(
+            pl.col("destfile").str.contains(_PERSISTENCE_DESTFILE_REGEX)
+            if "destfile" in df.columns
+            else pl.lit(False)
+        )
+        .then(pl.lit("persistence"))
+        .otherwise(pl.lit("malware"))
+        .cast(pl.Utf8)
+        .alias("file_intent"),
     )
 
     # type_uid = class_uid * 100 + activity_id
@@ -581,9 +644,13 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize bronze Dionaea events to OCSF columns.
 
     Event dispatch:
-    - credential_username present -> Authentication (3002)
-    - ftp_command present         -> Process Activity (1007)
-    - other connections           -> Network Activity (4001)
+    - eventid="dionaea.binary.captured" -> File Activity (1001)
+      (synthetic event from the disk-scan helper covering SMB/FTP/HTTP
+      uploads that dionaea writes to ``var/lib/dionaea/binaries`` without
+      ever emitting a hash event to ``log_json``)
+    - credential_username present       -> Authentication (3002)
+    - ftp_command present               -> Process Activity (1007)
+    - other connections                 -> Network Activity (4001)
 
     Bronze fields are pre-flattened by Vector (connection.* -> connection_*,
     credentials[] -> credential_username/credential_password).
@@ -603,31 +670,47 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         else pl.lit(False)
     )
 
+    is_binary_capture = (
+        (pl.col("eventid") == "dionaea.binary.captured")
+        if "eventid" in df.columns
+        else pl.lit(False)
+    )
+
     # OCSF metadata columns + conditional field mappings
     result = df.with_columns(
-        # class_uid dispatch
-        pl.when(has_credential)
+        # class_uid dispatch — binary_capture wins over credential/ftp because
+        # synthetic rows lack those fields and would otherwise fall through to
+        # NETWORK_ACTIVITY (the wrong class for a captured malware sample).
+        pl.when(is_binary_capture)
+        .then(pl.lit(CLASS_FILE_ACTIVITY))
+        .when(has_credential)
         .then(pl.lit(CLASS_AUTHENTICATION))
         .when(has_ftp_command)
         .then(pl.lit(CLASS_PROCESS_ACTIVITY))
         .otherwise(pl.lit(CLASS_NETWORK_ACTIVITY))
         .alias("class_uid"),
         # category_uid
-        pl.when(has_credential)
+        pl.when(is_binary_capture)
+        .then(pl.lit(CATEGORY_SYSTEM))
+        .when(has_credential)
         .then(pl.lit(CATEGORY_IAM))
         .when(has_ftp_command)
         .then(pl.lit(CATEGORY_SYSTEM))
         .otherwise(pl.lit(CATEGORY_NETWORK))
         .alias("category_uid"),
-        # severity_id: credentials=MEDIUM, commands=MEDIUM, connections=LOW
-        pl.when(has_credential)
+        # severity_id: binary captures=HIGH, credentials/commands=MEDIUM, connections=LOW
+        pl.when(is_binary_capture)
+        .then(pl.lit(SEVERITY_HIGH))
+        .when(has_credential)
         .then(pl.lit(SEVERITY_MEDIUM))
         .when(has_ftp_command)
         .then(pl.lit(SEVERITY_MEDIUM))
         .otherwise(pl.lit(SEVERITY_LOW))
         .alias("severity_id"),
-        # activity_id: 1=Logon for auth, 1=Launch for command, 0=Unknown for connection
-        pl.when(has_credential)
+        # activity_id: 1=Create for binary, 1=Logon for auth, 1=Launch for command, 0=Unknown
+        pl.when(is_binary_capture)
+        .then(pl.lit(1))
+        .when(has_credential)
         .then(pl.lit(1))
         .when(has_ftp_command)
         .then(pl.lit(1))
@@ -638,9 +721,14 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         # Metadata
         pl.lit(OCSF_VERSION).alias("metadata_version"),
         pl.lit(PRODUCT_NAME).alias("metadata_product_name"),
-        # Auth-specific: user_name (from credential_username)
+        # Auth-specific: user_name (from credential_username) — guarded so a
+        # bronze df without credentials (e.g. synthetic-only) doesn't crash.
         pl.when(has_credential)
-        .then(pl.col("credential_username"))
+        .then(
+            pl.col("credential_username")
+            if "credential_username" in df.columns
+            else pl.lit(None)
+        )
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("user_name"),
@@ -660,6 +748,26 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("actor_process_cmd_line"),
+        # File-specific: file_hash_sha256 (only on synthetic binary captures)
+        pl.when(is_binary_capture)
+        .then(pl.col("shasum") if "shasum" in df.columns else pl.lit(None))
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("file_hash_sha256"),
+        # File-specific: file_name (the on-disk binary filename — typically MD5)
+        pl.when(is_binary_capture)
+        .then(pl.col("binary_file_name") if "binary_file_name" in df.columns else pl.lit(None))
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("file_name"),
+        # File-intent: always 'malware' for dionaea binary captures (SMB/FTP/HTTP
+        # uploads aren't persistence targets, and we don't classify probe-noise
+        # this side — Phase 2's probe hash-set is cowrie-context).
+        pl.when(is_binary_capture)
+        .then(pl.lit("malware"))
+        .otherwise(pl.lit(None))
+        .cast(pl.Utf8)
+        .alias("file_intent"),
     )
 
     # type_uid = class_uid * 100 + activity_id

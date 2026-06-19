@@ -184,7 +184,10 @@ class TestNormalizeCowrie:
         assert row["category_uid"] == 1  # CATEGORY_SYSTEM
         assert row["severity_id"] == 4  # HIGH
         assert row["activity_id"] == 1  # Create
-        assert row["file_hash_sha256"] == "59c29436755b0778e968d49feeae20ed65f5fa5e35f9f7965b8ed93420db91e5"
+        assert (
+            row["file_hash_sha256"]
+            == "59c29436755b0778e968d49feeae20ed65f5fa5e35f9f7965b8ed93420db91e5"
+        )
         assert row["file_name"] == "redtail.x86_64"
         assert row["file_url"] is None
         assert "filename" not in result.columns
@@ -227,6 +230,169 @@ class TestNormalizeCowrie:
             assert result.get_column(col).null_count() == result.height, (
                 f"{col} should be all-null when bronze lacks the source field"
             )
+
+
+class TestNormalizeCowrieFileIntent:
+    """``file_intent`` separates real malware from noise (SSH-key drops,
+    probe payloads) in the gold malware top-N. Regression for op_alpha
+    2026-06-18 where 120/172 silver file_hash rows were ``a8460f44…`` —
+    an attacker's 389-byte SSH pubkey written to ``~/.ssh/authorized_keys``,
+    not malware. The brief's "top dropped malware" table was ranking
+    persistence pubkeys above actual ELF binaries 30:1.
+    """
+
+    @staticmethod
+    def _file_event(
+        eventid: str,
+        *,
+        shasum: str = "a" * 64,
+        destfile: str | None = None,
+        filename: str | None = None,
+    ) -> pl.DataFrame:
+        row: dict[str, str | int] = {
+            "timestamp": "2026-06-18T12:00:00Z",
+            "eventid": eventid,
+            "src_ip": "203.0.113.5",
+            "src_port": 54321,
+            "dst_ip": "10.50.99.100",
+            "dst_port": 22,
+            "session": "sess001",
+            "protocol": "ssh",
+            "shasum": shasum,
+            "outfile": "/cowrie/cowrie-git/var/lib/cowrie/downloads/" + shasum,
+            "message": "",
+            "sensor": "sn-01",
+        }
+        if destfile is not None:
+            row["destfile"] = destfile
+        if filename is not None:
+            row["filename"] = filename
+        return pl.DataFrame([row])
+
+    def test_authorized_keys_drop_is_persistence(self) -> None:
+        df = self._file_event(
+            "cowrie.session.file_download",
+            destfile="/root/.ssh/authorized_keys",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "persistence"
+
+    def test_home_ssh_authorized_keys_is_persistence(self) -> None:
+        df = self._file_event(
+            "cowrie.session.file_download",
+            destfile="/home/wsc/.ssh/authorized_keys",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "persistence"
+
+    def test_bash_history_drop_is_persistence(self) -> None:
+        df = self._file_event(
+            "cowrie.session.file_download",
+            destfile="/home/user/.bash_history",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "persistence"
+
+    def test_bashrc_drop_is_persistence(self) -> None:
+        df = self._file_event(
+            "cowrie.session.file_download",
+            destfile="/root/.bashrc",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "persistence"
+
+    def test_sudoers_drop_is_persistence(self) -> None:
+        df = self._file_event(
+            "cowrie.session.file_download",
+            destfile="/etc/sudoers",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "persistence"
+
+    def test_known_noise_hash_one_newline_is_probe(self) -> None:
+        """sha256 of "1\\n" — observed 20 times on 2026-06-18 as attacker probe."""
+        df = self._file_event(
+            "cowrie.session.file_download",
+            shasum="01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+            destfile="/tmp/test",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "probe"
+
+    def test_known_noise_hash_empty_file_is_probe(self) -> None:
+        """sha256 of empty file — common attacker zero-byte touch."""
+        df = self._file_event(
+            "cowrie.session.file_download",
+            shasum="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            destfile="/tmp/probe",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "probe"
+
+    def test_real_binary_download_is_malware(self) -> None:
+        df = self._file_event(
+            "cowrie.session.file_download",
+            shasum="59c29436755b0778e968d49feeae20ed65f5fa5e35f9f7965b8ed93420db91e5",
+            destfile="/tmp/payload",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "malware"
+
+    def test_sftp_upload_without_destfile_is_malware(self) -> None:
+        """file_upload events have no destfile; default to malware (the typical
+        case: SFTP-staged ELF implants like the redtail/Mirai family)."""
+        df = self._file_event(
+            "cowrie.session.file_upload",
+            shasum="94f2e4d8d4436874785cd14e6e6d403507b8750852f7f2040352069a75da4c00",
+            filename="sshd",
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] == "malware"
+
+    def test_non_file_event_has_null_intent(self) -> None:
+        """Non-file events leave file_intent null (no classification applies)."""
+        df = pl.DataFrame(
+            [
+                {
+                    "timestamp": "2026-06-18T12:00:00Z",
+                    "eventid": "cowrie.login.failed",
+                    "src_ip": "203.0.113.5",
+                    "src_port": 54321,
+                    "dst_ip": "10.50.99.100",
+                    "dst_port": 22,
+                    "session": "sess001",
+                    "protocol": "ssh",
+                    "username": "root",
+                    "password": "admin",
+                    "message": "login attempt",
+                    "sensor": "sn-01",
+                }
+            ]
+        )
+        result = normalize_cowrie(df)
+        assert result.row(0, named=True)["file_intent"] is None
+
+    def test_file_intent_column_always_present_when_no_file_events(self) -> None:
+        """Even on a quiet day with zero file events, silver carries the
+        column so gold's filter (``file_intent == 'malware'``) doesn't crash."""
+        df = pl.DataFrame(
+            [
+                {
+                    "timestamp": "2026-06-18T12:00:00Z",
+                    "eventid": "cowrie.session.connect",
+                    "src_ip": "203.0.113.5",
+                    "src_port": 54321,
+                    "dst_ip": "10.50.99.100",
+                    "dst_port": 22,
+                    "session": "sess001",
+                    "message": "New connection",
+                    "sensor": "sn-01",
+                }
+            ]
+        )
+        result = normalize_cowrie(df)
+        assert "file_intent" in result.columns
+        assert result.get_column("file_intent").null_count() == result.height
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +838,59 @@ class TestNormalizeDionaea:
         # Command event (FTP): MEDIUM=3
         cmd = result.filter(pl.col("class_uid") == CLASS_PROCESS_ACTIVITY)
         assert cmd.get_column("severity_id").to_list() == [3]
+
+
+class TestNormalizeDionaeaBinaryCapture:
+    """``dionaea.binary.captured`` synthetic events (injected from the
+    disk scanner) must dispatch to FILE_ACTIVITY with their shasum
+    mapped to file_hash_sha256 and file_intent='malware'. Regression
+    for op_alpha 2026-06-19: dionaea had 192 captured binaries in
+    ``var/lib/dionaea/binaries`` but produced zero silver rows tagged
+    file_hash_sha256, so the brief's malware table never saw them.
+    """
+
+    @staticmethod
+    def _synth_event() -> pl.DataFrame:
+        return pl.DataFrame(
+            [
+                {
+                    "timestamp": "2026-06-18T12:34:56Z",
+                    "eventid": "dionaea.binary.captured",
+                    "shasum": "94f2e4d8d4436874785cd14e6e6d403507b8750852f7f2040352069a75da4c00",
+                    "binary_file_name": "00aabbcc11ddeeff",
+                    "connection_protocol": "smbd",
+                    "connection_type": "binary_captured",
+                    "dataset": "dionaea",
+                }
+            ]
+        )
+
+    def test_synthetic_event_maps_to_file_activity(self) -> None:
+        result = normalize_dionaea(self._synth_event())
+        row = result.row(0, named=True)
+        assert row["class_uid"] == CLASS_FILE_ACTIVITY
+        assert row["category_uid"] == 1  # CATEGORY_SYSTEM
+        assert row["severity_id"] == 4  # HIGH
+        assert row["activity_id"] == 1  # Create
+        assert (
+            row["file_hash_sha256"]
+            == "94f2e4d8d4436874785cd14e6e6d403507b8750852f7f2040352069a75da4c00"
+        )
+
+    def test_synthetic_event_file_intent_is_malware(self) -> None:
+        result = normalize_dionaea(self._synth_event())
+        assert result.row(0, named=True)["file_intent"] == "malware"
+
+    def test_real_dionaea_connection_has_null_file_hash(
+        self, sample_bronze_dionaea_ndjson: str
+    ) -> None:
+        """Original dionaea connection / credential / FTP events keep
+        ``file_hash_sha256`` null — only the synthetic binary-capture
+        rows carry one."""
+        df = _ndjson_to_df(sample_bronze_dionaea_ndjson)
+        result = normalize_dionaea(df)
+        if "file_hash_sha256" in result.columns:
+            assert result.get_column("file_hash_sha256").null_count() == result.height
 
 
 # ---------------------------------------------------------------------------
