@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 import structlog
 
 if TYPE_CHECKING:
+    from datetime import date
     from pathlib import Path
 
     from lantana.common.redact import RedactionConfig
@@ -53,6 +55,75 @@ def extract_hashes_from_bronze(df: pl.DataFrame) -> set[str]:
     filtered = df.filter(pl.col("eventid").is_in(list(_FILE_EVENT_IDS)))
     values = filtered.get_column("shasum").drop_nulls().unique().cast(pl.Utf8).to_list()
     return {h for h in values if h}
+
+
+_BINARY_MAX_BYTES: int = 100 * 1024 * 1024  # 100 MiB cap shared with disk-scan
+
+
+def extract_dionaea_binary_events(
+    sensor_dir: Path,
+    target_date: date,
+) -> list[dict[str, Any]]:
+    """Build synthetic OCSF-bound events for dionaea-captured binaries.
+
+    Dionaea's ``store`` ihandler writes every accepted SMB/FTP/HTTP
+    upload to ``var/lib/dionaea/binaries/`` as an MD5-named file, but
+    never emits a hash event into the ``log_json`` stream. Without a
+    scanner the entire dionaea catalog of captures (op_alpha had 192
+    samples by 2026-06-19) is invisible to silver → gold → brief — the
+    pipeline ingested dionaea connection events but never learned
+    which files those connections actually delivered.
+
+    Each binary whose mtime falls inside ``target_date`` (UTC day)
+    produces one synthetic event with:
+        eventid           = ``dionaea.binary.captured``
+        timestamp         = mtime as ISO8601 ``…Z``
+        shasum            = SHA-256 of the file contents
+        binary_file_name  = on-disk filename (typically MD5)
+        dataset           = ``dionaea``
+
+    The runner concats these onto dionaea bronze; normalize_dionaea
+    then dispatches them to ``class_uid=CLASS_FILE_ACTIVITY`` with the
+    shasum mapped to ``file_hash_sha256`` and ``file_intent='malware'``.
+    src_ip / dst_ip are left null (dionaea doesn't write per-binary
+    attribution to disk); they fall through normalize as typed-null
+    columns and the malware top-N in gold still gets the hash.
+
+    File-size cap and unreadable-file handling mirror
+    ``extract_hashes_from_disk`` so the two scanners can't disagree
+    on which binaries are worth processing.
+    """
+    binaries_dir = sensor_dir / "dionaea" / "binaries"
+    if not binaries_dir.exists():
+        return []
+
+    events: list[dict[str, Any]] = []
+    for file_path in binaries_dir.iterdir():
+        try:
+            stat = file_path.stat()
+            if not file_path.is_file() or stat.st_size > _BINARY_MAX_BYTES:
+                continue
+            mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+            if mtime_dt.date() != target_date:
+                continue
+            sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
+        except (PermissionError, FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "dionaea_binary_skipped",
+                path=str(file_path),
+                reason=type(exc).__name__,
+            )
+            continue
+        events.append(
+            {
+                "eventid": "dionaea.binary.captured",
+                "timestamp": mtime_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "shasum": sha,
+                "binary_file_name": file_path.name,
+                "dataset": "dionaea",
+            }
+        )
+    return events
 
 
 def extract_hashes_from_disk(sensor_dir: Path) -> set[str]:

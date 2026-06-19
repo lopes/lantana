@@ -39,6 +39,7 @@ from lantana.common.redact import (
     validate_no_leaks,
 )
 from lantana.enrichment.ioc import (
+    extract_dionaea_binary_events,
     extract_hashes_from_bronze,
     extract_hashes_from_disk,
     extract_ips,
@@ -723,6 +724,28 @@ async def run_enrichment(
                 continue
             dfs[dataset] = df
 
+        # Phase A.1: synthesise dionaea file-activity rows from the binaries
+        # directory. dionaea's log_json ihandler never emits hash events, so
+        # every SMB/FTP/HTTP-captured binary would otherwise be invisible to
+        # silver → gold → brief. Diagonal-relaxed concat tolerates the
+        # schema delta (synthetic rows lack credential_* / src_ip / dst_ip;
+        # bronze rows lack shasum / binary_file_name).
+        binary_events = extract_dionaea_binary_events(sensor_dir, target_date)
+        if binary_events:
+            synth_df = pl.DataFrame(binary_events)
+            if "dionaea" in dfs:
+                dfs["dionaea"] = pl.concat(
+                    [dfs["dionaea"], synth_df],
+                    how="diagonal_relaxed",
+                )
+            else:
+                dfs["dionaea"] = synth_df
+            logger.info(
+                "dionaea_binaries_synthesised",
+                count=len(binary_events),
+                date=target_date.isoformat(),
+            )
+
         if not dfs:
             logger.info("enrichment_no_data", date=target_date.isoformat())
             return
@@ -753,9 +776,53 @@ async def run_enrichment(
         # Two pre-flight steps before the loop:
         #   1. Load persisted provider state (cross-run rate-limit memory)
         #   2. Compute IP→event-count for subsampling on tiny-quota providers
+        #
+        # IOC-type ordering: hashes BEFORE IPs. VirusTotal's free tier
+        # (500 calls/day) is shared across its `/files/{hash}` and
+        # `/ip_addresses/{ip}` endpoints, and op_alpha sees roughly 30x
+        # more unique IPs (~5 000) than unique hashes (~175) per day.
+        # Querying IPs first burned the entire quota before the hash loop
+        # ever fired — observed every day from 2026-06-11 onwards: VT IP
+        # `enriched=500` followed immediately by VT hash `enriched=0`
+        # because the first five hash calls 429'd and tripped the
+        # circuit-breaker. Hashes are the higher-value signal (malware
+        # family, AV consensus) so they get first claim on the quota.
         provider_state = _load_provider_state(provider_state_path)
         event_counts = _compute_ip_event_counts(dfs)
         full_ip_list = sorted(unique_ips)
+
+        hash_results: list[EnrichmentResult] = []
+        if unique_hashes:
+            vt_provider = providers["virustotal"]
+            hash_results, hash_hits = await _enrich_iocs_with_provider(
+                "virustotal",
+                vt_provider,
+                IOC_TYPE_HASH,
+                sorted(unique_hashes),
+                cache,
+                errors,
+            )
+            provider_stats[f"virustotal:{IOC_TYPE_HASH}"] = {
+                "enriched": len(hash_results),
+                "fresh": len(hash_results) - hash_hits,
+                "cache_hits": hash_hits,
+            }
+            logger.info(
+                "provider_done",
+                provider="virustotal",
+                ioc_type=IOC_TYPE_HASH,
+                enriched=len(hash_results),
+                fresh=len(hash_results) - hash_hits,
+                cache_hits=hash_hits,
+            )
+            # Same provider_state bookkeeping the IP loop does below: any
+            # 429 from VT's hash endpoint signals shared-quota exhaustion,
+            # which also matters for the IP loop and for next-run skip.
+            if ("virustotal", "rate_limit") in errors:
+                provider_state.setdefault("virustotal", {})[
+                    "last_rate_limited"
+                ] = target_date.isoformat()
+
         ip_results: list[EnrichmentResult] = []
         for name, provider in providers.items():
             if _should_skip_provider(name, provider_state, target_date):
@@ -814,31 +881,6 @@ async def run_enrichment(
             if (name, "rate_limit") in errors:
                 provider_state.setdefault(name, {})["last_rate_limited"] = target_date.isoformat()
 
-        hash_results: list[EnrichmentResult] = []
-        if unique_hashes:
-            vt_provider = providers["virustotal"]
-            hash_results, hash_hits = await _enrich_iocs_with_provider(
-                "virustotal",
-                vt_provider,
-                IOC_TYPE_HASH,
-                sorted(unique_hashes),
-                cache,
-                errors,
-            )
-            provider_stats[f"virustotal:{IOC_TYPE_HASH}"] = {
-                "enriched": len(hash_results),
-                "fresh": len(hash_results) - hash_hits,
-                "cache_hits": hash_hits,
-            }
-            logger.info(
-                "provider_done",
-                provider="virustotal",
-                ioc_type=IOC_TYPE_HASH,
-                enriched=len(hash_results),
-                fresh=len(hash_results) - hash_hits,
-                cache_hits=hash_hits,
-            )
-
         ip_lookup = _build_lookup(ip_results)
         hash_lookup = _build_lookup(hash_results)
 
@@ -852,7 +894,11 @@ async def run_enrichment(
             try:
                 enriched_df = _merge_lookup(df, "src_ip", ip_lookup)
                 enriched_df = _ensure_ip_score_columns(enriched_df)
-                if dataset == "cowrie":
+                # Hash merge: cowrie has bronze shasum on file_download/file_upload
+                # rows; dionaea has it on synthetic dionaea.binary.captured rows
+                # injected upstream. _merge_lookup is a no-op when ``shasum`` is
+                # absent, so this is safe to call for every dataset.
+                if dataset in ("cowrie", "dionaea"):
                     enriched_df = _merge_lookup(enriched_df, "shasum", hash_lookup)
 
                 normalized_df = normalize_dataset(enriched_df, dataset)

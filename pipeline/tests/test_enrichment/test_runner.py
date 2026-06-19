@@ -1429,3 +1429,113 @@ class TestSelectIpsForProvider:
         assert len(first) == 40
         # Alphabetical tie-break means the first 40 alphabetically win.
         assert first == sorted(ips)[:40]
+
+
+class TestEnrichmentIOCOrdering:
+    """VT's 500/day free-tier quota is shared across hash + IP endpoints,
+    and op_alpha sees ~30x more unique IPs than hashes per day. From
+    2026-06-11 onwards the IP loop ran first and burned the whole quota
+    before the hash loop fired — every brief showed Family=?, Type=?,
+    Detections=? because `vt_file_*` columns never made it into silver.
+    The runner now enriches hashes first; this test pins that order.
+    """
+
+    @pytest.mark.asyncio()
+    async def test_hashes_enriched_before_ips(self, tmp_path: Path) -> None:
+        from lantana.common.config import (
+            OperationConfig,
+            OperatorConfig,
+            RedactConfig,
+            ReportingConfig,
+            SecretsConfig,
+            SharingConfig,
+        )
+        from lantana.enrichment.runner import run_enrichment
+
+        secrets = SecretsConfig(
+            vault_apikey_virustotal="vt-key",
+            vault_apikey_shodan="shodan-key",
+            vault_apikey_abuseipdb="abuse-key",
+            vault_apikey_greynoise=None,
+            vault_apikey_maxmind=None,
+            vault_webhook_discord="",
+        )
+        reporting = ReportingConfig(
+            operator=OperatorConfig(
+                name="op", handle="op", contact="op@example.com", pgp_fingerprint=""
+            ),
+            sharing=SharingConfig(tlp="amber", community="", discord_channel=""),
+            operation=OperationConfig(
+                name="op_test",
+                description="",
+                sector="",
+                region="",
+                start_date="2026-06-18",
+            ),
+            redact=RedactConfig(
+                infrastructure_ips=[],
+                infrastructure_cidrs=[],
+                pseudonym_map={},
+            ),
+        )
+
+        bronze = pl.DataFrame(
+            {
+                "src_ip": ["203.0.113.5"],
+                "eventid": ["cowrie.session.file_download"],
+                "shasum": ["a" * 64],
+                "timestamp": ["2026-06-18T12:00:00Z"],
+            }
+        )
+
+        def fake_read_bronze(target_date: date, dataset: str) -> pl.DataFrame:
+            return bronze if dataset == "cowrie" else pl.DataFrame()
+
+        call_log: list[tuple[str, str]] = []
+
+        async def fake_enrich(
+            provider_name: str,
+            provider: object,
+            ioc_type: str,
+            iocs: list[str],
+            cache: sqlite3.Connection,
+            errors: ErrorAccumulator,
+        ) -> tuple[list[EnrichmentResult], int]:
+            call_log.append((provider_name, ioc_type))
+            return [], 0
+
+        with (
+            patch("lantana.enrichment.runner.load_secrets", return_value=secrets),
+            patch("lantana.enrichment.runner.load_reporting", return_value=reporting),
+            patch("lantana.enrichment.runner.read_bronze_ndjson", side_effect=fake_read_bronze),
+            patch(
+                "lantana.enrichment.runner.extract_hashes_from_disk",
+                return_value=set(),
+            ),
+            patch(
+                "lantana.enrichment.runner._enrich_iocs_with_provider",
+                side_effect=fake_enrich,
+            ),
+            patch(
+                "lantana.enrichment.runner.normalize_dataset",
+                return_value=pl.DataFrame(),
+            ),
+        ):
+            await run_enrichment(
+                target_date=date(2026, 6, 18),
+                cache_db_path=tmp_path / "cache.db",
+                sensor_dir=tmp_path / "sensor",
+                errors_path=tmp_path / "errors.json",
+                provider_state_path=tmp_path / "state.json",
+            )
+
+        assert call_log, "no enrichment calls were dispatched"
+        assert call_log[0] == ("virustotal", IOC_TYPE_HASH), (
+            f"hash enrichment must run first; got {call_log[0]}"
+        )
+        ip_indices = [i for i, (_, t) in enumerate(call_log) if t == IOC_TYPE_IP]
+        hash_indices = [i for i, (_, t) in enumerate(call_log) if t == IOC_TYPE_HASH]
+        assert hash_indices and ip_indices, "expected both hash and IP calls"
+        assert max(hash_indices) < min(ip_indices), (
+            f"all hash calls must precede all IP calls; got {call_log}"
+        )

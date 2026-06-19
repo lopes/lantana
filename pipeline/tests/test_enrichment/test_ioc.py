@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,6 +12,7 @@ import polars as pl
 
 from lantana.common.redact import RedactionConfig
 from lantana.enrichment.ioc import (
+    extract_dionaea_binary_events,
     extract_hashes_from_bronze,
     extract_hashes_from_disk,
     extract_ips,
@@ -159,6 +162,100 @@ class TestExtractHashesFromDisk:
             monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
 
         assert result == set()
+
+
+class TestExtractDionaeaBinaryEvents:
+    """Synthetic file-activity events for dionaea SMB/FTP captures.
+
+    Dionaea's ``store`` ihandler writes binaries to
+    ``var/lib/dionaea/binaries/`` (MD5-named) but never emits a hash
+    event into ``dionaea.json``. Without this scanner, the 192 ELF
+    samples op_alpha had captured by 2026-06-19 were completely invisible
+    to silver → gold → brief. The scanner closes the gap.
+    """
+
+    @staticmethod
+    def _set_mtime(path: Path, when: datetime) -> None:
+        ts = when.timestamp()
+        os.utime(path, (ts, ts))
+
+    def test_returns_one_event_per_binary_dated_target(self, tmp_path: Path) -> None:
+        sensor_dir = tmp_path / "sensor"
+        binaries = sensor_dir / "dionaea" / "binaries"
+        binaries.mkdir(parents=True)
+        payload = b"\x7fELF\x02\x01\x01"  # minimal ELF magic, enough for the test
+        f = binaries / "00aabbcc11ddeeff"
+        f.write_bytes(payload)
+        self._set_mtime(f, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
+
+        events = extract_dionaea_binary_events(sensor_dir, date(2026, 6, 18))
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["eventid"] == "dionaea.binary.captured"
+        assert ev["shasum"] == hashlib.sha256(payload).hexdigest()
+        assert ev["binary_file_name"] == "00aabbcc11ddeeff"
+        assert ev["dataset"] == "dionaea"
+        # mtime is rendered as a UTC ISO8601 string downstream consumers can parse
+        assert ev["timestamp"].startswith("2026-06-18T")
+        assert ev["timestamp"].endswith("Z")
+
+    def test_filters_files_outside_target_date(self, tmp_path: Path) -> None:
+        sensor_dir = tmp_path / "sensor"
+        binaries = sensor_dir / "dionaea" / "binaries"
+        binaries.mkdir(parents=True)
+
+        today_file = binaries / "today"
+        today_file.write_bytes(b"today")
+        self._set_mtime(today_file, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
+
+        yesterday_file = binaries / "yesterday"
+        yesterday_file.write_bytes(b"yesterday")
+        self._set_mtime(yesterday_file, datetime(2026, 6, 17, 23, 30, 0, tzinfo=UTC))
+
+        tomorrow_file = binaries / "tomorrow"
+        tomorrow_file.write_bytes(b"tomorrow")
+        self._set_mtime(tomorrow_file, datetime(2026, 6, 19, 0, 30, 0, tzinfo=UTC))
+
+        events = extract_dionaea_binary_events(sensor_dir, date(2026, 6, 18))
+        names = {ev["binary_file_name"] for ev in events}
+        assert names == {"today"}
+
+    def test_no_binaries_dir_returns_empty(self, tmp_path: Path) -> None:
+        assert extract_dionaea_binary_events(tmp_path / "sensor", date(2026, 6, 18)) == []
+
+    def test_skips_oversized_files(self, tmp_path: Path) -> None:
+        sensor_dir = tmp_path / "sensor"
+        binaries = sensor_dir / "dionaea" / "binaries"
+        binaries.mkdir(parents=True)
+        huge = binaries / "huge"
+        with huge.open("wb") as fh:
+            fh.seek(100 * 1024 * 1024 + 1)
+            fh.write(b"\x00")
+        self._set_mtime(huge, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
+
+        events = extract_dionaea_binary_events(sensor_dir, date(2026, 6, 18))
+        assert events == []
+
+    def test_unreadable_file_skipped(self, tmp_path: Path) -> None:
+        sensor_dir = tmp_path / "sensor"
+        binaries = sensor_dir / "dionaea" / "binaries"
+        binaries.mkdir(parents=True)
+
+        readable = binaries / "readable"
+        readable.write_bytes(b"ok")
+        self._set_mtime(readable, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
+
+        unreadable = binaries / "unreadable"
+        unreadable.write_bytes(b"secret")
+        self._set_mtime(unreadable, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
+        unreadable.chmod(0o000)
+        try:
+            events = extract_dionaea_binary_events(sensor_dir, date(2026, 6, 18))
+        finally:
+            unreadable.chmod(0o644)
+
+        names = {ev["binary_file_name"] for ev in events}
+        assert names == {"readable"}
 
 
 class TestFilterInternalIps:
