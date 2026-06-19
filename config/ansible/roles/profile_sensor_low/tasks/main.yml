@@ -64,8 +64,8 @@
 # --- HONEYPOTS LOG ROTATION --
 - name: "Set the honeypots log rotation"
   become: true
-  ansible.builtin.copy:
-    src: honeypots.logrotate
+  ansible.builtin.template:
+    src: honeypots.logrotate.j2
     dest: /etc/lantana/logrotate.d/00_00/honeypots
     owner: root
     group: root

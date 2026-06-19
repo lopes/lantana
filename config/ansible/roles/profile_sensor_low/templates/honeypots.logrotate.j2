@@ -12,4 +12,21 @@
     compress
     delaycompress
     copytruncate
+    sharedscripts
+    # Cowrie's Twisted writer holds the file descriptor across rotation and
+    # keeps appending at its remembered offset, leaving a sparse-null region
+    # at the start of the new file (op_alpha 2026-06-19: cowrie.json reported
+    # 149 MB, first non-null byte at offset 141 271 814 — Vector tails it
+    # fine but cat/jq inspection breaks and analyst debug is blocked).
+    # Restarting the rootless quadlet hands the writer a fresh FD pointing
+    # at offset 0. Cost: any cowrie SSH session active at the moment of
+    # rotation disconnects, losing a few seconds of intel — acceptable since
+    # the cron fires at 00:00 UTC and attacker sessions rarely span midnight.
+    # Dionaea's writer reopens cleanly on truncation so it doesn't need the
+    # same treatment.
+    postrotate
+        runuser -u {{ system.users.sensor.name }} -- \
+            env XDG_RUNTIME_DIR=/run/user/{{ system.users.sensor.uid }} \
+            systemctl --user restart cowrie.service >/dev/null 2>&1 || true
+    endscript
 }
