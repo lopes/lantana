@@ -126,6 +126,44 @@ def _url_tail(url: str, max_len: int = 60) -> str:
     return "…" + after_scheme[-max_len + 1 :]
 
 
+def _top_persistence_destfiles(
+    silver: pl.DataFrame | None,
+    n: int = 10,
+) -> list[dict[str, str | int]]:
+    """Top destfile paths where attackers tried to write persistence
+    artefacts (SSH keys, shell init, sudoers).
+
+    Reads from silver because gold's daily_summary only carries
+    ``top_download_hashes`` (now scoped to file_intent='malware'); the
+    persistence intel would otherwise be invisible to the brief even
+    though it's preserved in silver. Returns
+    ``[{value: destfile, count: events, unique_ips: int}, ...]``.
+
+    Empty / missing-columns / pre-Phase-2 silver all collapse to an
+    empty list so the brief renderer can simply skip the section.
+    """
+    if silver is None or silver.is_empty():
+        return []
+    if "file_intent" not in silver.columns or "destfile" not in silver.columns:
+        return []
+    return (
+        silver.filter(
+            (pl.col("file_intent") == "persistence")
+            & pl.col("destfile").is_not_null()
+            & (pl.col("destfile") != "")
+        )
+        .group_by("destfile")
+        .agg(
+            pl.len().alias("count"),
+            pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
+        )
+        .sort("count", descending=True)
+        .head(n)
+        .rename({"destfile": "value"})
+        .to_dicts()
+    )
+
+
 def _build_vt_hash_lookup(
     silver: pl.DataFrame | None,
 ) -> dict[str, dict[str, Any]]:
@@ -522,6 +560,32 @@ def generate_daily_brief(
                     f"| {rank} | `{_escape_md_cell(entry['value'])}` | {entry['count']:,} |"
                 )
             lines.append("")
+
+    # Attacker persistence — destfiles tagged file_intent='persistence'
+    # in silver (SSH key drops, shell-init writes, sudoers edits). Phase 2
+    # split these out of the Malware Captured table; this section keeps
+    # the intel visible without conflating it with malware.
+    persistence_rows = _top_persistence_destfiles(silver, n=TOP_N)
+    if persistence_rows:
+        lines.append("## Attacker Persistence\n")
+        caption = _section_caption("Attacker Persistence")
+        if caption:
+            lines.append(caption + "\n")
+        total_events = sum(int(r["count"]) for r in persistence_rows)
+        target_count = len(persistence_rows)
+        lines.append(
+            f"**{total_events}** persistence write(s) tracked across "
+            f"**{target_count}** target path(s).\n"
+        )
+        lines.append("**Top persistence targets:**\n")
+        lines.append("| Rank | Destination Path | Unique IPs | Count |")
+        lines.append("|------|------------------|-----------|-------|")
+        for rank, entry in enumerate(persistence_rows[:TOP_N], start=1):
+            path = _escape_md_cell(entry["value"])
+            lines.append(
+                f"| {rank} | `{path}` | {int(entry['unique_ips']):,} | {int(entry['count']):,} |"
+            )
+        lines.append("")
 
     # Top credentials — split into two rank/item/count tables (matches dashboard).
     usernames = row.get("top_usernames", []) or []

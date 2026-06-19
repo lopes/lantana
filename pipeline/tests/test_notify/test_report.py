@@ -779,6 +779,162 @@ class TestMalwareSectionVTContext:
         assert "## Malware Captured" not in report
 
 
+class TestPersistenceSection:
+    """Phase 2's file_intent tag splits SSH-key persistence drops out of
+    the malware table; this section keeps them visible in the brief so
+    analysts still see attacker persistence attempts."""
+
+    @staticmethod
+    def _silver_with_persistence() -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "file_intent": [
+                    "persistence",
+                    "persistence",
+                    "persistence",
+                    "malware",
+                    "probe",
+                ],
+                "destfile": [
+                    "/root/.ssh/authorized_keys",
+                    "/root/.ssh/authorized_keys",
+                    "/home/user/.bashrc",
+                    None,
+                    "/tmp/probe",
+                ],
+                "src_endpoint_ip": [
+                    "203.0.113.5",
+                    "198.51.100.7",
+                    "203.0.113.5",
+                    "203.0.113.5",
+                    "198.51.100.9",
+                ],
+                "file_hash_sha256": ["a" * 64, "a" * 64, "b" * 64, "c" * 64, "d" * 64],
+            }
+        )
+
+    def test_section_present_when_persistence_rows_exist(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+            silver=self._silver_with_persistence(),
+        )
+        assert "## Attacker Persistence" in report
+        assert "/root/.ssh/authorized_keys" in report
+        assert "/home/user/.bashrc" in report
+        assert "| Rank | Destination Path | Unique IPs | Count |" in report
+
+    def test_top_target_ranked_by_count(self) -> None:
+        """authorized_keys has 2 events vs bashrc's 1 → it ranks first."""
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+            silver=self._silver_with_persistence(),
+        )
+        ssh_idx = report.index("/root/.ssh/authorized_keys")
+        bashrc_idx = report.index("/home/user/.bashrc")
+        assert ssh_idx < bashrc_idx
+
+    def test_unique_ips_counted_per_destfile(self) -> None:
+        """authorized_keys was written by 2 distinct attackers → cell shows 2."""
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+            silver=self._silver_with_persistence(),
+        )
+        # The first persistence row reads "1 | `/root/.ssh/authorized_keys` | 2 | 2"
+        # (1=rank, 2 unique IPs, 2 events) — assert the numeric pair after the path.
+        target = "/root/.ssh/authorized_keys"
+        line = next(line for line in report.splitlines() if target in line)
+        assert "| 2 | 2 |" in line, f"persistence row malformed: {line!r}"
+
+    def test_malware_rows_excluded(self) -> None:
+        """file_intent='malware' silver rows must not appear in the persistence
+        section even when their destfile is non-null."""
+        silver = pl.DataFrame(
+            {
+                "file_intent": ["malware"],
+                "destfile": ["/opt/loader.sh"],
+                "src_endpoint_ip": ["203.0.113.99"],
+                "file_hash_sha256": ["e" * 64],
+            }
+        )
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+            silver=silver,
+        )
+        assert "## Attacker Persistence" not in report
+
+    def test_section_omitted_when_no_persistence_rows(self) -> None:
+        silver = pl.DataFrame(
+            {
+                "file_intent": ["malware", "probe"],
+                "destfile": [None, "/tmp/probe"],
+                "src_endpoint_ip": ["203.0.113.5", "198.51.100.7"],
+                "file_hash_sha256": ["a" * 64, "b" * 64],
+            }
+        )
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+            silver=silver,
+        )
+        assert "## Attacker Persistence" not in report
+
+    def test_legacy_silver_without_file_intent_omits_section(self) -> None:
+        """Pre-Phase-2 silver has no file_intent column; section is skipped
+        rather than crashing or rendering garbage."""
+        silver = pl.DataFrame(
+            {
+                "destfile": ["/root/.ssh/authorized_keys"],
+                "src_endpoint_ip": ["203.0.113.5"],
+                "file_hash_sha256": ["a" * 64],
+            }
+        )
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+            silver=silver,
+        )
+        assert "## Attacker Persistence" not in report
+
+    def test_section_omitted_when_silver_is_none(self) -> None:
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+        )
+        assert "## Attacker Persistence" not in report
+
+
 class TestIocExportPointer:
     """Phase 0 moves IOC export to the dashboard's STIX Export page.
     The brief stays a reading document and only carries a pointer line."""

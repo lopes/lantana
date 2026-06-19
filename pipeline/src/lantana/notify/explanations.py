@@ -193,9 +193,30 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         how="ip_reputation grouped by (geo_asn, geo_isp), sorted by unique IPs.",
     ),
     "Malware Captured": WhatWhyHow(
-        what="files downloaded by attackers with VT family/type context.",
-        why="connects raw hashes to known malware families for fast triage.",
-        how="top SHA256s from cowrie joined with vt_file_* enrichment columns.",
+        what="files downloaded by attackers, scoped to file_intent='malware'.",
+        why=(
+            "connects raw hashes to known malware families for fast triage; "
+            "persistence drops and probe payloads are filtered out so they "
+            "don't dominate the table."
+        ),
+        how=(
+            "top SHA256s from cowrie file events where file_intent='malware', "
+            "joined with vt_file_* enrichment columns."
+        ),
+    ),
+    "Attacker Persistence": WhatWhyHow(
+        what=(
+            "cowrie file writes tagged file_intent='persistence' — destfiles "
+            "that look like SSH/shell/sudo persistence targets."
+        ),
+        why=(
+            "separates SSH-key drops and shell-init writes from malware so "
+            "neither category gets misread as the other in triage."
+        ),
+        how=(
+            "silver cowrie rows where file_intent='persistence', grouped by "
+            "destfile, sorted by count."
+        ),
     ),
     "Top Credentials": WhatWhyHow(
         what="most-attempted usernames and passwords on the day.",
