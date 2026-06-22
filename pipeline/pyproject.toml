@@ -11,15 +11,15 @@ dependencies = [
     "tenacity>=9.0",
     "structlog>=24.0",
     "stix2>=3.0",
-    "plotly>=6.0",
+    "plotly>=6.8.0",
     "maxminddb>=2.6",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.8",
+    "ruff>=0.15.18",
     "mypy>=2.1.0",
 ]
 
