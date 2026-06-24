@@ -819,9 +819,9 @@ async def run_enrichment(
             # 429 from VT's hash endpoint signals shared-quota exhaustion,
             # which also matters for the IP loop and for next-run skip.
             if ("virustotal", "rate_limit") in errors:
-                provider_state.setdefault("virustotal", {})[
-                    "last_rate_limited"
-                ] = target_date.isoformat()
+                provider_state.setdefault("virustotal", {})["last_rate_limited"] = (
+                    target_date.isoformat()
+                )
 
         ip_results: list[EnrichmentResult] = []
         for name, provider in providers.items():
