@@ -294,9 +294,7 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
         pl.when(~is_file_event)
         .then(pl.lit(None, dtype=pl.Utf8))
         .when(
-            pl.col("shasum").is_in(list(_PROBE_SHA256))
-            if "shasum" in df.columns
-            else pl.lit(False)
+            pl.col("shasum").is_in(list(_PROBE_SHA256)) if "shasum" in df.columns else pl.lit(False)
         )
         .then(pl.lit("probe"))
         .when(
@@ -725,9 +723,7 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         # bronze df without credentials (e.g. synthetic-only) doesn't crash.
         pl.when(has_credential)
         .then(
-            pl.col("credential_username")
-            if "credential_username" in df.columns
-            else pl.lit(None)
+            pl.col("credential_username") if "credential_username" in df.columns else pl.lit(None)
         )
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
