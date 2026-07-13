@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path  # noqa: TC003 - used at runtime in tmp_path fixtures
@@ -1538,4 +1539,125 @@ class TestEnrichmentIOCOrdering:
         assert hash_indices and ip_indices, "expected both hash and IP calls"
         assert max(hash_indices) < min(ip_indices), (
             f"all hash calls must precede all IP calls; got {call_log}"
+        )
+
+
+class TestDionaeaBinarySynthesisSchema:
+    """Regression for the 2026-07-11 transform crash: dionaea's synthetic
+    binary-capture rows carried ``timestamp`` as a formatted string, so
+    concat-ing them onto real dionaea bronze (``timestamp`` already
+    ``Datetime``) widened the shared column to ``String`` under
+    ``diagonal_relaxed``. Silver then disagreed on ``time`` dtype with
+    every other dataset and the next day's transform's cross-dataset
+    concat raised ``InvalidOperationError``. This pins that the merged
+    dionaea frame handed to ``normalize_dataset`` keeps ``timestamp`` as
+    ``Datetime`` even when synthetic rows are present.
+    """
+
+    @pytest.mark.asyncio()
+    async def test_synthesised_rows_keep_datetime_timestamp(self, tmp_path: Path) -> None:
+        from lantana.common.config import (
+            OperationConfig,
+            OperatorConfig,
+            RedactConfig,
+            ReportingConfig,
+            SecretsConfig,
+            SharingConfig,
+        )
+        from lantana.enrichment.runner import run_enrichment
+
+        secrets = SecretsConfig(
+            vault_apikey_virustotal="vt-key",
+            vault_apikey_shodan="shodan-key",
+            vault_apikey_abuseipdb="abuse-key",
+            vault_apikey_greynoise=None,
+            vault_apikey_maxmind=None,
+            vault_webhook_discord="",
+        )
+        reporting = ReportingConfig(
+            operator=OperatorConfig(
+                name="op", handle="op", contact="op@example.com", pgp_fingerprint=""
+            ),
+            sharing=SharingConfig(tlp="amber", community="", discord_channel=""),
+            operation=OperationConfig(
+                name="op_test",
+                description="",
+                sector="",
+                region="",
+                start_date="2026-06-18",
+            ),
+            redact=RedactConfig(
+                infrastructure_ips=[],
+                infrastructure_cidrs=[],
+                pseudonym_map={},
+            ),
+        )
+
+        dionaea_bronze = pl.DataFrame(
+            {
+                "src_ip": ["203.0.113.5"],
+                "eventid": ["dionaea.smbd.uploaded"],
+                "timestamp": [datetime(2026, 7, 10, 12, 0, 0)],
+            }
+        )
+
+        def fake_read_bronze(target_date: date, dataset: str) -> pl.DataFrame:
+            return dionaea_bronze if dataset == "dionaea" else pl.DataFrame()
+
+        # Real binary on disk (not a mocked extract_dionaea_binary_events
+        # return value) so this test exercises the actual ioc.py scanner —
+        # otherwise a regression there wouldn't be caught.
+        sensor_dir = tmp_path / "sensor"
+        binaries_dir = sensor_dir / "dionaea" / "binaries"
+        binaries_dir.mkdir(parents=True)
+        binary_file = binaries_dir / "deadbeef"
+        binary_file.write_bytes(b"\x7fELF\x02\x01\x01")
+        mtime = datetime(2026, 7, 10, 13, 0, 0, tzinfo=UTC).timestamp()
+        os.utime(binary_file, (mtime, mtime))
+
+        normalized_calls: list[tuple[str, pl.DataFrame]] = []
+
+        def fake_normalize(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
+            normalized_calls.append((dataset, df))
+            return pl.DataFrame()
+
+        async def fake_enrich(
+            provider_name: str,
+            provider: object,
+            ioc_type: str,
+            iocs: list[str],
+            cache: sqlite3.Connection,
+            errors: ErrorAccumulator,
+        ) -> tuple[list[EnrichmentResult], int]:
+            return [], 0
+
+        with (
+            patch("lantana.enrichment.runner.load_secrets", return_value=secrets),
+            patch("lantana.enrichment.runner.load_reporting", return_value=reporting),
+            patch("lantana.enrichment.runner.read_bronze_ndjson", side_effect=fake_read_bronze),
+            patch(
+                "lantana.enrichment.runner.extract_hashes_from_disk",
+                return_value=set(),
+            ),
+            patch(
+                "lantana.enrichment.runner._enrich_iocs_with_provider",
+                side_effect=fake_enrich,
+            ),
+            patch("lantana.enrichment.runner.normalize_dataset", side_effect=fake_normalize),
+        ):
+            await run_enrichment(
+                target_date=date(2026, 7, 10),
+                cache_db_path=tmp_path / "cache.db",
+                sensor_dir=sensor_dir,
+                errors_path=tmp_path / "errors.json",
+                provider_state_path=tmp_path / "state.json",
+            )
+
+        dionaea_calls = [df for dataset, df in normalized_calls if dataset == "dionaea"]
+        assert dionaea_calls, "expected a normalize_dataset call for dionaea"
+        merged_df = dionaea_calls[0]
+        assert merged_df.height == 2, "expected bronze row + synthetic row"
+        assert merged_df.schema["timestamp"] == pl.Datetime, (
+            f"synthetic rows widened timestamp to {merged_df.schema['timestamp']}; "
+            "expected Datetime to match every other dataset's silver"
         )

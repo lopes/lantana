@@ -195,9 +195,10 @@ class TestExtractDionaeaBinaryEvents:
         assert ev["shasum"] == hashlib.sha256(payload).hexdigest()
         assert ev["binary_file_name"] == "00aabbcc11ddeeff"
         assert ev["dataset"] == "dionaea"
-        # mtime is rendered as a UTC ISO8601 string downstream consumers can parse
-        assert ev["timestamp"].startswith("2026-06-18T")
-        assert ev["timestamp"].endswith("Z")
+        # timestamp is a naive UTC datetime, matching the Datetime dtype
+        # read_bronze_ndjson gives every other dataset's timestamp column
+        assert ev["timestamp"] == datetime(2026, 6, 18, 12, 0, 0)
+        assert ev["timestamp"].tzinfo is None
 
     def test_filters_files_outside_target_date(self, tmp_path: Path) -> None:
         sensor_dir = tmp_path / "sensor"

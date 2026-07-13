@@ -77,7 +77,11 @@ def extract_dionaea_binary_events(
     Each binary whose mtime falls inside ``target_date`` (UTC day)
     produces one synthetic event with:
         eventid           = ``dionaea.binary.captured``
-        timestamp         = mtime as ISO8601 ``…Z``
+        timestamp         = mtime as a naive UTC ``datetime`` (matches the
+                             ``Datetime`` dtype ``read_bronze_ndjson`` gives
+                             every other dataset's ``timestamp`` column, so
+                             the diagonal concat in the runner doesn't widen
+                             the shared column to ``String``)
         shasum            = SHA-256 of the file contents
         binary_file_name  = on-disk filename (typically MD5)
         dataset           = ``dionaea``
@@ -117,7 +121,7 @@ def extract_dionaea_binary_events(
         events.append(
             {
                 "eventid": "dionaea.binary.captured",
-                "timestamp": mtime_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timestamp": mtime_dt.replace(tzinfo=None),
                 "shasum": sha,
                 "binary_file_name": file_path.name,
                 "dataset": "dionaea",
