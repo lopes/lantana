@@ -1,0 +1,45 @@
+title = "github.com/lopes canonical gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "url-query-api-key"
+description = "High-entropy API key or token passed via URL query parameter"
+regex = '''[?&](?i:(?:api_?key|key|token|access_token|auth_token|license_key|secret))=([A-Za-z0-9._~+-]{16,128})'''
+secretGroup = 1
+entropy = 3.2
+keywords = [
+  "key=",
+  "api_key=",
+  "apikey=",
+  "token=",
+  "access_token=",
+  "auth_token=",
+  "license_key=",
+  "secret=",
+]
+
+  [rules.allowlist]
+  description = "Ignore explicit RFC/synthetic test placeholders"
+  regexTarget = "secret"
+  regexes = [
+    '''(?i)^SYNTHETIC_TEST_[A-Z0-9_]+$''',
+    '''(?i)^REDACTED$''',
+    '''(?i)^EXAMPLE_[A-Z0-9_]+$''',
+    '''(?i)^DUMMY_[A-Z0-9_]+$''',
+    '''(?i)^YOUR_[A-Z0-9_]+$''',
+    '''(?i)^test-only-[a-z0-9-]+$''',
+  ]
+
+# Intentionally NO path exclusions for tests/, spec/, fixtures/, or docs/:
+# unit test fixtures pasted from real runtime logs are a primary secret leak vector.
+[allowlist]
+description = "Global baseline allowlist (only non-secret lock/binary artifacts)"
+paths = [
+  '''(^|/)(?:uv\.lock|Cargo\.lock|poetry\.lock|package-lock\.json|pnpm-lock\.yaml)$''',
+]
+  commits = [
+  "b094a942e8523eca1cdbdc93038a2c1c3a2f4439",
+  "e31dd1bc1032aa636760cc56fed09ca6d9bdc926",
+  ]

@@ -12,9 +12,9 @@ Thanks for considering a contribution. Lantana is an open, single-maintainer pro
 Lantana is documentation-first. The docs are the spec; the code follows them. Skim the relevant ones before opening an issue or PR — most "is this a bug?" and "how do I…" questions are already answered there.
 
 - **All contributors** — read [docs/architecture.md](/docs/architecture.md) for the zoned model (honeywall / sensor / collector) and the deployment-mode distinction (single-node vs. multi-node).
-- **Touching the pipeline (`pipeline/`)** — read [docs/pipeline.md](/docs/pipeline.md), [docs/risk-scoring.md](/docs/risk-scoring.md), and the **Pipeline fail-safe principles** + **Pipeline verification discipline** sections in [CLAUDE.md](/CLAUDE.md). The six fail-safe principles are load-bearing — every defect that surfaced during op_alpha's first production run violated one of them.
-- **Touching honeypot roles (`config/ansible/roles/cowrie/`, `config/ansible/roles/dionaea/`)** — read [docs/honeypots.md](/docs/honeypots.md) and the **Honeypot deployment discipline** section in [CLAUDE.md](/CLAUDE.md). Several Dionaea decisions are load-bearing; reverting them produces silent failures.
-- **Touching Vector configs (`*.vector.yaml.j2`)** — read the **Vector deployment discipline** section in [CLAUDE.md](/CLAUDE.md). A broken VRL fragment renders fine but crashloops Vector at runtime.
+- **Touching the pipeline (`pipeline/`)** — read [docs/pipeline.md](/docs/pipeline.md), [docs/risk-scoring.md](/docs/risk-scoring.md), and the **Pipeline fail-safe principles** + **Pipeline verification discipline** sections in [AGENTS.md](/AGENTS.md). The six fail-safe principles are load-bearing — every defect that surfaced during op_alpha's first production run violated one of them.
+- **Touching honeypot roles (`config/ansible/roles/cowrie/`, `config/ansible/roles/dionaea/`)** — read [docs/honeypots.md](/docs/honeypots.md) and the **Honeypot deployment discipline** section in [AGENTS.md](/AGENTS.md). Several Dionaea decisions are load-bearing; reverting them produces silent failures.
+- **Touching Vector configs (`*.vector.yaml.j2`)** — read the **Vector deployment discipline** section in [AGENTS.md](/AGENTS.md). A broken VRL fragment renders fine but crashloops Vector at runtime.
 - **Touching deployment (`config/ansible/`)** — read [docs/setup.md](/docs/setup.md) and [docs/validation.md](/docs/validation.md).
 - **Troubleshooting an existing problem** — check [docs/troubleshooting.md](/docs/troubleshooting.md) first.
 - **Unfamiliar terminology** — see [docs/glossary.md](/docs/glossary.md).
@@ -84,7 +84,7 @@ Code requirements:
 - **TDD** — write the test first, then the implementation. Every module has a corresponding test file mirroring the `src/` structure.
 - **Functional style** — pure functions for data transforms, Pydantic models for structured data, push IO to the edges. Prefer Polars expression chains over imperative loops. Minimize side effects.
 - **Boring, reliable tooling only** — Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly, maxminddb. No exotic or trendy dependencies — propose them in an issue first.
-- **Fail-safe principles** — if you touch enrichment, normalisation, or transform code, the six principles in [CLAUDE.md](/CLAUDE.md#pipeline-fail-safe-principles) are not optional. Skipping them is what produced 8 distinct defects in op_alpha's first production run.
+- **Fail-safe principles** — if you touch enrichment, normalisation, or transform code, the six principles in [AGENTS.md](/AGENTS.md#pipeline-fail-safe-principles) are not optional. Skipping them is what produced 8 distinct defects in op_alpha's first production run.
 
 ### Ansible (config/ansible/)
 
@@ -122,7 +122,7 @@ terraform validate
 2. **One logical change per PR.** Bundle a related refactor with the feature when splitting would just be churn — but don't sneak unrelated cleanups into a feature PR.
 3. **Commit messages**: short, imperative, lowercase. One line is usually enough; add a body only when the *why* isn't obvious. Conventional prefixes are encouraged but not required: `feat:`, `fix:`, `docs:`, `ci:`, `refactor:`, `test:`, `chore:`.
 4. **Run the full CI command set locally** before pushing. CI must be green; failing CI = needs-work, maintainer review only after green.
-5. **Update the docs** when you change behavior. If you touch a role's defaults, update the corresponding doc page. If you change a pipeline contract, update [docs/pipeline.md](/docs/pipeline.md) and the relevant section in [CLAUDE.md](/CLAUDE.md).
+5. **Update the docs** when you change behavior. If you touch a role's defaults, update the corresponding doc page. If you change a pipeline contract, update [docs/pipeline.md](/docs/pipeline.md) and the relevant section in [AGENTS.md](/AGENTS.md).
 6. **Open the PR** against `main`. Fill out the PR template — what changed, why, how tested, OPSEC check.
 7. Be patient. This is a single-maintainer project. Best-effort review within a week or two.
 
@@ -133,7 +133,7 @@ terraform validate
 - Tests removed without explanation.
 - `--no-verify`, broad `try/except`, retry loops hiding races, or other ways to paper over a root cause.
 - Python code without type annotations.
-- Code that violates a documented invariant in [CLAUDE.md](/CLAUDE.md) without explicitly arguing why the invariant should change.
+- Code that violates a documented invariant in [AGENTS.md](/AGENTS.md) without explicitly arguing why the invariant should change.
 
 ---
 
