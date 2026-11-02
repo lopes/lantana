@@ -106,7 +106,7 @@ lantana/
 - **Pylance strict mode**: all types declared, no `Any` escape hatches, full type annotations on all function signatures and return types
 - **TDD**: write tests first, then implement. Every module has a corresponding test file mirroring the `src/` structure
 - **Functional programming style**: pure functions for data transforms, Pydantic models for structured data, push IO to the edges. Prefer Polars expression chains over imperative loops. Minimize side effects.
-- **Boring, reliable tooling only**: Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly. No exotic or trendy dependencies.
+- **Boring, reliable tooling only**: Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly, maxminddb. No exotic or trendy dependencies.
 - **Linting/formatting**: `ruff` for linting + formatting, `mypy` strict for type checking, `pytest` for tests
 - **Package manager**: `uv`. **Local sync**: `cd pipeline && uv sync --frozen --extra dev` — the `--extra dev` is required because pytest/ruff/mypy live in `[project.optional-dependencies.dev]` and a bare `uv sync --frozen` strips them. The Ansible deploy on the collector intentionally omits `--extra dev`; production runtime deps (polars, plotly, httpx, stix2, …) sit in `[project.dependencies]` and install unconditionally.
 
@@ -130,7 +130,7 @@ A bug in any one dataset's normalize/redact/write must affect only that dataset'
 
 Every skip / drop / fallback emits a structlog event with `dataset` (where applicable), `reason`, `count`, and `repr(exc)`. Errors are accumulated into `/var/lib/lantana/datalake/enrichment_errors.json` for daily review. Silence is not success.
 
-**Implementation pattern:** never `except Exception: pass`. The catch-all in `_enrich_iocs_with_provider` records `error_type="unknown"` with `repr(exc)` (not `str(exc)`) so the exception class name reaches the log. Mirror this pattern in any new error path.
+**Implementation pattern:** never `except Exception: pass`. `_classify_http_error` maps HTTP failures to `rate_limit`, `auth_failed`, `not_found`, `http_error`, and `server_error` (alongside transport `timeout` and `network_error`), and the catch-all in `_enrich_iocs_with_provider` records `error_type="unexpected_error"` with `repr(exc)` (not `str(exc)`) so the exception class name reaches `enrichment_errors.json`. Mirror this pattern in any new error path.
 
 ### 3. Schema variation is tolerated by construction
 
@@ -183,14 +183,14 @@ End-to-end pipeline runs on a live operation consume real provider budget and re
 - **Mock first.** `tests/test_enrichment/` patterns (`AsyncMock` + `patch.object(provider._client, "get", ...)`) cover status codes, sparse responses, retries, RetryError unwrapping, and parse errors without an API call. If a change can be validated against mocked unit tests, it must be — before any live run.
 - **Gate the live run.** `uv run pytest && uv run ruff check && uv run mypy --strict` must be clean before touching the VPS.
 - **Inspect the cache before a re-run.** `sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT provider, ioc_type, COUNT(*) FROM cache GROUP BY provider, ioc_type"` tells you how much fresh budget the re-run will burn.
-- **Use `--date YYYY-MM-DD` for targeted re-runs** rather than waiting for the 01:00 UTC cron. `write_silver_partition` overwrites the date partition, so a re-run cleanly replaces a partial earlier write.
+- **Use `--date YYYY-MM-DD` for targeted re-runs** rather than waiting for the 01:00 UTC systemd timer (`lantana-enrich.timer`). `write_silver_partition` overwrites the date partition, so a re-run cleanly replaces a partial earlier write.
 - **A failed live run is expensive.** It may have burned the day's / month's quota for the providers it reached, blocking the next attempt for 24h+ on AbuseIPDB, until UTC midnight on VT, until the monthly reset on Shodan, and 7 days on GreyNoise.
 - **Mid-run hotfix protocol.** If a defect surfaces during an active live run, do not kill the run and do not redeploy mid-flight. Silver write is the last phase — killing means no silver. Let it finish, deploy the fix, then targeted re-run with `--date` after the relevant rate-limit windows reset.
 - **Three validation playbooks codify the post-deploy invariants** so verification is mechanical, not eyeball-driven:
-  - `config/ansible/tests/validate-single-node.yml` — runs immediately after `deploy_single.yml`. Asserts users, network, firewall, log directories, and the four `lantana-*.timer` units installed + enabled.
+  - `config/ansible/tests/validate-single-node.yml` — runs immediately after `deploy_single.yml`. Asserts users, network, firewall, log directories, and the four `lantana-*.timer` units installed + enabled (plus the five `.service` units including manual/replay `lantana-alert.service`).
   - `config/ansible/tests/validate-sensor-runtime.yml` — runs after `deploy_honeypots.yml` (or `deploy_single.yml`) with a ~30 s settle window. Asserts the cowrie + dionaea Quadlet ownership invariants (`UserNS=keep-id` for cowrie, no `,U` for either), container Status/Health/RestartCount, no log-plugin failure tracebacks since each container's `StartedAt`, the worker holds a write FD on `cowrie.json` / `dionaea.json`, today's bronze NDJSON is fresh within `sensor_freshness_window_seconds` (default 120 s), and no orphan-UID files under the sensor state trees. The executable counterpart to the post-restart manual check pattern from the 2026-06-08 → 2026-06-11 incident loop.
-  - `config/ansible/tests/validate-pipeline-cycle.yml` — runs after the first 06:00 UTC cycle. Asserts each pipeline unit's last `Result=success`, `run_summary` in journal, silver+gold parquet presence, `.provider_state.json` exists, no API-key residue in `enrichment_errors.json`, per-provider risk_score columns in silver, gold composite + sub-scores + the GreyNoise RIOT invariant. Defaults `target_date` to yesterday UTC; override with `-e target_date=...`.
-  - Visual checks (Discord report rendering, dashboard pages, STIX bundle) stay manual — see `docs/setup.md` §11.
+  - `config/ansible/tests/validate-pipeline-cycle.yml` — runs after the first 06:00 UTC cycle. Asserts each pipeline unit's last `Result=success`, `run_summary` in journal, silver+gold parquet presence (all 6 gold tables), `.provider_state.json` exists, no API-key residue in `enrichment_errors.json`, per-provider risk_score columns in silver, gold composite + sub-scores + the GreyNoise RIOT invariant. Defaults `target_date` to yesterday UTC; override with `-e target_date=...`.
+  - Visual checks (Discord report rendering, dashboard pages, STIX bundle) stay manual — see [docs/validation.md](/docs/validation.md) (Day 7: Reports, STIX, and Dashboard).
 
 ## Vector deployment discipline
 
@@ -274,14 +274,14 @@ The repository is **public on GitHub** (`github.com/lopes/lantana`). Anything co
   - ASNs → RFC 5398: `64496–64511`, `65536–65551`
   - Hostnames → archetype-generic (`vps-01`, `sn-01`) — never the real production hostname
 - **Real values belong only in operation inventories** (`config/ansible/inventories/op_<name>/group_vars/all/`). These directories are either gitignored or vault-encrypted; treat any path outside them as public.
-- **Public IPs as probe payloads are fine** (e.g. `8.8.8.8`, attacker IPs already in OSINT) — they don't identify the operator. The rule is operator-identifying values, not all real IPs.
+- **Public IPs as probe payloads are fine** (e.g. `8.8.8.8`, `1.1.1.1`, or attacker IPs already in OSINT) — they don't identify the operator. The rule is operator-identifying values, not all real IPs.
 - **Before editing any doc that includes an IP, hostname, or domain, verify it falls inside one of the reserved ranges above.** When in doubt, ask the user before committing.
 - **Heuristic for spotting a real one:** if an example IP isn't in an RFC documentation range, it's almost certainly real. Allocations registered to commercial VPS/cloud providers (OVH, Hetzner, DigitalOcean, Linode, AWS, GCP, Azure, …) are the most common slip — replace any such address with the appropriate reserved range before committing.
 
 ### Layer 1: Vector telemetry (noise suppression)
 
 - Every honeypot Vector pipeline must include a `filter_<honeypot>` transform that drops events from non-attacker source IPs before forwarding to the collector
-- Dropped sources: loopback (`127.0.0.0/8`, `::1`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`), and the honeypot's own WAN addresses (`network.honeywall.wan.ipv4`, `network.honeywall.wan.ipv6`)
+- Dropped sources: loopback (`127.0.0.0/8`, `::1`, IPv4-mapped `::ffff:127.0.0.1`), link-local (`fe80::`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`), and the honeypot's own WAN addresses (`network.honeywall.wan.ipv4`, `network.honeywall.wan.ipv6`)
 - This catches health check probes, inter-zone traffic, operational noise, AND outbound-response packets from the honeypot itself (Suricata sees both flow directions, so these would otherwise leak the WAN IP into `src_endpoint_ip` and trip the silver-layer leak validator)
 - Pattern: use non-aborting VRL `ip_cidr_contains()` + `?? false` for CIDR checks, exact-match `src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}"` for WAN addresses
 - **Every new honeypot role must replicate this filter** — see `suricata.vector.yaml.j2` as the reference (most complete)
@@ -292,15 +292,15 @@ The repository is **public on GitHub** (`github.com/lopes/lantana`). Anything co
 - **External/WAN IPs are the primary redaction target** — these are the public addresses in `network.honeywall.wan.ipv4/ipv6` that appear as destination IPs in attacker events
 - Internal IPs (`network.prefixes.*`, sensor/collector addresses) are also redacted for defense in depth
 - Controlled by `reporting.yml` → `redact.infrastructure_ips` and `redact.pseudonym_map`
-- **Redaction runs in two passes:**
-  - IP-typed columns (`src_endpoint_ip`, `dst_endpoint_ip`, ...) get exact-match pseudonym swap.
-  - Attacker-content columns (`unmapped_password`, `actor_process_cmd_line`, `file_url`, `message`, ...) get substring replacement, because attackers can put the WAN address into any free-text field (defect #9: WAN-as-password) and Vector preserves raw kernel logs in `message` with `DST=<wan>` embedded.
-- `validate_no_leaks` is scoped to IP-typed columns only — attacker-content columns can legitimately contain IP-shaped strings (RFC1918 in a password, embedded URLs, etc.) and false-positives there were dropping cowrie silver entirely on busy days.
+- **Redaction (`redact_infrastructure_ips`) runs in two passes:**
+  - IP-typed columns (`DST_IP_COLUMNS`: `dst_ip`, `dest_ip`, `local_ip`, `dst_host`, `destination.ip`, `dst_endpoint_ip`) get exact-match + canonical IPv6/CIDR pseudonym swap.
+  - Attacker-content columns (`ATTACKER_CONTENT_COLUMNS`, including `destfile`, `file_name`, `unmapped_password`, `actor_process_cmd_line`, `file_url`, `message`, ...) get longest-prefix-first substring replacement, because attackers can put the WAN address into any free-text field (defect #9: WAN-as-password) and Vector preserves raw kernel logs in `message` with `DST=<wan>` embedded.
+- `validate_no_leaks()` is scoped to IP-typed columns (`DST_IP_COLUMNS + SRC_IP_COLUMNS`) — attacker-content columns can legitimately contain IP-shaped strings (RFC1918 in a password, embedded URLs, etc.) and false-positives there were dropping cowrie silver entirely on busy days.
 
 ### Layer 3: Gold / Reports / STIX (complete absence)
 
 - Gold aggregation reads only from silver (already redacted)
-- STIX bundles assert no operation-related addresses in any indicator object
+- `generate_bundle()` in `intel/stix.py` enforces Layer-3 infrastructure-IP absence on serialized STIX 2.1 bundles
 - Discord reports generated exclusively from gold data
 - Reports never contain: honeypot WAN IPs, internal IPs, server hostnames, network topology, SSH admin port, interface names, CIDRs
 
@@ -313,10 +313,11 @@ The repository is **public on GitHub** (`github.com/lopes/lantana`). Anything co
 
 ## Third-Party Integrations
 
-Six integrations across two stages, all keyed in the vault (`vault_apikey_<service>` / `vault_webhook_<service>`):
+Six third-party services total — **five enrichment integrations** across two stages plus **Discord** for daily reporting/notifications — all keyed in the vault (`vault_apikey_<service>` / `vault_webhook_<service>`):
 
-- **Wire-speed (Vector, local MMDB):** MaxMind GeoLite2 (City + ASN). Foundational integration — every event passes through it before reaching bronze. Ansible downloads the MMDBs at deploy time and refreshes monthly via cron. License key required for download; lookup is offline.
-- **Daily batch (Python pipeline, HTTP APIs):** AbuseIPDB, Shodan, VirusTotal (required keys); GreyNoise (free Community endpoint, optional key).
+- **Wire-speed enrichment (Vector, local MMDB):** MaxMind GeoLite2 (City + ASN). Foundational integration — every event passes through it before reaching bronze. Ansible downloads the MMDBs at deploy time and refreshes monthly via cron. License key required for download; lookup is offline.
+- **Daily-batch enrichment (Python pipeline, HTTP APIs):** AbuseIPDB, Shodan, VirusTotal (required keys); GreyNoise (free Community endpoint, optional key).
+- **Daily reporting & operational notifications (Python pipeline, webhook):** Discord (`vault_webhook_discord`, with `discord_webhook` accepted as alias in `SecretsConfig`).
 
 Validation tooling:
 

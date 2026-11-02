@@ -1,6 +1,6 @@
 # Lantana: Third-Party Integrations
 
-Lantana enriches honeypot telemetry with external data from five third-party integrations across two stages:
+Lantana enriches honeypot telemetry with external data from **five enrichment integrations** across two stages (plus the **Discord webhook** for daily intelligence briefs and operational notifications — **six third-party services total**, all keyed in `vault.yml` / `secrets.json`):
 
 1. **Wire-speed (Vector, local MMDB) — MaxMind GeoLite2.** The foundational integration. Every event passes through it the moment Vector ingests it, before reaching bronze. Geo + ASN attribution is non-negotiable: the gold geographic_summary, the dashboard map, and the STIX bundle's `country` indicators all assume this data is present.
 2. **Daily batch (Python pipeline, HTTP APIs) — AbuseIPDB, Shodan, VirusTotal, GreyNoise.** Run once per day during bronze → silver, only against unique attacker IPs that landed events the previous day. Adds reputation, exposed services, malware history, and scanner classification on top of what MaxMind already produced.
@@ -129,14 +129,16 @@ Multi-vendor aggregator (90+ AV/blocklist engines). We query both IPs and file h
 
 **Risk-score derivation:** see [risk-scoring.md § VirusTotal](/docs/risk-scoring.md#virustotal-ip).
 
-**Fields we extract into silver (hash):**
+**Fields we extract into silver (hash — 6 columns):**
 
-| Silver column | Source field |
-|---|---|
-| `vt_malicious_count`  | `data.attributes.last_analysis_stats.malicious` |
-| `vt_undetected_count` | `data.attributes.last_analysis_stats.undetected` |
-| `vt_name`             | `data.attributes.meaningful_name` |
-| `vt_type`             | `data.attributes.type_tag` |
+| Silver column | Source field | Notes |
+|---|---|---|
+| `vt_file_malicious_count`  | `data.attributes.last_analysis_stats.malicious` | AV engines flagging malicious |
+| `vt_file_undetected_count` | `data.attributes.last_analysis_stats.undetected` | AV engines with no detection |
+| `vt_file_name`             | `data.attributes.meaningful_name` | Canonical sample name |
+| `vt_file_type`             | `data.attributes.type_tag` | File type tag (e.g. `elf`, `peexe`) |
+| `vt_file_family`           | `data.attributes.popular_threat_classification` | Top `popular_threat_name` or `suggested_threat_label` |
+| `vt_file_risk_score`       | computed | Bucketed from `vt_file_malicious_count` (0 / 50 / 75 / 100; drives cache TTL) |
 
 ### GreyNoise
 
@@ -214,10 +216,10 @@ uv run python ../scripts/probe-enrichment.py \
 
 # Local secrets file instead of /etc/lantana/collector/secrets.json
 uv run python ../scripts/probe-enrichment.py \
-  --ip 1.2.3.4 --secrets ./local-secrets.json
+  --ip 192.0.2.4 --secrets ./local-secrets.json
 
 # Workaround for broken workstation TLS (Homebrew Python on macOS, etc.)
-uv run python ../scripts/probe-enrichment.py --ip 1.2.3.4 --insecure
+uv run python ../scripts/probe-enrichment.py --ip 192.0.2.4 --insecure
 ```
 
 #### Flags
@@ -301,7 +303,7 @@ Per IP the probe prints:
 { ... }
 
 [normalized geo.* fields (matches Vector's VRL output)]
-{ "geo.country_code": "US", "geo.asn": 15169, ... }
+{ "geo.country_code": "US", "geo.asn": 64496, ... }
 ```
 
 If an IP isn't in either MMDB (e.g. private/bogon addresses, very fresh allocations), the probe notes that Vector would emit empty `.geo.*` fields and continues. Exit code `0` on clean runs (even when records are missing), `1` on download or lookup failure, `2` on usage errors or missing MMDBs without a license key.

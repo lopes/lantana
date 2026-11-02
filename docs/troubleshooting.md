@@ -396,10 +396,10 @@ ssh-add -l
 ssh-add ~/.ssh/<operation>_id_ed25519
 ```
 
-To pin the key for a given operation so the agent state stops mattering, set `ansible_ssh_private_key_file` on the host (or in `group_vars/all/main.yml`) so Ansible always uses the right key regardless of which keys happen to be in the agent:
+To pin the key for a given operation so the agent state stops mattering, set `ansible_private_key_file` on the host (or in `group_vars/all/main.yml`) so Ansible always uses the right key regardless of which keys happen to be in the agent:
 
 ```yaml
-ansible_ssh_private_key_file: ~/.ssh/<operation>_id_ed25519
+ansible_private_key_file: ~/.ssh/<operation>_id_ed25519
 ```
 
 Pinning is the durable fix; `ssh-add` is the immediate one.
@@ -436,7 +436,7 @@ SSH honeypots will usually accept almost any public key offered to them, allowin
 Use the command below to test SSH connections to decoys. It explicitly disables key exchange mechanisms and known-hosts checks, ensuring you do not mix real workstation configurations with the test environment, nor accidentally leak your real SSH identities to the honeypot:
 
 ```sh
-ssh -o PubkeyAuthentication=no -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -v -6 root@fd99:10:50:99::100 -p 60090
+ssh -o PubkeyAuthentication=no -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -v -6 root@fd99:10:50:99::100 -p 2222
 ```
 
 ---
@@ -472,22 +472,24 @@ So "missing fields" in silver Parquet is the **normal** state for the vast major
 
 ### "Provider returned an error" — diagnosing
 
-The runner records every failure to `/var/lib/lantana/datalake/enrichment_errors.json` (NDJSON, one line per `(provider, error_type)` pair per day). Inspect:
+The runner appends one JSON summary line per `(provider, error_type)` pair per run to `/var/lib/lantana/datalake/enrichment_errors.json` (NDJSON, opened in append mode so historical runs remain inspectable). Inspect:
 
 ```bash
 sudo -u nectar jq . /var/lib/lantana/datalake/enrichment_errors.json | tail -50
 ```
 
-Common `error_type` values and what they mean:
+Actual `error_type` values written by the runner (`_classify_http_error` + transport/fallback handlers) and what they mean:
 
 | `error_type` | Cause | Action |
 |---|---|---|
-| `auth`         | 401/403 — bad API key                                  | Re-check `vault_apikey_<service>` and re-run `deploy_single.yml` with the `collector` tag. The runner now fails fast on auth errors (no retries), so the count equals the number of IPs that were attempted. |
-| `rate_limit`   | 429                                                    | Provider quota exhausted. Retry tomorrow (cache covers ≥7 days, longer for malicious IOCs — see CLAUDE.md → Enrichment cache lifecycle). Consider trimming the IP set or upgrading the free tier. |
-| `timeout`      | TCP timeout                                            | Transient. The runner retries 3× with exponential backoff before recording. If sustained, check the collector's egress firewall. |
-| `http_4xx`     | Other 4xx — most commonly bad request / missing param  | Provider API contract changed. Check the upstream docs (linked from `integrations.md`) and the recent provider changelog. |
-| `http_5xx`     | Provider-side outage                                   | Wait it out. The runner retries 3× before giving up. Confirm with the probe script — if `probe-enrichment.py --provider <name>` also fails, it's not us. |
-| `unknown`      | Catch-all                                              | Read the `message` field in the error file — usually a JSON parse error or a transport-level issue. |
+| `rate_limit` | HTTP `429` — provider quota window exhausted | Not retried (`is_retryable_http_error` excludes 429 so `consecutive = 5` / `cumulative = 30` circuit breakers trip immediately). Retry after the provider window resets (cache covers ≥7 days, longer for malicious IOCs — see CLAUDE.md → Enrichment cache lifecycle). |
+| `auth_failed` | HTTP `401` / `403` — bad or revoked API key | Re-check `vault_apikey_<service>` and re-run `deploy_single.yml` with the `collector` tag. Fails fast on first hit (`CIRCUIT_BREAKER_AUTH_FAILED_THRESHOLD = 1`). |
+| `not_found` | HTTP `404` uncaught at provider layer | Logged at debug level (routine "IOC not in upstream dataset"). |
+| `http_error` | Other HTTP `4xx` (e.g. `400` bad request / missing param) | Fails fast without retry. Check the upstream API docs linked in `integrations.md` for contract changes. |
+| `server_error` | HTTP `5xx` — provider-side outage | Retried 3× with exponential backoff before recording. Confirm with `probe-enrichment.py --provider <name>` and wait out upstream recovery. |
+| `timeout` | `httpx.TimeoutException` — request or connect timeout | Transient. Retried 3× with exponential backoff before recording; if sustained, check collector egress rules. |
+| `network_error` | `httpx.RequestError` / transport error (DNS, TLS, reset) | Retried 3× with exponential backoff before recording; verify outbound connectivity from the collector. |
+| `unexpected_error` | Unhandled exception catch-all (records `repr(exc)`) | Read the `message` field in `enrichment_errors.json` — includes the exception class name (e.g. JSON parse error or unexpected payload shape). |
 
 The runner is designed so that **one provider failing never blocks the others**: each provider's enrichment is independent, and a `RetryError` after exhausted retries on provider A still leaves providers B–E with full data for the same IP. Per-IP errors don't block other IPs either.
 

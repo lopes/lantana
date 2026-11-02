@@ -16,10 +16,10 @@ The following table outlines the minimum hardware requirements for each logical 
 
 | Deployment Role | vCPUs | RAM | Storage | Network Interfaces (NICs) | Notes |
 | --- | --- | --- | --- | --- | --- |
-| **Honeywall** | 2 | 1 GB | 5 GB | 2 (1 Public, 1 Private) | Runs `nftables`, `suricata`, and `vector`. Acts as the security gateway. |
-| **Sensor (Low-Interaction)** | 2 | 2 GB | 20 GB | 1 (Private) | Runs `podman` and `vector`. Hosts multiple containerized decoys. |
-| **Collector** | 1 | 1 GB | 50 GB | 1 (Private) | Runs `vector` and custom Python scripts. Storage scales with data retention needs. |
-| **Single-Node (All-in-One)** | 2 | 4 GB | 80 GB | 1 Physical + 1 Dummy | Ideal for VPS/edge deployments. All zones run concurrently on one host. |
+| **Honeywall** | 2 | 2 GB | 20 GB | 2 (1 Public, 1 Private) | Runs `nftables`, `suricata`, and `vector`. Acts as the security gateway. |
+| **Sensor (Low-Interaction)** | 2 | 4 GB | 40 GB | 1 (Private) | Runs `podman` and `vector`. Hosts multiple containerized decoys. |
+| **Collector** | 2 | 4 GB | 100 GB | 1 (Private) | Runs `vector` and the Python pipeline. Storage scales with data retention needs. |
+| **Single-Node (All-in-One)** | 2 | 4 GB | 60 GB | 1 Physical + 1 Dummy | Default Proxmox sizing (`infra/terraform/environments/proxmox/`). All zones run concurrently on one host. |
 
 > [!NOTE]
 > High-interaction honeypots (fully vulnerable OS deployments) have variable hardware requirements based on the specific operating system and narrative being emulated. They must only be deployed in Multi-Node mode as dedicated hosts.
@@ -220,15 +220,25 @@ In the Ansible inventory, the private nodes are configured to proxy their connec
 ```yaml
 all:
   children:
-    honeywall:
+    honeywall_nodes:
       hosts:
-        hw-node-01:
-          ansible_host: <PUBLIC_IP_OF_HONEYWALL>
-    sensors:
+        honeywall-01:
+          ansible_host: 203.0.113.11
+    sensor_low_nodes:
       hosts:
-        sensor-node-01:
+        low-01:
           ansible_host: 10.50.99.100
-          ansible_ssh_common_args: '-J admin@<PUBLIC_IP_OF_HONEYWALL>'
+          ansible_ssh_common_args: '-J lantana@203.0.113.11'
+    sensor_high_nodes:
+      hosts:
+        high-01:
+          ansible_host: 10.50.99.101
+          ansible_ssh_common_args: '-J lantana@203.0.113.11'
+    collector_nodes:
+      hosts:
+        collector-01:
+          ansible_host: 10.50.99.10
+          ansible_ssh_common_args: '-J lantana@203.0.113.11'
 ```
 
 This ensures all infrastructure configuration is deployed securely without exposing internal nodes to the internet.

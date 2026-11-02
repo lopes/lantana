@@ -50,8 +50,8 @@ This is a single-maintainer project.
 
 | Version | Status |
 |---|---|
-| `main` (pre-v1.0.0) | Receives fixes |
-| After v1.0.0 ships | Latest minor of current major receives fixes; older minors do not |
+| `1.0.x / main` | Receives fixes |
+| Older minors | Unsupported — only the latest minor of the current major release receives fixes |
 
 ## Safe harbor
 
