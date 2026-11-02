@@ -3,10 +3,12 @@
 
 Arguments:
     --live-root  Path to fetched VPS data (default: pipeline/tests/fixtures/live)
+    --wan-ip     Real WAN IP address to scrub as infrastructure (repeatable)
 
 Example:
     cd pipeline && uv run python ../scripts/run-dashboard-local.py
     cd pipeline && uv run python ../scripts/run-dashboard-local.py --live-root /tmp/vps-data
+    cd pipeline && uv run python ../scripts/run-dashboard-local.py --wan-ip 203.0.113.10
 """
 
 from __future__ import annotations
@@ -18,22 +20,21 @@ import sys
 from datetime import date
 from pathlib import Path
 
-# Ensure we're in pipeline/ for imports and Streamlit
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-PIPELINE_DIR = PROJECT_ROOT / "pipeline"
-os.chdir(PIPELINE_DIR)
+import polars as pl
 
-import polars as pl  # noqa: E402
-
-from lantana.common.datalake import (  # noqa: E402
+from lantana.common.datalake import (
     read_bronze_ndjson,
     write_gold_table,
     write_silver_partition,
 )
-from lantana.common.redact import RedactionConfig, redact_infrastructure_ips  # noqa: E402
-from lantana.models.normalize import normalize_dataset  # noqa: E402
-from lantana.transform.metrics import (  # noqa: E402
+from lantana.common.redact import (
+    RedactionConfig,
+    drop_infrastructure_source_rows,
+    redact_infrastructure_ips,
+    validate_no_leaks,
+)
+from lantana.models.normalize import normalize_dataset
+from lantana.transform.metrics import (
     compute_behavioral_progression,
     compute_campaign_clusters,
     compute_daily_summary,
@@ -42,22 +43,25 @@ from lantana.transform.metrics import (  # noqa: E402
     compute_ip_reputation,
 )
 
-REDACT_CONFIG = RedactionConfig(
-    infrastructure_ips=["10.50.99.1", "10.50.99.10", "10.50.99.100"],
-    infrastructure_cidrs=["10.50.99.0/24"],
-    pseudonym_map={
-        "10.50.99.1": "honeypot-wan",
-        "10.50.99.10": "honeypot-collector",
-        "10.50.99.100": "honeypot-sensor-01",
-    },
-)
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+PIPELINE_DIR = PROJECT_ROOT / "pipeline"
+DEFAULT_LIVE_ROOT = PIPELINE_DIR / "tests" / "fixtures" / "live"
+
+BASE_INFRA_IPS = ["10.50.99.1", "10.50.99.10", "10.50.99.100"]
+BASE_INFRA_CIDRS = ["10.50.99.0/24"]
+BASE_PSEUDONYM_MAP = {
+    "10.50.99.1": "honeypot-wan",
+    "10.50.99.10": "honeypot-collector",
+    "10.50.99.100": "honeypot-sensor-01",
+}
 
 ENRICHMENT_STUBS: dict[str, pl.Expr] = {
     "abuseipdb_confidence_score": pl.lit(None).cast(pl.Int64),
     "greynoise_classification": pl.lit(None).cast(pl.Utf8),
     "greynoise_noise": pl.lit(None).cast(pl.Boolean),
     "geo.country_code": pl.lit(None).cast(pl.Utf8),
-    "geo.asn": pl.lit(None).cast(pl.Utf8),
+    "geo.asn": pl.lit(None).cast(pl.Int64),
     "geo.isp": pl.lit(None).cast(pl.Utf8),
 }
 
@@ -74,13 +78,32 @@ OPTIONAL_COLS: dict[str, pl.DataType] = {
 }
 
 # Path roots set from CLI args in main(); declared here so module-level
-# function bodies that reference them type-check without the global being
-# guaranteed live until main() runs (in practice, all callers come from
-# main(), so the runtime ordering is fine).
+# function bodies that reference them type-check cleanly.
 LIVE_ROOT: Path = Path()
 BRONZE_ROOT: Path = Path()
 SILVER_ROOT: Path = Path()
 GOLD_ROOT: Path = Path()
+
+
+def build_redact_config(wan_ips: list[str]) -> RedactionConfig:
+    """Build RedactionConfig combining internal prefixes with optional WAN IPs."""
+    infra_ips = list(BASE_INFRA_IPS)
+    pseudonym_map = dict(BASE_PSEUDONYM_MAP)
+
+    for idx, raw_ip in enumerate(wan_ips, start=1):
+        clean_ip = raw_ip.strip()
+        if not clean_ip:
+            continue
+        if clean_ip not in infra_ips:
+            infra_ips.append(clean_ip)
+        label = "honeypot-wan" if idx == 1 else f"honeypot-wan-{idx}"
+        pseudonym_map[clean_ip] = label
+
+    return RedactionConfig(
+        infrastructure_ips=infra_ips,
+        infrastructure_cidrs=list(BASE_INFRA_CIDRS),
+        pseudonym_map=pseudonym_map,
+    )
 
 
 def discover_dates() -> list[date]:
@@ -94,7 +117,7 @@ def discover_dates() -> list[date]:
     return sorted(dates)
 
 
-def build_gold(target_date: date) -> None:
+def build_gold(target_date: date, redact_config: RedactionConfig) -> None:
     print(f"  Building gold for {target_date} ...")
     datasets: list[str] = []
     for ds_dir in BRONZE_ROOT.glob("dataset=*/"):
@@ -108,7 +131,12 @@ def build_gold(target_date: date) -> None:
             continue
 
         normalized = normalize_dataset(df, dataset)
-        redacted = redact_infrastructure_ips(normalized, REDACT_CONFIG)
+        filtered = drop_infrastructure_source_rows(normalized, redact_config)
+        if filtered.is_empty():
+            continue
+
+        redacted = redact_infrastructure_ips(filtered, redact_config)
+        validate_no_leaks(redacted, redact_config)
 
         stub_cols = [
             expr.alias(n) for n, expr in ENRICHMENT_STUBS.items() if n not in redacted.columns
@@ -123,12 +151,13 @@ def build_gold(target_date: date) -> None:
         if opt_cols:
             redacted = redacted.with_columns(opt_cols)
 
-        server = (
-            redacted.get_column("server").unique().to_list()[0]
-            if "server" in redacted.columns
-            else "unknown"
-        )
-        write_silver_partition(redacted, target_date, dataset, str(server), silver_root=SILVER_ROOT)
+        server = "unknown"
+        if not redacted.is_empty() and "server" in redacted.columns:
+            unique_servers = redacted.get_column("server").drop_nulls().unique().to_list()
+            if unique_servers:
+                server = str(unique_servers[0])
+
+        write_silver_partition(redacted, target_date, dataset, server, silver_root=SILVER_ROOT)
 
         parts.append(redacted)
         print(f"    {dataset}: {len(redacted):,} events")
@@ -162,15 +191,23 @@ def main() -> None:
     parser.add_argument(
         "--live-root",
         type=Path,
-        default=Path("tests/fixtures/live"),
-        help="Path to fetched VPS data (default: tests/fixtures/live)",
+        default=DEFAULT_LIVE_ROOT,
+        help="Path to fetched VPS data (default: pipeline/tests/fixtures/live)",
+    )
+    parser.add_argument(
+        "--wan-ip",
+        action="append",
+        default=[],
+        help="Real WAN IP address to scrub as infrastructure (repeatable).",
     )
     args = parser.parse_args()
 
-    LIVE_ROOT = args.live_root
+    LIVE_ROOT = args.live_root.resolve()
     BRONZE_ROOT = LIVE_ROOT / "datalake" / "bronze"
     SILVER_ROOT = LIVE_ROOT / "datalake" / "silver"
     GOLD_ROOT = LIVE_ROOT / "datalake" / "gold"
+
+    redact_config = build_redact_config(args.wan_ip)
 
     if not BRONZE_ROOT.exists():
         print(f"No bronze data at {BRONZE_ROOT}. Run from project root:")
@@ -187,16 +224,29 @@ def main() -> None:
     print()
 
     for d in dates:
-        build_gold(d)
+        build_gold(d, redact_config)
 
     print()
-    print("Launching Streamlit dashboard ...")
+    print("Launching Streamlit dashboard (127.0.0.1 only) ...")
     print()
 
-    env = {**os.environ, "LANTANA_GOLD_ROOT": str(GOLD_ROOT.resolve())}
+    env = {
+        **os.environ,
+        "LANTANA_SILVER_ROOT": str(SILVER_ROOT.resolve()),
+        "LANTANA_GOLD_ROOT": str(GOLD_ROOT.resolve()),
+    }
     subprocess.run(
-        [sys.executable, "-m", "streamlit", "run", "src/lantana/dashboard/app.py"],
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            "src/lantana/dashboard/app.py",
+            "--server.address=127.0.0.1",
+        ],
+        cwd=PIPELINE_DIR,
         env=env,
+        check=False,
     )
 
 

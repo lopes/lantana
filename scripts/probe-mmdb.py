@@ -28,7 +28,7 @@ Examples (invoked from the pipeline/ directory):
     uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8
 
     # Multiple IPs, custom directory
-    uv run python ../scripts/probe-mmdb.py --ip 1.1.1.1 --ip 64.239.123.129 \\
+    uv run python ../scripts/probe-mmdb.py --ip 1.1.1.1 --ip 203.0.113.10 \\
         --mmdb-dir ~/lantana-mmdb --secrets ./local-secrets.json
 
     # Force refresh (re-download even though files exist)
@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tarfile
 import tempfile
@@ -84,6 +85,14 @@ DOWNLOAD_URL = (
     "https://download.maxmind.com/app/geoip_download"
     "?edition_id={edition}&license_key={key}&suffix=tar.gz"
 )
+
+
+def _sanitize_error(message: str, license_key: str | None = None) -> str:
+    """Scrub MaxMind license_key query parameters and literal key values from error text."""
+    sanitized = re.sub(r"(license_key=)[^&\s'\"]+", r"\1REDACTED", message)
+    if license_key:
+        sanitized = sanitized.replace(license_key, "REDACTED")
+    return sanitized
 
 
 def _resolve_mmdb_dir(cli_path: str | None) -> tuple[Path, bool]:
@@ -237,10 +246,15 @@ def _ensure_mmdbs(
                     continue
                 _download_edition(client, edition, mmdb_name, license_key, mmdb_dir)
     except httpx.HTTPError as exc:
-        print(f"error: download failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        safe_msg = _sanitize_error(str(exc), license_key)
+        print(
+            f"error: download failed: {type(exc).__name__}: {safe_msg}",
+            file=sys.stderr,
+        )
         return 1
     except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        safe_msg = _sanitize_error(str(exc), license_key)
+        print(f"error: {safe_msg}", file=sys.stderr)
         return 1
 
     return 0

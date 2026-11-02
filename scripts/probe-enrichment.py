@@ -10,14 +10,14 @@ Provider/input matrix:
     --hash  routes to: virustotal only
 
 Examples (all invoked from the pipeline/ directory):
-    uv run python ../scripts/probe-enrichment.py --ip 212.115.85.236
-    uv run python ../scripts/probe-enrichment.py --ip 1.2.3.4 \\
+    uv run python ../scripts/probe-enrichment.py --ip 198.51.100.42
+    uv run python ../scripts/probe-enrichment.py --ip 192.0.2.10 \\
         --provider greynoise
     uv run python ../scripts/probe-enrichment.py --hash 0a1b2c... \\
         --provider virustotal
-    uv run python ../scripts/probe-enrichment.py --ip 1.2.3.4 \\
+    uv run python ../scripts/probe-enrichment.py --ip 192.0.2.10 \\
         --secrets ./local-secrets.json
-    uv run python ../scripts/probe-enrichment.py --ip 1.2.3.4 \\
+    uv run python ../scripts/probe-enrichment.py --ip 192.0.2.10 \\
         --insecure          # local-testing workaround for broken workstation TLS
 """
 

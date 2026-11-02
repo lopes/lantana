@@ -10,7 +10,7 @@
 #   $5  DEST     Local destination directory (required)
 #
 # Example:
-#   scripts/backup-vps.sh 203.0.113.10 lantana ~/.ssh/id_ed25519 60090 ./backups/pre-wipe
+#   scripts/backup-vps.sh 203.0.113.10 lantana ~/.ssh/id_ed25519 51820 ./backups/pre-wipe
 
 set -eu
 
@@ -27,6 +27,9 @@ fi
 
 mkdir -p "$DEST"
 
+TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/lantana-backup.XXXXXX.tar")"
+trap 'rm -f "$TMP_TAR"' EXIT INT TERM HUP
+
 echo "=== Lantana VPS Backup ==="
 echo "Host:  $SSH_USER@$HOST:$PORT"
 echo "Key:   $KEY"
@@ -36,13 +39,19 @@ echo "Streaming tar over SSH (sudo on remote) ..."
 echo ""
 
 ssh -p "$PORT" -i "$KEY" "${SSH_USER}@${HOST}" \
-  "sudo tar cf - /etc/lantana /var/log/lantana /var/lib/lantana 2>/dev/null" \
-  | tar xvf - -C "$DEST" --strip-components=1
+  "sudo tar cf - /etc/lantana /var/log/lantana /var/lib/lantana" > "$TMP_TAR"
+
+if [ ! -s "$TMP_TAR" ]; then
+  echo "Error: received empty backup archive from ${SSH_USER}@${HOST}:${PORT}" >&2
+  exit 1
+fi
+
+tar xvf "$TMP_TAR" -C "$DEST"
 
 echo ""
 echo "=== Backup complete ==="
 echo "Location: $DEST"
 echo "---"
-du -sh "$DEST/etc" "$DEST/var/log" "$DEST/var/lib" 2>/dev/null || true
+du -sh "$DEST/etc/lantana" "$DEST/var/log/lantana" "$DEST/var/lib/lantana" 2>/dev/null || true
 echo "---"
 du -sh "$DEST"

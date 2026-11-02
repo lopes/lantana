@@ -9,7 +9,7 @@
 #   $3  PORT  SSH port on the remote host (required)
 #
 # Example:
-#   scripts/fetch-vps-data.sh 203.0.113.10 ~/.ssh/id_ed25519 60090
+#   scripts/fetch-vps-data.sh 203.0.113.10 ~/.ssh/id_ed25519 51820
 
 set -eu
 
@@ -27,6 +27,9 @@ DEST="$SCRIPT_DIR/../pipeline/tests/fixtures/live"
 
 mkdir -p "$DEST"
 
+TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/lantana-fetch.XXXXXX.tar")"
+trap 'rm -f "$TMP_TAR"' EXIT INT TERM HUP
+
 echo "=== Lantana VPS Data Fetch ==="
 echo "Host:  lantana@$HOST:$PORT"
 echo "Key:   $KEY"
@@ -35,9 +38,15 @@ echo ""
 echo "Streaming tar over SSH (sudo on remote, verbose) ..."
 echo ""
 
-ssh -p "$PORT" -i "$KEY" "lantana@$HOST" \
-  "sudo tar cf - /var/log/lantana /var/lib/lantana 2>/dev/null" \
-  | tar xvf - -C "$DEST" --strip-components=1
+ssh -p "$PORT" -i "$KEY" "lantana@${HOST}" \
+  "sudo tar cf - /var/log/lantana /var/lib/lantana" > "$TMP_TAR"
+
+if [ ! -s "$TMP_TAR" ]; then
+  echo "Error: received empty archive from lantana@${HOST}:${PORT}" >&2
+  exit 1
+fi
+
+tar xvf "$TMP_TAR" -C "$DEST" --strip-components=1
 
 echo ""
 echo "=== Fetch complete ==="
