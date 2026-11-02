@@ -89,10 +89,10 @@ class TestSanitizeErrorMessage:
     def test_shodan_url_key_redacted(self) -> None:
         msg = (
             "Client error '429 Too Many Requests' for url "
-            "'https://api.shodan.io/shodan/host/1.2.3.4?key=vN794DcKiMpK48MnhhKik2SwKtXxG4SJ'"
+            "'https://api.shodan.io/shodan/host/192.0.2.1?key=SYNTHETIC_TEST_SHODAN_KEY_000000'"
         )
         out = _sanitize_error_message(msg)
-        assert "vN794DcKiMpK48MnhhKik2SwKtXxG4SJ" not in out
+        assert "SYNTHETIC_TEST_SHODAN_KEY_000000" not in out
         assert "key=REDACTED" in out
 
     def test_multiple_sensitive_param_names(self) -> None:
@@ -108,10 +108,10 @@ class TestSanitizeErrorMessage:
         assert _sanitize_error_message(msg) == "https://x.com/y?Key=REDACTED"
 
     def test_param_not_at_start_of_query(self) -> None:
-        msg = "https://api.shodan.io/host/1.2.3.4?ipAddress=1.2.3.4&key=SECRET"
+        msg = "https://api.shodan.io/host/192.0.2.1?ipAddress=192.0.2.1&key=SECRET"
         out = _sanitize_error_message(msg)
         assert "SECRET" not in out
-        assert "ipAddress=1.2.3.4" in out
+        assert "ipAddress=192.0.2.1" in out
 
     def test_nonmatching_key_substring_preserved(self) -> None:
         # 'key' inside a path segment, JSON body, or as part of another word
@@ -164,7 +164,7 @@ class TestRecordError:
         errors: ErrorAccumulator = {}
         leaky_msg = (
             "Client error '429 Too Many Requests' for url "
-            "'https://api.shodan.io/shodan/host/1.2.3.4?key=REAL_KEY_VALUE'"
+            "'https://api.shodan.io/shodan/host/192.0.2.1?key=REAL_KEY_VALUE'"
         )
         _record_error(errors, "shodan", "rate_limit", leaky_msg)
         stored = errors[("shodan", "rate_limit")].error_message
@@ -273,7 +273,7 @@ class TestEnrichIocsWithProviderErrors:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
@@ -295,7 +295,7 @@ class TestEnrichIocsWithProviderErrors:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
@@ -316,7 +316,7 @@ class TestEnrichIocsWithProviderErrors:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
@@ -332,7 +332,7 @@ class TestEnrichIocsWithProviderErrors:
         provider = AsyncMock()
         provider.enrich_ip.return_value = EnrichmentResult(
             provider="test_provider",
-            ip="1.2.3.4",
+            ip="192.0.2.1",
             data={"score": 50},
             queried_at=datetime.now(tz=UTC),
         )
@@ -343,7 +343,7 @@ class TestEnrichIocsWithProviderErrors:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
@@ -358,7 +358,7 @@ class TestEnrichIocsWithProviderErrors:
         provider = AsyncMock()
         success_result = EnrichmentResult(
             provider="test_provider",
-            ip="1.2.3.4",
+            ip="192.0.2.1",
             data={"score": 50},
             queried_at=datetime.now(tz=UTC),
         )
@@ -374,14 +374,14 @@ class TestEnrichIocsWithProviderErrors:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4", "5.6.7.8"],
+            ["192.0.2.1", "198.51.100.2"],
             cache,
             errors,
         )
         cache.close()
 
         assert len(results) == 1
-        assert results[0].ip == "1.2.3.4"
+        assert results[0].ip == "192.0.2.1"
         assert cache_hits == 0
         assert ("test_provider", "rate_limit") in errors
 
@@ -396,11 +396,11 @@ class TestCacheBehaviour:
         cache = _make_cache(tmp_path)
         cached_result = EnrichmentResult(
             provider="test_provider",
-            ip="1.2.3.4",
+            ip="192.0.2.1",
             data={"abuseipdb_confidence_score": 90},
             queried_at=datetime.now(tz=UTC),
         )
-        _set_cached(cache, "test_provider", IOC_TYPE_IP, "1.2.3.4", cached_result)
+        _set_cached(cache, "test_provider", IOC_TYPE_IP, "192.0.2.1", cached_result)
 
         provider = AsyncMock()
         provider.enrich_ip.side_effect = AssertionError("provider must not be called on cache hit")
@@ -410,14 +410,14 @@ class TestCacheBehaviour:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
         cache.close()
 
         assert len(results) == 1
-        assert results[0].ip == "1.2.3.4"
+        assert results[0].ip == "192.0.2.1"
         assert results[0].data["abuseipdb_confidence_score"] == 90
         assert cache_hits == 1
         assert errors == {}
@@ -429,7 +429,7 @@ class TestCacheBehaviour:
         cache = _make_cache(tmp_path)
         fresh = EnrichmentResult(
             provider="test_provider",
-            ip="1.2.3.4",
+            ip="192.0.2.1",
             data={"score": 50},
             queried_at=datetime.now(tz=UTC),
         )
@@ -441,7 +441,7 @@ class TestCacheBehaviour:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
@@ -449,7 +449,7 @@ class TestCacheBehaviour:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
@@ -464,7 +464,7 @@ class TestCacheBehaviour:
 
     def test_get_cached_returns_none_when_missing(self, tmp_path: Path) -> None:
         cache = _make_cache(tmp_path)
-        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
+        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "192.0.2.1") is None
         cache.close()
 
     def test_get_cached_handles_malformed_row(self, tmp_path: Path) -> None:
@@ -481,7 +481,7 @@ class TestCacheBehaviour:
             (
                 "abuseipdb",
                 IOC_TYPE_IP,
-                "1.2.3.4",
+                "192.0.2.1",
                 "{not json}",
                 now.isoformat(),
                 (now + timedelta(days=1)).isoformat(),
@@ -489,7 +489,7 @@ class TestCacheBehaviour:
         )
         cache.commit()
 
-        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
+        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "192.0.2.1") is None
         cache.close()
 
     def test_expired_row_not_returned(self, tmp_path: Path) -> None:
@@ -502,14 +502,14 @@ class TestCacheBehaviour:
             (
                 "abuseipdb",
                 IOC_TYPE_IP,
-                "1.2.3.4",
+                "192.0.2.1",
                 json.dumps({"abuseipdb_risk_score": 90}),
                 (now - timedelta(days=10)).isoformat(),
                 (now - timedelta(seconds=1)).isoformat(),
             ),
         )
         cache.commit()
-        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
+        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "192.0.2.1") is None
         cache.close()
 
     def test_unexpired_row_returned(self, tmp_path: Path) -> None:
@@ -522,14 +522,14 @@ class TestCacheBehaviour:
             (
                 "abuseipdb",
                 IOC_TYPE_IP,
-                "1.2.3.4",
+                "192.0.2.1",
                 json.dumps({"abuseipdb_risk_score": 90}),
                 now.isoformat(),
                 (now + timedelta(days=30)).isoformat(),
             ),
         )
         cache.commit()
-        result = _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4")
+        result = _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "192.0.2.1")
         cache.close()
         assert result is not None
         assert result.data["abuseipdb_risk_score"] == 90
@@ -545,13 +545,13 @@ class TestCacheBehaviour:
             (
                 "abuseipdb",
                 IOC_TYPE_IP,
-                "1.2.3.4",
+                "192.0.2.1",
                 json.dumps({"abuseipdb_risk_score": 90}),
                 datetime.now(tz=UTC).isoformat(),
             ),
         )
         cache.commit()
-        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "1.2.3.4") is None
+        assert _get_cached(cache, "abuseipdb", IOC_TYPE_IP, "192.0.2.1") is None
         cache.close()
 
 
@@ -669,7 +669,7 @@ class TestErrorClassificationEndToEnd:
                 "abuseipdb",
                 provider,
                 IOC_TYPE_IP,
-                ["1.2.3.4"],
+                ["192.0.2.1"],
                 cache,
                 errors,
             )
@@ -694,7 +694,7 @@ class TestErrorClassificationEndToEnd:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
@@ -717,7 +717,7 @@ class TestErrorClassificationEndToEnd:
             "test_provider",
             provider,
             IOC_TYPE_IP,
-            ["1.2.3.4"],
+            ["192.0.2.1"],
             cache,
             errors,
         )
@@ -747,7 +747,7 @@ class TestCacheSchemaMigration:
         )
         legacy.execute(
             "INSERT INTO cache (key, provider, data, queried_at) VALUES (?, ?, ?, ?)",
-            ("abuseipdb:1.2.3.4", "abuseipdb", "{}", datetime.now(tz=UTC).isoformat()),
+            ("abuseipdb:192.0.2.1", "abuseipdb", "{}", datetime.now(tz=UTC).isoformat()),
         )
         legacy.commit()
         legacy.close()
@@ -794,7 +794,7 @@ class TestCacheSchemaMigration:
         v3.execute(
             "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            ("abuseipdb", IOC_TYPE_IP, "1.2.3.4", "{}", datetime.now(tz=UTC).isoformat()),
+            ("abuseipdb", IOC_TYPE_IP, "192.0.2.1", "{}", datetime.now(tz=UTC).isoformat()),
         )
         v3.commit()
         v3.close()
@@ -1661,3 +1661,45 @@ class TestDionaeaBinarySynthesisSchema:
             f"synthetic rows widened timestamp to {merged_df.schema['timestamp']}; "
             "expected Datetime to match every other dataset's silver"
         )
+        synth_rows = merged_df.filter(pl.col("eventid") == "dionaea.binary.captured")
+        assert synth_rows.get_column("server").to_list() == ["unknown"], (
+            "synthetic dionaea binary events must carry non-null server for silver partitioning"
+        )
+
+
+def test_sanitize_error_message_redacts_license_key() -> None:
+    """Ensure license_key query parameter is redacted alongside key/api_key."""
+    from lantana.enrichment.runner import _sanitize_error_message
+
+    raw = "GET https://download.maxmind.com/app/geoip_download?license_key=SECRET123&suffix=tar.gz"
+    sanitized = _sanitize_error_message(raw)
+    assert "SECRET123" not in sanitized
+    assert "license_key=REDACTED" in sanitized
+
+
+def test_init_cache_prunes_expired_rows_and_sets_wal(tmp_path: Path) -> None:
+    """_init_cache enables WAL mode and prunes rows whose expires_at is in the past."""
+    db_path = tmp_path / "wal_prune.db"
+    conn = _init_cache(db_path)
+    journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert str(journal_mode).lower() == "wal"
+
+    past_iso = datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC).isoformat()
+    future_iso = datetime(2099, 1, 1, 0, 0, 0, tzinfo=UTC).isoformat()
+    conn.execute(
+        "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("abuseipdb", IOC_TYPE_IP, "192.0.2.1", "{}", past_iso, past_iso),
+    )
+    conn.execute(
+        "INSERT INTO cache (provider, ioc_type, ioc_value, data, queried_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("abuseipdb", IOC_TYPE_IP, "198.51.100.2", "{}", past_iso, future_iso),
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = _init_cache(db_path)
+    remaining = [row[0] for row in reopened.execute("SELECT ioc_value FROM cache").fetchall()]
+    reopened.close()
+    assert remaining == ["198.51.100.2"]

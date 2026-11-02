@@ -173,6 +173,9 @@ def normalize_cowrie(df: pl.DataFrame) -> pl.DataFrame:
     if df.is_empty():
         return df
 
+    if "eventid" not in df.columns:
+        return df.clear()
+
     eventid_col = pl.col("eventid")
 
     is_login = eventid_col.str.starts_with("cowrie.login")
@@ -407,6 +410,9 @@ def normalize_suricata(df: pl.DataFrame) -> pl.DataFrame:
     if df.is_empty():
         return df
 
+    if "event_type" not in df.columns:
+        return df.clear()
+
     df = _flatten_suricata_alert_struct(df)
 
     is_alert = pl.col("event_type") == "alert"
@@ -595,10 +601,15 @@ def normalize_nftables(df: pl.DataFrame) -> pl.DataFrame:
         (pl.col("action") + " " + pl.col("chain")).alias("message"),
     )
 
-    # Rename: length -> traffic_bytes_in
-    result = result.with_columns(
-        pl.col("length").alias("traffic_bytes_in"),
-    )
+    # Rename: length -> traffic_bytes_in (guarded if absent)
+    if "length" in result.columns:
+        result = result.with_columns(
+            pl.col("length").alias("traffic_bytes_in"),
+        )
+    else:
+        result = result.with_columns(
+            pl.lit(None, dtype=pl.Int64).alias("traffic_bytes_in"),
+        )
 
     # Rename shared columns
     rename_map: dict[str, str] = {
@@ -771,9 +782,22 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         (pl.col("class_uid") * 100 + pl.col("activity_id")).alias("type_uid"),
     )
 
-    # message from connection_protocol + connection_type
+    # message: binary capture gets explicit description; connection events use protocol + type
+    proto_col = (
+        pl.col("connection_protocol").fill_null("")
+        if "connection_protocol" in result.columns
+        else pl.lit("")
+    )
+    conn_type_col = (
+        pl.col("connection_type").fill_null("")
+        if "connection_type" in result.columns
+        else pl.lit("")
+    )
     result = result.with_columns(
-        (pl.col("connection_protocol") + " " + pl.col("connection_type")).alias("message"),
+        pl.when(is_binary_capture)
+        .then(pl.lit("dionaea binary captured ") + pl.col("file_name").fill_null(""))
+        .otherwise(proto_col + pl.lit(" ") + conn_type_col)
+        .alias("message"),
     )
 
     # Rename shared columns

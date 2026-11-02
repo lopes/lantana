@@ -48,11 +48,10 @@ DST_IP_COLUMNS: list[str] = [
 # Columns that should contain ATTACKER source IPs, never the operation's own
 # infrastructure. Suricata captures both directions of every flow, so outbound
 # response packets from the honeypot itself end up with `src_ip = <our WAN>`.
-# Vector's Layer-1 source filter is supposed to drop those at ingest, but the
-# default per-honeypot filter only excludes the internal `network.prefixes.*`
-# CIDRs — not the WAN address. Until the Suricata Vector filter is extended to
-# also drop WAN-source events, drop_infrastructure_source_rows is the Layer-2
-# safety net.
+# Vector's Layer-1 source filters drop both internal `network.prefixes.*`
+# CIDRs and WAN-source events at ingest; `drop_infrastructure_source_rows`
+# serves as Layer-2 defense-in-depth in case any upstream filter is bypassed
+# or replayed from raw archives.
 SRC_IP_COLUMNS: list[str] = [
     "src_ip",
     "src_endpoint_ip",
@@ -72,6 +71,8 @@ ATTACKER_CONTENT_COLUMNS: list[str] = [
     "actor_process_cmd_line",
     "file_url",
     "file_path",
+    "file_name",
+    "destfile",
     "file_hash_sha256",
     "finding_title",
     "finding_category",
@@ -147,11 +148,44 @@ def _substring_redact_expr(col_name: str, pseudonym_map: dict[str, str]) -> pl.E
     inside a larger string (e.g. ``message`` carrying a kernel-log line that
     still has ``DST=<wan>``, or a download URL with the WAN IP in the host).
     ``str.replace_all`` operates on a literal string, no regex needed.
+    Sorted longest-key-first so a shorter prefix (e.g. ``10.50.99.1``) never
+    corrupts a longer address sharing that prefix (``10.50.99.100``).
     """
     expr = pl.col(col_name)
-    for real_ip, pseudonym in pseudonym_map.items():
+    for real_ip, pseudonym in sorted(
+        pseudonym_map.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
         expr = expr.str.replace_all(real_ip, pseudonym, literal=True)
     return expr.alias(col_name)
+
+
+def _build_dst_replacement_map(
+    df: pl.DataFrame,
+    col_name: str,
+    config: RedactionConfig,
+    parsed_pseudonyms: dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str],
+    parsed_infra: set[ipaddress.IPv4Address | ipaddress.IPv6Address],
+    cidr_nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+) -> dict[str, str]:
+    """Build exact string replacement map for an IP column including IPv6 variants and CIDRs."""
+    effective_map: dict[str, str] = dict(config.pseudonym_map)
+    if df.schema.get(col_name) != pl.Utf8:
+        return effective_map
+
+    infra_set = set(config.infrastructure_ips)
+    unique_vals = df.get_column(col_name).drop_nulls().unique().to_list()
+    for val in unique_vals:
+        if not isinstance(val, str) or val in effective_map:
+            continue
+        try:
+            addr = ipaddress.ip_address(val)
+        except ValueError:
+            continue
+        if addr in parsed_pseudonyms:
+            effective_map[val] = parsed_pseudonyms[addr]
+        elif val in infra_set or addr in parsed_infra or any(addr in net for net in cidr_nets):
+            effective_map[val] = "redacted-infra"
+    return effective_map
 
 
 def redact_infrastructure_ips(
@@ -162,14 +196,14 @@ def redact_infrastructure_ips(
 
     Two passes:
 
-    1. **IP-typed columns** (``DST_IP_COLUMNS``) — exact-match swap. Each
-       row's destination address is either an infra IP (pseudonymize) or it
-       isn't (leave alone).
+    1. **IP-typed columns** (``DST_IP_COLUMNS``) — exact-match swap plus
+       expanded/compressed IPv6 normalization and CIDR fallback to
+       ``"redacted-infra"``.
     2. **Attacker-content columns** (``ATTACKER_CONTENT_COLUMNS``) —
-       substring replacement, because the WAN address can be embedded in
-       arbitrary attacker-supplied text (kernel-log messages preserved in
-       ``message``, malicious download URLs, commands, or the WAN IP itself
-       used as a password attempt).
+       substring replacement (longest-prefix-first), because the WAN address
+       can be embedded in arbitrary attacker-supplied text (kernel-log
+       messages preserved in ``message``, malicious download URLs, commands,
+       or the WAN IP itself used as a password attempt).
 
     Source-IP columns are intentionally NOT redacted here:
     ``drop_infrastructure_source_rows`` removes the rows entirely upstream.
@@ -185,8 +219,32 @@ def redact_infrastructure_ips(
     if not dst_columns and not content_columns:
         return df
 
+    parsed_pseudonyms: dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str] = {}
+    for real_ip, pseudonym in config.pseudonym_map.items():
+        try:
+            parsed_pseudonyms[ipaddress.ip_address(real_ip)] = pseudonym
+        except ValueError:
+            continue
+
+    parsed_infra: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for ip_str in config.infrastructure_ips:
+        try:
+            parsed_infra.add(ipaddress.ip_address(ip_str))
+        except ValueError:
+            continue
+
+    cidr_nets = [ipaddress.ip_network(cidr) for cidr in config.infrastructure_cidrs]
+
     def _apply_dst(frame: pl.DataFrame, col_name: str) -> pl.DataFrame:
-        return frame.with_columns(_exact_match_redact_expr(col_name, config.pseudonym_map))
+        effective_map = _build_dst_replacement_map(
+            frame,
+            col_name,
+            config,
+            parsed_pseudonyms,
+            parsed_infra,
+            cidr_nets,
+        )
+        return frame.with_columns(_exact_match_redact_expr(col_name, effective_map))
 
     def _apply_content(frame: pl.DataFrame, col_name: str) -> pl.DataFrame:
         return frame.with_columns(_substring_redact_expr(col_name, config.pseudonym_map))

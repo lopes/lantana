@@ -231,3 +231,73 @@ class TestGenerateBundle:
         assert isinstance(bundle, stix2.Bundle)
         identities = [o for o in bundle.objects if o.type == "identity"]
         assert len(identities) == 1
+
+    def test_ipv6_indicator_pattern_and_tlp_clear(self) -> None:
+        """IPv6 addresses emit [ipv6-addr:value = ...] patterns and CLEAR maps to TLP_WHITE."""
+        reporting = _reporting()
+        reporting.sharing.tlp = "CLEAR"
+        rep = _make_reputation().with_columns(
+            pl.Series("src_endpoint_ip", ["2001:db8::50", "198.51.100.22", "192.0.2.99"])
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            reporting,
+            rep,
+            _make_progression(),
+            _make_clusters(),
+        )
+        indicators = [o for o in bundle.objects if o.type == "indicator"]
+        v6_ind = next(i for i in indicators if i.name == "2001:db8::50")
+        assert v6_ind.pattern == "[ipv6-addr:value = '2001:db8::50']"
+        assert stix2.TLP_WHITE.id in v6_ind.object_marking_refs
+
+    def test_malware_hash_indicator_linked_via_indicates_relationship(self) -> None:
+        """File-hash Indicator SDOs connect to Malware SDOs via an 'indicates' Relationship."""
+        sha = "f" * 64
+        summary = pl.DataFrame(
+            {
+                "downloads_captured": [1],
+                "top_download_hashes": [[{"value": sha, "count": 1}]],
+            }
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            summary=summary,
+        )
+        malwares = [o for o in bundle.objects if o.type == "malware"]
+        hash_inds = [
+            o for o in bundle.objects if o.type == "indicator" and o.name == f"file-{sha[:12]}"
+        ]
+        rels = [
+            o
+            for o in bundle.objects
+            if o.type == "relationship"
+            and o.source_ref == hash_inds[0].id
+            and o.target_ref == malwares[0].id
+        ]
+        assert len(malwares) == 1
+        assert len(hash_inds) == 1
+        assert len(rels) == 1
+        assert rels[0].relationship_type == "indicates"
+        assert len(rels[0].object_marking_refs) > 0
+
+    def test_infrastructure_ip_leak_raises_value_error(self) -> None:
+        """generate_bundle raises ValueError if an infrastructure IP leaks into the bundle."""
+        import pytest
+
+        reporting = _reporting()
+        leaking_rep = _make_reputation().with_columns(
+            pl.Series("src_endpoint_ip", ["10.50.99.100", "198.51.100.22", "192.0.2.99"])
+        )
+        with pytest.raises(ValueError, match="Infrastructure IP leak"):
+            generate_bundle(
+                date(2026, 4, 25),
+                reporting,
+                leaking_rep,
+                _make_progression(),
+                _make_clusters(),
+            )

@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
@@ -351,14 +351,14 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "maxminddb", specifier = ">=2.6" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.1.0" },
-    { name = "plotly", specifier = ">=6.8.0" },
-    { name = "polars", specifier = ">=1.42.0" },
+    { name = "plotly", specifier = ">=7.1.0" },
+    { name = "polars", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.4.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.19" },
     { name = "stix2", specifier = ">=3.0" },
-    { name = "streamlit", specifier = ">=1.58.0" },
+    { name = "streamlit", specifier = ">=1.66.1" },
     { name = "structlog", specifier = ">=26.1.0" },
     { name = "tenacity", specifier = ">=9.0" },
 ]

@@ -63,6 +63,7 @@ _BINARY_MAX_BYTES: int = 100 * 1024 * 1024  # 100 MiB cap shared with disk-scan
 def extract_dionaea_binary_events(
     sensor_dir: Path,
     target_date: date,
+    default_server: str = "unknown",
 ) -> list[dict[str, Any]]:
     """Build synthetic OCSF-bound events for dionaea-captured binaries.
 
@@ -85,6 +86,7 @@ def extract_dionaea_binary_events(
         shasum            = SHA-256 of the file contents
         binary_file_name  = on-disk filename (typically MD5)
         dataset           = ``dionaea``
+        server            = ``default_server`` (inferred from bronze or ``unknown``)
 
     The runner concats these onto dionaea bronze; normalize_dionaea
     then dispatches them to ``class_uid=CLASS_FILE_ACTIVITY`` with the
@@ -125,6 +127,7 @@ def extract_dionaea_binary_events(
                 "shasum": sha,
                 "binary_file_name": file_path.name,
                 "dataset": "dionaea",
+                "server": default_server,
             }
         )
     return events
@@ -197,7 +200,7 @@ def filter_internal_ips(ips: set[str], config: RedactionConfig) -> set[str]:
        Providers have no threat intel on these by construction; sending
        them burns rate-limit budget and, for some providers, triggers
        KeyError paths on sparse 200 responses (observed in op_alpha's
-       first run, where `10.69.215.134` blew up VirusTotal parsing).
+       first run, where `198.51.100.42` blew up VirusTotal parsing).
     """
     infra_set = set(config.infrastructure_ips)
     cidr_nets = [ipaddress.ip_network(cidr) for cidr in config.infrastructure_cidrs]

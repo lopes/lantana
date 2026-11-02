@@ -39,7 +39,7 @@ import argparse
 import asyncio
 import json
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -292,5 +292,5 @@ def main() -> None:
         help="Re-alert even if the marker says we already did.",
     )
     args = parser.parse_args()
-    target = args.date if args.date is not None else date.today() - timedelta(days=1)
+    target = args.date if args.date is not None else datetime.now(UTC).date() - timedelta(days=1)
     asyncio.run(run_alerter(target, force=args.force))

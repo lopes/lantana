@@ -196,6 +196,8 @@ def _init_cache(db_path: Path) -> sqlite3.Connection:
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(cache)").fetchall()}
     if existing_cols and "ioc_type" not in existing_cols:
         logger.info(
@@ -225,6 +227,11 @@ def _init_cache(db_path: Path) -> sqlite3.Connection:
         "  expires_at TEXT,"
         "  PRIMARY KEY (provider, ioc_type, ioc_value)"
         ")"
+    )
+    now_iso = datetime.now(tz=UTC).isoformat()
+    conn.execute(
+        "DELETE FROM cache WHERE expires_at IS NOT NULL AND expires_at <= ?",
+        (now_iso,),
     )
     conn.commit()
     return conn
@@ -310,7 +317,7 @@ ErrorAccumulator = dict[tuple[str, str], EnrichmentError]
 # in cleartext, get read by the alerter, and potentially Discord-embedded.
 # Headers-based auth (AbuseIPDB / VirusTotal / GreyNoise) is unaffected;
 # headers never appear in the error string.
-_SENSITIVE_QUERY_PARAMS = ("key", "api_key", "apikey", "token", "access_token")
+_SENSITIVE_QUERY_PARAMS = ("key", "api_key", "apikey", "license_key", "token", "access_token")
 _SENSITIVE_QUERY_RE = re.compile(
     r"([?&])(" + "|".join(_SENSITIVE_QUERY_PARAMS) + r")=[^&\s'\"]+",
     flags=re.IGNORECASE,
@@ -730,7 +737,14 @@ async def run_enrichment(
         # silver → gold → brief. Diagonal-relaxed concat tolerates the
         # schema delta (synthetic rows lack credential_* / src_ip / dst_ip;
         # bronze rows lack shasum / binary_file_name).
-        binary_events = extract_dionaea_binary_events(sensor_dir, target_date)
+        default_server = "unknown"
+        if "dionaea" in dfs and "server" in dfs["dionaea"].columns:
+            non_null_servers = dfs["dionaea"].get_column("server").drop_nulls().to_list()
+            if non_null_servers:
+                default_server = str(non_null_servers[0])
+        binary_events = extract_dionaea_binary_events(
+            sensor_dir, target_date, default_server=default_server
+        )
         if binary_events:
             synth_df = pl.DataFrame(binary_events)
             if "dionaea" in dfs:
@@ -911,9 +925,8 @@ async def run_enrichment(
                     continue
 
                 # Drop outbound-response noise where the honeypot itself appears
-                # as source (Suricata sees both flow directions; Vector's
-                # Layer-1 filter currently catches internal-prefix sources but
-                # not WAN sources).
+                # as source (Layer 1 Vector filters drop internal-prefix and WAN
+                # sources at ingest; this provides Layer 2 defense-in-depth).
                 row_count_before = normalized_df.height
                 cleaned_df = drop_infrastructure_source_rows(normalized_df, redact_config)
                 dropped = row_count_before - cleaned_df.height
@@ -926,6 +939,8 @@ async def run_enrichment(
                 redacted_df = redact_infrastructure_ips(cleaned_df, redact_config)
                 validate_no_leaks(redacted_df, redact_config)
 
+                if "server" in redacted_df.columns:
+                    redacted_df = redacted_df.with_columns(pl.col("server").fill_null("unknown"))
                 servers = (
                     redacted_df.get_column("server").unique().to_list()
                     if "server" in redacted_df.columns
@@ -981,5 +996,5 @@ def main() -> None:
         help="Date to enrich (UTC). Defaults to yesterday.",
     )
     args = parser.parse_args()
-    target = args.date if args.date is not None else date.today() - timedelta(days=1)
+    target = args.date if args.date is not None else datetime.now(UTC).date() - timedelta(days=1)
     asyncio.run(run_enrichment(target))

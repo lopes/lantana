@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DEFAULT_SECRETS_PATH = Path("/etc/lantana/collector/secrets.json")
 DEFAULT_REPORTING_PATH = Path("/etc/lantana/collector/reporting.json")
@@ -69,12 +69,26 @@ class OperatorConfig(BaseModel):
     pgp_fingerprint: str
 
 
+_VALID_TLP_VALUES: frozenset[str] = frozenset(
+    {"CLEAR", "WHITE", "GREEN", "AMBER", "AMBER+STRICT", "RED"}
+)
+
+
 class SharingConfig(BaseModel):
     """Intelligence sharing policy."""
 
-    tlp: str
+    tlp: str = "GREEN"
     community: str
     discord_channel: str
+
+    @field_validator("tlp")
+    @classmethod
+    def _validate_tlp(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized not in _VALID_TLP_VALUES:
+            msg = f"Invalid TLP level '{value}'; expected one of {sorted(_VALID_TLP_VALUES)}"
+            raise ValueError(msg)
+        return normalized
 
 
 class OperationConfig(BaseModel):

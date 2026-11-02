@@ -57,6 +57,16 @@ def _network_rule_indicator_count(detection: pl.DataFrame) -> int:
     return detection.filter(pl.col("unique_ips") >= 5).height
 
 
+@st.cache_data
+def _cached_raw_ioc_export(selected_date: date) -> tuple[bytes, int] | None:
+    """Compute and cache gzipped raw IOC CSV for a given date."""
+    from lantana.intel.iocs import build_raw_ioc_export
+
+    reputation = read_gold_table("ip_reputation", selected_date)
+    silver = read_silver_partition(selected_date)
+    return build_raw_ioc_export(silver, reputation)
+
+
 def render(selected_date: date) -> None:
     """Render the STIX export page for the selected date."""
     st.header(f"STIX Export — {selected_date.isoformat()}")
@@ -147,10 +157,7 @@ def render(selected_date: date) -> None:
     if raw_caption:
         st.caption(raw_caption)
 
-    from lantana.intel.iocs import build_raw_ioc_export
-
-    silver = read_silver_partition(selected_date)
-    csv_gz = build_raw_ioc_export(silver, reputation)
+    csv_gz = _cached_raw_ioc_export(selected_date)
     if csv_gz is None:
         st.info("No silver IOCs available for this date.")
     else:

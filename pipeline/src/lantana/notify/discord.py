@@ -83,7 +83,7 @@ async def send_notification(
         logger.info("discord_sent", level=level, title=title, status=resp.status_code)
 
 
-def generate_and_send() -> None:
+def generate_and_send(argv: list[str] | None = None) -> None:
     """CLI entry point for lantana-report.
 
     Merged daily flow: loads yesterday's enrichment errors, classifies them
@@ -92,9 +92,10 @@ def generate_and_send() -> None:
     (markdown) is attached. Replaces the previous split between
     ``lantana-alert`` and ``lantana-report``.
     """
+    import argparse
     import asyncio
     import tempfile
-    from datetime import date, timedelta
+    from datetime import UTC, date, datetime, timedelta
     from pathlib import Path
 
     import polars as pl
@@ -105,7 +106,23 @@ def generate_and_send() -> None:
     from lantana.notify.report import generate_daily_brief, generate_embed_summary
     from lantana.notify.timing import collect_step_timings
 
-    yesterday = date.today() - timedelta(days=1)
+    parser = argparse.ArgumentParser(
+        prog="lantana-report",
+        description="Generate and send the daily Lantana intelligence brief to Discord.",
+    )
+    parser.add_argument(
+        "--date",
+        type=date.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Date to report on (UTC). Defaults to yesterday.",
+    )
+    parsed_args, _ = parser.parse_known_args(argv)
+    target_date = (
+        parsed_args.date
+        if parsed_args.date is not None
+        else datetime.now(UTC).date() - timedelta(days=1)
+    )
     secrets = load_secrets()
     reporting = load_reporting()
 
@@ -115,7 +132,7 @@ def generate_and_send() -> None:
 
     # Pipeline-health classification — single source of truth for the embed
     # color and the brief's Pipeline Health section.
-    error_rows = load_errors_for_date(DEFAULT_ERRORS_PATH, yesterday)
+    error_rows = load_errors_for_date(DEFAULT_ERRORS_PATH, target_date)
     buckets = categorize_errors(error_rows)
 
     # Per-step duration from systemd. Report self-timing is intentionally
@@ -132,12 +149,12 @@ def generate_and_send() -> None:
     # optional in generate_daily_brief (they gate the Geographic Origin
     # and Detection Highlights sections); the prior code omitted them
     # and those sections were silently dropped from every report.
-    summary = read_gold_table("daily_summary", yesterday)
-    reputation = read_gold_table("ip_reputation", yesterday)
-    progression = read_gold_table("behavioral_progression", yesterday)
-    clusters = read_gold_table("campaign_clusters", yesterday)
-    geographic = read_gold_table("geographic_summary", yesterday)
-    detection = read_gold_table("detection_findings", yesterday)
+    summary = read_gold_table("daily_summary", target_date)
+    reputation = read_gold_table("ip_reputation", target_date)
+    progression = read_gold_table("behavioral_progression", target_date)
+    clusters = read_gold_table("campaign_clusters", target_date)
+    geographic = read_gold_table("geographic_summary", target_date)
+    detection = read_gold_table("detection_findings", target_date)
 
     # Silver feeds two brief sections:
     #   - Malware Captured: VT family/type/detections looked up by SHA256
@@ -149,7 +166,7 @@ def generate_and_send() -> None:
     # already tolerate. An empty/missing partition collapses to an empty
     # DataFrame and both sections degrade gracefully.
     try:
-        silver = read_silver_partition(yesterday).collect()
+        silver = read_silver_partition(target_date).collect()
     except (FileNotFoundError, pl.exceptions.PolarsError) as exc:
         logger.warning(
             "silver_read_failed",
@@ -160,7 +177,7 @@ def generate_and_send() -> None:
 
     # Generate report with health classification + per-step timing embedded.
     brief = generate_daily_brief(
-        yesterday,
+        target_date,
         summary,
         reputation,
         progression,
@@ -171,9 +188,10 @@ def generate_and_send() -> None:
         buckets=buckets,
         timing=timings,
         silver=silver,
+        tlp=reporting.sharing.tlp,
     )
     embed_text = generate_embed_summary(
-        yesterday,
+        target_date,
         summary,
         progression,
         buckets=buckets,
@@ -185,7 +203,7 @@ def generate_and_send() -> None:
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".md",
-        prefix=f"lantana-brief-{yesterday.isoformat()}-",
+        prefix=f"lantana-brief-{target_date.isoformat()}-",
         delete=False,
     ) as f:
         f.write(brief)
@@ -196,7 +214,7 @@ def generate_and_send() -> None:
             send_notification(
                 webhook_url=secrets.discord_webhook,
                 level=level,
-                title=f"Lantana Daily Brief — {yesterday.isoformat()}",
+                title=f"Lantana Daily Brief — {target_date.isoformat()}",
                 message=embed_text,
                 attachment_path=str(report_path),
             )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import streamlit as st
 import streamlit.runtime
@@ -27,7 +27,7 @@ def _setup_sidebar() -> date:
     st.sidebar.caption("Intelligence Console")
 
     available_dates = list_gold_dates("daily_summary", gold_root=GOLD_ROOT)
-    yesterday = date.today() - timedelta(days=1)
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
 
     if available_dates:
         default_idx = available_dates.index(yesterday) if yesterday in available_dates else 0
