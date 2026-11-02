@@ -20,5 +20,6 @@ reporting:
   # The actual IPs to redact are derived from network.yml at template render time
   pseudonym_map:
     wan: "honeypot-wan"
+    lan: "honeypot-lan"
     sensor_01: "honeypot-sensor-01"
     collector_01: "honeypot-collector-01"

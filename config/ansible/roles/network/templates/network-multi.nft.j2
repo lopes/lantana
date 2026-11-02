@@ -12,7 +12,7 @@ define COLLECTOR_IP6   = {{ network.collectors.collector_01.ipv6.split('/')[0] }
 # --- FORWARD PLANE ---
 table inet lantana-forward {
   chain forward {
-    type filter hook forward priority 0;
+    type filter hook forward priority 0; policy drop;
 
     # Inline IDS
     ip protocol { tcp, udp } queue num 0 bypass
@@ -24,13 +24,17 @@ table inet lantana-forward {
     iif $WAN_IF oif $LAN_IF ip daddr $SENSOR_IP4 accept
     iif $WAN_IF oif $LAN_IF ip6 daddr $SENSOR_IP6 accept
 
-    # Sensor → WAN
-    iif $LAN_IF ip saddr $SENSOR_IP4 oif $WAN_IF accept
-    iif $LAN_IF ip6 saddr $SENSOR_IP6 oif $WAN_IF accept
+    # Sensor → Collector (Vector telemetry)
+    iif $LAN_IF ip saddr $SENSOR_IP4 ip daddr $COLLECTOR_IP4 tcp dport {{ network.collectors.collector_01.port }} accept
+    iif $LAN_IF ip6 saddr $SENSOR_IP6 ip6 daddr $COLLECTOR_IP6 tcp dport {{ network.collectors.collector_01.port }} accept
 
     # Collector → Sensor
     iif $LAN_IF ip saddr $COLLECTOR_IP4 ip daddr $SENSOR_IP4 accept
     iif $LAN_IF ip6 saddr $COLLECTOR_IP6 ip6 daddr $SENSOR_IP6 accept
+
+    # Sensor → WAN (tightened: block new outbound connections from sensors)
+    iif $LAN_IF ip saddr $SENSOR_IP4 oif $WAN_IF ct state new counter drop
+    iif $LAN_IF ip6 saddr $SENSOR_IP6 oif $WAN_IF ct state new counter drop
 
     counter drop
   }

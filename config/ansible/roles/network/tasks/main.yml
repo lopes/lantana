@@ -25,6 +25,7 @@
     owner: root
     group: root
     mode: "0600"
+  notify: "Reload nftables"
   tags: [network, nftables]
 
 - name: "Enable nftables service"
@@ -44,14 +45,4 @@
 - name: "Configure Multi Node specific networking"
   ansible.builtin.include_tasks: multi_node.yml
   when: lantana.mode == "multi"
-  tags: [network]
-
-# --- SERVICE RESTART ---
-- name: "Restart systemd-networkd"
-  become: true
-  ansible.builtin.service:
-    name: systemd-networkd
-    state: restarted
-  async: 45
-  poll: 0
   tags: [network]

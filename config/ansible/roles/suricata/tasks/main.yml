@@ -51,6 +51,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  notify: "Restart Suricata"
   tags: [suricata]
 
 - name: "Deploy Suricata configuration"
@@ -62,6 +63,7 @@
     group: root
     mode: "0644"
     validate: /usr/bin/suricata -T -c %s
+  notify: "Restart Suricata"
   tags: [suricata]
 
 # --- SURICATA LOGGING ---

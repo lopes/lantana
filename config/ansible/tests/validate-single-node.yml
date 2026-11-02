@@ -127,23 +127,31 @@
         fail_msg: "Log rotation file {{ item.item }} is missing."
       loop: "{{ logrotate_check.results }}"
 
-    - name: "Check Cron Jobs (logs + monthly GeoIP)"
+    - name: "Check logrotate cron job"
       # Pipeline jobs (prune / enrich / transform / alert / report) moved
       # from cron to systemd timers in 2026-05-22's deploy refactor;
       # /etc/cron.d/lantana-pipeline no longer exists. Only the logrotate
-      # cron and the monthly GeoIP refresh stay on cron.
+      # cron and the optional monthly GeoIP refresh stay on cron.
       ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - /etc/cron.d/lantana-logs
-        - /etc/cron.d/lantana-geoip-update
-      register: cron_check
+        path: /etc/cron.d/lantana-logs
+      register: logs_cron_check
 
-    - name: "Assert Cron Jobs exist"
+    - name: "Assert logrotate cron job exists"
       ansible.builtin.assert:
-        that: "item.stat.exists"
-        fail_msg: "Cron job {{ item.item }} is missing."
-      loop: "{{ cron_check.results }}"
+        that: "logs_cron_check.stat.exists"
+        fail_msg: "Cron job /etc/cron.d/lantana-logs is missing."
+
+    - name: "Check monthly GeoIP refresh cron job (when MaxMind key is configured)"
+      ansible.builtin.stat:
+        path: /etc/cron.d/lantana-geoip-update
+      register: geoip_cron_check
+      when: vault_apikey_maxmind is defined and (vault_apikey_maxmind | length > 0)
+
+    - name: "Assert monthly GeoIP refresh cron job exists"
+      ansible.builtin.assert:
+        that: "geoip_cron_check.stat.exists"
+        fail_msg: "Cron job /etc/cron.d/lantana-geoip-update is missing."
+      when: vault_apikey_maxmind is defined and (vault_apikey_maxmind | length > 0)
 
     # lantana-alert.timer was retired when the daily brief absorbed the
     # alerter's role (single Discord message at 06:00). Four timers now
@@ -199,7 +207,7 @@
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
-        - /var/log/lantana/honeywall/firewall.log
+        - /var/log/lantana/honeywall/nftables/firewall.log
       register: logfile_check
 
     - name: "Report on Log File Status"

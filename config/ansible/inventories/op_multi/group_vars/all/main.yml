@@ -4,7 +4,7 @@
 ansible_user: "lantana"
 # ansible_become_password: use --ask-become-pass or set vault_become_password in vault.yml
 # ansible_become_password: "{{ vault_become_password }}"
-ansible_port: "60090"
+ansible_port: "51820"
 ansible_private_key_file: "~/.ssh/id_ed25519"
 
 # --- LANTANA PLATFORM CONFIGURATION ---

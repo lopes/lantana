@@ -11,7 +11,7 @@ narrative:
     country: "MX"
     state: "Mexico City"
     locality: "Mexico City"
-    common_name: "portal.finasol.mx"
+    common_name: "portal.example.com"
 
   # Fake Host Profile (What the attacker sees during recon)
   host:

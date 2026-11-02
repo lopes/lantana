@@ -8,8 +8,6 @@
     root: /opt/dionaea/var/lib/dionaea/wwwroot
     ports:
       - 80
-    ssl_ports:
-      - 443
     max_request_size: 32768
     global_headers:
       - ["Server", "{{ narrative.services.http.server_header }}"]

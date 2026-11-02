@@ -8,12 +8,12 @@
 # docs/honeypots.md ("Disabling a Dionaea service") for the procedure.
 #
 # Three rendered artefacts iterate this catalog:
-#   - templates/services/<svc>.yaml.j2 — per-service Dionaea config
-#   - templates/dionaea.container.j2   — Quadlet PublishPort lines
-#   - templates/dionaea.nft.j2         — nftables DNAT + accept rules
+#   - templates/services-enabled/<svc>.yaml.j2 — per-service Dionaea config
+#   - templates/dionaea.container.j2           — Quadlet PublishPort lines
+#   - templates/dionaea.nft.j2                 — nftables DNAT + accept rules
 #
 # To add a new service permanently: add a catalog entry here, drop a
-# matching templates/services/<svc>.yaml.j2 file, and the next deploy
+# matching templates/services-enabled/<svc>.yaml.j2 file, and the next deploy
 # picks it up.
 #
 # Fields:

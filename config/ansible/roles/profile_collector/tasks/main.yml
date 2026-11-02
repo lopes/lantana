@@ -188,6 +188,7 @@
   vars:
     job_binary: "{{ item.binary }}"
     job_description: "{{ item.description }}"
+  notify: "Reload systemd daemon"
   tags: [collector, pipeline]
 
 - name: "Deploy pipeline systemd timer units"
@@ -215,6 +216,7 @@
     job_binary: "{{ item.binary }}"
     job_description: "{{ item.description }}"
     on_calendar: "{{ item.calendar }}"
+  notify: "Reload systemd daemon"
   tags: [collector, pipeline]
 
 # lantana-alert has a .service unit but no .timer — the daily brief

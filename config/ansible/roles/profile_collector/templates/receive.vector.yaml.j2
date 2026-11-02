@@ -1,5 +1,6 @@
 # /etc/vector/conf.d/receive.yaml
 # Managed by Ansible
+{% if vault_apikey_maxmind is defined and vault_apikey_maxmind | length > 0 %}
 
 enrichment_tables:
   geoip_city:
@@ -8,11 +9,12 @@ enrichment_tables:
   geoip_asn:
     type: geoip
     path: /var/lib/lantana/collector/geoip/GeoLite2-ASN.mmdb
+{% endif %}
 
 sources:
   receive_from_edges:
     type: vector
-    address: "0.0.0.0:{{ network.collectors.collector_01.port }}"
+    address: "{{ network.collectors.collector_01.ipv4.split('/')[0] }}:{{ network.collectors.collector_01.port }}"
     version: "2"
 
 transforms:
@@ -21,6 +23,9 @@ transforms:
     inputs:
       - receive_from_edges
     source: |-
+      .dataset = replace(to_string(.dataset) ?? "unknown", r'[^a-zA-Z0-9_-]', "_")
+      .server = replace(to_string(.server) ?? "unknown", r'[^a-zA-Z0-9_-]', "_")
+{% if vault_apikey_maxmind is defined and vault_apikey_maxmind | length > 0 %}
       ip = to_string(.src_ip) ?? to_string(.source.ip) ?? ""
       if ip != "" {
         city_data = get_enrichment_table_record("geoip_city", {"ip": ip}) ?? {}
@@ -43,6 +48,7 @@ transforms:
         .geo.asn = get(asn_data, ["autonomous_system_number"]) ?? null
         .geo.isp = get(asn_data, ["autonomous_system_organization"]) ?? ""
       }
+{% endif %}
 
 sinks:
   write_to_datalake:

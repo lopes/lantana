@@ -9,6 +9,7 @@ exclude_paths:
   # They are not lintable without decryption, and they should never be linted in CI
   # (the public CI runner has no business touching production inventories).
   - config/ansible/inventories/op_*/
+  - inventories/op_*/
   # Ansible's own collection cache and lint cache directories.
   - .ansible/
   - .cache/

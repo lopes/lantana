@@ -28,9 +28,14 @@ table ip6 lantana_nat6 {
 
 # --- FILTER TABLE ---
 table inet lantana_filter {
-    set allowed_egress_ports {
+    set allowed_egress_tcp_ports {
         type inet_service
-        elements = { 53, 80, 123, 443 }
+        elements = { 53, 80, 443 }
+    }
+
+    set allowed_egress_udp_ports {
+        type inet_service
+        elements = { 53, 67, 123, 547 }
     }
 
     # 1. INPUT: Traffic destined for the honeywall itself
@@ -48,10 +53,6 @@ table inet lantana_filter {
         # Management: admin SSH on custom port
         tcp dport {{ ansible_port }} accept
 
-        # Allow Vector telemetry from sensors and collectors on LAN
-        iifname $LAN_IF ip saddr $COLLECTOR_IP4 tcp dport {{ network.collectors.collector_01.port }} accept
-        iifname $LAN_IF ip6 saddr $COLLECTOR_IP6 tcp dport {{ network.collectors.collector_01.port }} accept
-
         # ICMP/ICMPv6 - rate limited
         icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, echo-request, echo-reply } limit rate 10/second burst 20 packets accept
         ip protocol icmp icmp type echo-request limit rate 10/second burst 20 packets accept
@@ -65,6 +66,10 @@ table inet lantana_filter {
         # Core state
         ct state established,related accept
         ct state invalid drop
+
+        # Allow Vector telemetry from sensors to collector on LAN
+        iifname $LAN_IF ip saddr $SENSOR_IP4 ip daddr $COLLECTOR_IP4 tcp dport {{ network.collectors.collector_01.port }} accept
+        iifname $LAN_IF ip6 saddr $SENSOR_IP6 ip6 daddr $COLLECTOR_IP6 tcp dport {{ network.collectors.collector_01.port }} accept
 
         # Strict egress containment: block new outbound from sensors
         iifname $LAN_IF oifname $WAN_IF ct state new limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP_EGRESS] " drop
@@ -81,9 +86,9 @@ table inet lantana_filter {
         # Allow LAN communication (honeywall to sensors/collectors)
         oifname $LAN_IF accept
 
-        # Maintenance: DNS, HTTP, NTP, HTTPS
-        udp dport @allowed_egress_ports accept
-        tcp dport @allowed_egress_ports accept
+        # Maintenance: DNS, DHCP, HTTP, NTP, HTTPS, DHCPv6
+        udp dport @allowed_egress_udp_ports accept
+        tcp dport @allowed_egress_tcp_ports accept
 
         # ICMP/ICMPv6
         ip protocol icmp accept

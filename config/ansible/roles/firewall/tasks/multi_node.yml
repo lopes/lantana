@@ -1,4 +1,26 @@
 ---
+# --- PLUGIN INFRASTRUCTURE ---
+- name: "[Multi] Create sensor firewall rule directory"
+  become: true
+  ansible.builtin.file:
+    path: /etc/lantana/honeywall/nftables/sensors
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [nftables]
+
+- name: "[Multi] Create generic placeholder rule to prevent glob errors"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/lantana/honeywall/nftables/sensors/00-void.nft
+    content: "# Placeholder file to allow empty includes (do not delete)\n"
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [nftables]
+
+# --- RULE DEPLOYMENT ---
 - name: "[Multi] Deploy firewall rules"
   become: true
   ansible.builtin.template:
@@ -7,7 +29,6 @@
     owner: root
     group: root
     mode: "0600"
-    validate: /usr/sbin/nft -c -f %s
   notify: "Reload nftables"
   tags: [nftables]
 
@@ -25,4 +46,13 @@
     mode: "0755"
     validate: /usr/sbin/nft -c -f %s
   notify: "Reload nftables"
+  tags: [nftables]
+
+# --- SERVICE STATE ---
+- name: "[Multi] Ensure nftables service is enabled and started"
+  become: true
+  ansible.builtin.service:
+    name: nftables
+    state: started
+    enabled: true
   tags: [nftables]

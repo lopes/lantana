@@ -30,6 +30,7 @@ write_files:
 runcmd:
   - sed -i -E 's/^[[:space:]]*Port[[:space:]]+22[[:space:]]*$/#&/' /etc/ssh/sshd_config
   - systemctl list-unit-files ssh.socket >/dev/null 2>&1 && systemctl disable --now ssh.socket || true
+  - mkdir -p -m 0755 /run/sshd
   - sshd -t
   - systemctl enable ssh.service
   - systemctl restart ssh.service
