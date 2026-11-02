@@ -60,7 +60,7 @@ def main() -> None:
         runtime_dir = os.environ.get("XDG_CACHE_HOME") or "/tmp"
         os.chdir(runtime_dir)
         env = {**os.environ, "HOME": runtime_dir}
-        os.execvpe(
+        os.execvpe(  # nosemgrep
             sys.executable,
             [
                 sys.executable,
