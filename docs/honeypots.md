@@ -34,9 +34,9 @@ These are documented constraints in the v1.0.0 honeypot surface — not bugs. Ea
 
 - **Dionaea SIP is intentionally absent.** The dinotools image's privilege-drop model creates an unfixable ownership race on the SIP module's `accounts.sqlite`. The `templates/services-enabled/sip.yaml.j2` file is preserved in the repo so a future image fix lets us re-enable SIP without re-implementing the template. See [Dionaea → Default protocol surface](#default-protocol-surface-1) for details.
 - **Dionaea MSSQL version string is hardcoded upstream.** The MSSQL responder reports a fixed version regardless of `narrative.services.mssql.version`. Tracked for v1.1, blocked on an upstream patch. See the [MSSQL row of the Dionaea protocol table](#default-protocol-surface-1).
-- **Dionaea download URL + binary metadata stops at the dionaea bus.** Captured payloads land in `/var/lib/lantana/sensor/dionaea/binaries/` but the URL + hash never reach `dionaea.json` (and therefore never reach bronze → silver → STIX). Surfacing this needs a small custom ihandler; tracked on the project Roadmap in the [README](/README.md#roadmap).
+- **Dionaea download URL + per-session `src_ip` attribution stop at the dionaea bus.** Captured payloads land in `/var/lib/lantana/sensor/dionaea/binaries/` and **do** flow through SHA-256 hashing (`00:30 UTC` `lantana-grant-read` cron + `extract_dionaea_binary_events()` in `enrichment/ioc.py`), synthetic `dionaea.binary.captured` silver events (`models/normalize.py`), VirusTotal hash enrichment (`vt_file_*`), gold aggregation, the daily brief, and STIX 2.1 file indicators. However, the download URL and per-session `src_ip` attribution never reach `dionaea.json`; surfacing those needs a small custom ihandler tracked on the [README Roadmap](/README.md#roadmap).
 - **Dionaea MSSQL / MySQL command bodies stop at the dionaea bus.** Same upstream constraint — the bundled `log_json` ihandler emits connection lifecycle + credentials only. Tracked on the Roadmap.
-- **Dionaea binary hashing uses MD5 (and SHA-512 via `store`) — not SHA-256.** The IOC pipeline (`file_hash_sha256`, STIX file indicators, VT lookup) assumes SHA-256. Fix is on the Roadmap.
+- **~~Dionaea binary SHA-256 hash integration.~~** Implemented: a daily `00:30 UTC` `lantana-grant-read` cron (`roles/dionaea/tasks/main.yml`) relaxes permissions on `/var/lib/lantana/sensor/dionaea/binaries/`, `extract_dionaea_binary_events()` computes SHA-256 hashes on disk and injects synthetic `dionaea.binary.captured` rows into silver (`models/normalize.py`), and VirusTotal enriches every unique hash into `vt_file_*`. The only remaining upstream limitation is per-session `src_ip` attribution on binary captures.
 - **~~Dionaea restart breaks log_json on existing containers.~~** Fixed 2026-06-11 by removing the `,U` flag from the dionaea Quadlet volumes. The root cause was a race between `,U` (which Podman re-applies on every container start, chowning the bind-mount source to the container `User=`) and the dionaea entrypoint's own chown of its log/lib dirs to `dionaea:dionaea`. Without `,U`, the entrypoint is the single source of ownership truth and restarts are clean. Recovery for any host still in the broken state is one `rm` + restart; recipe in [troubleshooting.md → Dionaea Sensor → log_json silent fail](/docs/troubleshooting.md#symptom-log_json-silent-fail--bronze-receives-zero-events-for-days).
 
 ## Image sourcing strategy
@@ -203,14 +203,14 @@ The full set of services Lantana enables in Dionaea is defined in
 `config/ansible/roles/dionaea/defaults/main.yml` under
 `dionaea_service_catalog`. As of v1.0.0:
 
-| Protocol | External port | Container port | Notes |
-|----------|---------------|----------------|-------|
-| FTP      | 21            | 21             | Banner from `narrative.services.ftp.banner` |
-| HTTP     | 80            | 80             | `Server:` header from `narrative.services.http.server_header`; serves the wwwroot persona page |
-| EPMAP    | 135           | 135            | DCE/RPC endpoint mapper; no persona fields |
-| SMB      | 445           | 445            | Workgroup / native OS / native LAN manager / server name from narrative |
-| MSSQL    | 1433          | 1433           | Version string is hardcoded in the upstream module (v1.1 TODO) |
-| MySQL    | 3306          | 3306           | Server version from `narrative.services.mysql.version` |
+| Protocol | WAN port | Host/sensor published port | Container port | Notes |
+|----------|----------|----------------------------|----------------|-------|
+| FTP      | 21       | 8021                       | 21             | Banner from `narrative.services.ftp.banner` |
+| HTTP     | 80       | 8080                       | 80             | `Server:` header from `narrative.services.http.server_header`; serves the wwwroot persona page |
+| EPMAP    | 135      | 8135                       | 135            | DCE/RPC endpoint mapper; no persona fields |
+| SMB      | 445      | 8445                       | 445            | Workgroup / native OS / native LAN manager / server name from narrative |
+| MSSQL    | 1433     | 8433                       | 1433           | Version string is hardcoded in the upstream module (v1.1 TODO) |
+| MySQL    | 3306     | 8306                       | 3306           | Server version from `narrative.services.mysql.version` |
 
 Dionaea has no native SSH (22) or Telnet (23) listener — those ports
 belong exclusively to Cowrie.
@@ -259,7 +259,7 @@ turned on." For those, edit the role:
 
 - **Dionaea:** add (or remove) a catalog entry in
   `config/ansible/roles/dionaea/defaults/main.yml`, and drop a matching
-  `templates/services/<svc>.yaml.j2` if adding. The Quadlet, nftables
+  `templates/services-enabled/<svc>.yaml.j2` if adding. The Quadlet, nftables
   rules, and the validation playbook all derive from the catalog and
   pick up the change automatically.
 - **Cowrie:** Cowrie's protocol surface is set by the upstream image

@@ -140,7 +140,8 @@ def render(selected_date: date) -> None:
     if asn_caption:
         st.caption(asn_caption)
     asns = (
-        df.filter(pl.col("geo_asn").is_not_null() & pl.col("geo_isp").is_not_null())
+        df.filter(pl.col("geo_asn").is_not_null())
+        .with_columns(pl.col("geo_isp").fill_null("Unknown"))
         .group_by("geo_asn", "geo_isp")
         .agg(
             pl.col("src_endpoint_ip").n_unique().alias("Unique IPs"),

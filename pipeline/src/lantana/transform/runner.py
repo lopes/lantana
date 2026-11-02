@@ -101,15 +101,29 @@ def run_transform(
         ("detection_findings", compute_detection_findings),
     ]
 
+    failed_tables: list[tuple[str, Exception]] = []
     for table_name, compute_fn in tables:
-        result = compute_fn(silver)
-        if not result.is_empty():
-            write_gold_table(result, table_name, target_date, gold_root=gold_root)
-            gold_rows[table_name] = len(result)
-            logger.info("gold_written", table=table_name, rows=len(result))
-        else:
+        try:
+            result = compute_fn(silver)
+            if not result.is_empty():
+                write_gold_table(result, table_name, target_date, gold_root=gold_root)
+                gold_rows[table_name] = len(result)
+                logger.info("gold_written", table=table_name, rows=len(result))
+            else:
+                gold_rows[table_name] = 0
+                logger.info("gold_skip_empty", table=table_name)
+        except Exception as exc:
+            failed_tables.append((table_name, exc))
             gold_rows[table_name] = 0
-            logger.info("gold_skip_empty", table=table_name)
+            logger.error(
+                "gold_table_failed",
+                table=table_name,
+                date=target_date.isoformat(),
+                exc_repr=repr(exc),
+            )
+
+    if len(failed_tables) == len(tables):
+        raise failed_tables[0][1]
 
     logger.info(
         "run_summary",
@@ -143,7 +157,7 @@ def main() -> None:
         help="Date to transform (UTC). Defaults to yesterday.",
     )
     args = parser.parse_args()
-    target = args.date if args.date is not None else date.today() - timedelta(days=1)
+    target = args.date if args.date is not None else datetime.now(UTC).date() - timedelta(days=1)
     try:
         run_transform(target)
     except Exception as exc:

@@ -83,11 +83,15 @@ transforms:
       - tag_nftables
     condition:
       type: vrl
-      # OPSEC: drop loopback / internal-prefix / WAN-source events before they
-      # leave the honeywall. `.src_ip` is populated by the tag_nftables parser
-      # above; parse-failed events have a null src_ip and are filtered out
-      # here too (their `.nftables_parse_failed = true` marker still rides on
-      # the tag_nftables → forward path so the failure stays observable).
+      # OPSEC: drop loopback / link-local / internal-prefix / WAN-source events
+      # before they leave the honeywall. `.src_ip` is populated by the
+      # tag_nftables parser above; parse-failed events (`.nftables_parse_failed == true`
+      # with empty `src`) pass through `filter_nftables` directly so parse
+      # failures stay observable at bronze without bypassing OPSEC via `tag_*`.
       source: |-
         src = to_string(.src_ip) ?? ""
-        src != "" && !starts_with(src, "127.") && src != "::1" && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}" && src != "{{ network.honeywall.wan.ipv6.split('/')[0] }}"
+        if .nftables_parse_failed == true && src == "" {
+            true
+        } else {
+            src != "" && !starts_with(src, "127.") && !starts_with(downcase(src), "::ffff:127.") && src != "::1" && !starts_with(downcase(src), "fe80:") && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}" && src != "{{ network.honeywall.wan.ipv6.split('/')[0] }}"
+        }

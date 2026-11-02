@@ -12,7 +12,7 @@ Most of the checks below are encoded in three Ansible playbooks. Run those first
 |---|---|---|
 | Immediately after `deploy_single.yml` | `tests/validate-single-node.yml` | Users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, systemd timers for the four pipeline jobs (enabled and present), GeoIP cron entry |
 | Immediately after `deploy_honeypots.yml` (or `deploy_single.yml`), with a ~30 s settle | `tests/validate-sensor-runtime.yml` | Cowrie + dionaea Quadlet ownership invariants (`UserNS=keep-id` for cowrie, no `,U` for either); each container's Status / Health / RestartCount; zero log-plugin failure tracebacks since each container's `StartedAt`; worker holds a write FD on `cowrie.json` / `dionaea.json`; today's bronze NDJSON fresh within the freshness window (default 120 s); zero orphan-UID files under sensor state trees |
-| After the first 06:00 UTC cycle (day 2+) | `tests/validate-pipeline-cycle.yml` | Each pipeline unit's last `Result=success`, `run_summary` events in journal, silver written for cowrie/suricata/nftables, all 7 gold tables present, `.provider_state.json` exists, no API-key leak in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + GreyNoise RIOT invariant |
+| After the first 06:00 UTC cycle (day 2+) | `tests/validate-pipeline-cycle.yml` | Each pipeline unit's last `Result=success`, `run_summary` events in journal, silver written for `cowrie`/`dionaea`/`suricata`/`nftables`, all 6 gold tables present, `.provider_state.json` exists, no API-key leak in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + GreyNoise RIOT invariant |
 
 Run them via:
 
@@ -130,12 +130,12 @@ ls /etc/vector/conf.d/
 ```bash
 ls /opt/lantana/pipeline/venv/bin/lantana-*
 # lantana-enrich, lantana-transform, lantana-prune, lantana-alert, lantana-notify, lantana-report, lantana-dashboard
-# (lantana-alert CLI stays installed for off-cycle replay; its timer was retired
-# when lantana-report absorbed the daily flow.)
+# (5 .service units and 4 .timer units: lantana-alert.service stays installed for
+# off-cycle replay, while its timer was retired when lantana-report absorbed the daily flow.)
 sudo systemctl list-timers --all | grep lantana
 # lantana-prune.timer      next fire 00:15 UTC
 # lantana-enrich.timer     next fire 01:00 UTC
-# lantana-transform.timer  next fire 04:00 UTC
+# lantana-transform.timer  next fire 05:30 UTC
 # lantana-report.timer     next fire 06:00 UTC
 ```
 
@@ -397,7 +397,7 @@ tail -5 /var/log/lantana/sensor/dionaea/dionaea.json
 
 ```bash
 tail -5 /var/log/lantana/honeywall/suricata/eve.json
-# Should show JSON with event_type (alert, flow, stats), src_ip, dest_ip
+# Should show JSON with event_type (alert, flow), src_ip, dest_ip
 # Look for event_type=alert to confirm IDS is detecting
 ```
 
@@ -405,7 +405,7 @@ tail -5 /var/log/lantana/honeywall/suricata/eve.json
 
 ```bash
 ls /var/lib/lantana/datalake/bronze/
-# dataset=cowrie/, dataset=suricata/, dataset=nftables/
+# dataset=cowrie/, dataset=dionaea/, dataset=suricata/, dataset=nftables/
 ls /var/lib/lantana/datalake/bronze/dataset=cowrie/
 # date=YYYY-MM-DD/ directories should appear
 wc -l /var/lib/lantana/datalake/bronze/dataset=cowrie/date=$(date +%Y-%m-%d)/server=*/events.json
@@ -422,7 +422,7 @@ sudo journalctl -u vector --since "1 hour ago" | tail -20
 
 ## Day 1: First Pipeline Run
 
-The pipeline runs via systemd timers: 00:15 UTC prune, 01:00 enrich, 04:00 transform, 06:00 report. After the first night:
+The pipeline runs via systemd timers: 00:15 UTC prune, 01:00 UTC enrich, 05:30 UTC transform, 06:00 UTC report (plus `00:30 UTC` `lantana-grant-read` cron jobs for Cowrie `downloads/` and Dionaea `binaries/`). After the first night:
 
 ### 1.1 Verify enrichment ran (bronze -> silver)
 
@@ -433,7 +433,7 @@ sudo journalctl -u lantana-enrich.service --since '01:00 UTC' | grep run_summary
 
 # Silver layer should exist
 ls /var/lib/lantana/datalake/silver/
-# dataset=cowrie/, dataset=suricata/, dataset=nftables/
+# dataset=cowrie/, dataset=dionaea/, dataset=suricata/, dataset=nftables/
 ls /var/lib/lantana/datalake/silver/dataset=cowrie/date=$(date -d yesterday +%Y-%m-%d)/server=*/
 # events.parquet should exist
 ```
@@ -488,7 +488,7 @@ sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT COUNT(*) FROM cac
 ```bash
 # Check the unit ran (and succeeded)
 sudo systemctl status lantana-transform.service --no-pager | head
-sudo journalctl -u lantana-transform.service --since '04:00 UTC' | grep run_summary
+sudo journalctl -u lantana-transform.service --since '05:30 UTC' | grep run_summary
 
 # Gold tables should exist — six directories, one per table
 ls /var/lib/lantana/datalake/gold/
@@ -543,8 +543,9 @@ if not df.is_empty():
 ### 1.3 Verify retention/prune ran
 
 ```bash
-grep lantana-prune /var/log/syslog | tail -5
-# Should show "prune complete" or similar
+sudo systemctl status lantana-prune.timer --no-pager | head
+sudo journalctl -u lantana-prune.service --since '00:15 UTC' --no-pager | tail -10
+# Should show Result=success and the prune run summary in journald
 ```
 
 ---
@@ -593,7 +594,7 @@ After a full week, there's enough data for meaningful intelligence output.
 
 ### 7.1 Discord reports
 
-If `discord_webhook` is configured in `secrets.json`:
+If `vault_webhook_discord` is configured in `secrets.json` (with `discord_webhook` accepted as alias):
 
 ```bash
 # Manual trigger:
@@ -610,6 +611,7 @@ Check your Discord channel for:
   - Geographic Origin (top countries + ASNs)
   - Mermaid Escalation Funnel + stage-definition legend
   - Top Attackers table with `(enrichment+behavioral)/2` decomposition and `A/V/S/G` per-provider quadruplet
+  - Attacker Persistence (`## Attacker Persistence`)
   - Threat Actor Attribution (GreyNoise-named)
   - Notable Escalations (stage 3+)
   - Campaign Clusters table + rank-numbered IP list
@@ -742,20 +744,18 @@ After 7 days of `behavioral_progression` gold accumulating, the Streamlit dashbo
 |---|---|---|
 | Daily | Bronze growing | `ls /var/lib/lantana/datalake/bronze/dataset=cowrie/` |
 | Daily | Silver/gold populated | `ls /var/lib/lantana/datalake/gold/daily_summary/` |
-| Daily | Cron ran | `grep lantana /var/log/syslog \| tail -20` |
+| Daily | Pipeline timers ran cleanly | `systemctl list-timers 'lantana-*' && sudo journalctl -u 'lantana-*.service' --since today \| tail -20` |
 | Weekly | Disk usage | `df -h /var/lib/lantana/` |
-| Weekly | Enrichment cache size | `sqlite3 .enrichment_cache.db "SELECT COUNT(*) FROM cache;"` |
+| Weekly | Enrichment cache size | `sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT COUNT(*) FROM cache;"` |
 | Monthly | GeoIP MMDB updated | `ls -la /var/lib/lantana/collector/geoip/` |
 | Monthly | Suricata rules updated | `suricata-update --data-dir /var/lib/lantana/honeywall/suricata` |
 
 ---
 
-## Future: Report Improvements
+## Future: Post-v1.0.0 Analytical Follow-Ups
 
-After initial validation, the Markdown daily brief and Streamlit dashboard will likely need tuning based on real operational use. Expected areas for iteration:
+The v1.0.0 release already ships the severity-tiered daily Discord brief (with shared `WhatWhyHow` explanations via `notify/explanations.py`), the 7-page Streamlit dashboard (including `geography.py` and `stix_export.py`), on-demand STIX 2.1 bundle generation, and gzipped raw IOC CSV exports. Post-v1.0.0 analytical follow-ups tracked on the [README Roadmap](/README.md#roadmap) focus on:
 
-- **Markdown report**: section ordering, metric selection, Mermaid chart readability, STIX bundle summary inclusion
-- **Streamlit dashboard**: chart types, filter UX, new pages (malware analysis, geographic view), STIX data integration into the dashboard
-- **STIX bundles**: indicator confidence tuning, relationship depth, TLP per-object granularity
-
-These improvements are best driven by reviewing actual reports from 1-2 weeks of production data.
+- **Dashboard date-range selector**: replacing the fixed gold window with configurable `start` + `end` date pickers (defaulting to the last 7 days) across all dashboard pages
+- **Lossless multi-day slow-burn detection**: streaming or per-day stage-timestamp persistence to replace the trailing 7-day proxy without risking collector OOMs
+- **STIX & enrichment tuning**: calibrating `RISK_THRESHOLD` against multi-week production score distributions, per-object TLP granularity, and per-session `src_ip` / download-URL attribution for Dionaea binary captures

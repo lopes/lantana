@@ -297,3 +297,52 @@ def test_drop_source_rows_empty_dataframe(redaction_config: RedactionConfig) -> 
     )
     result = drop_infrastructure_source_rows(df, redaction_config)
     assert result.height == 0
+
+
+def test_substring_redact_longest_prefix_first_and_destfile() -> None:
+    """Longer IP prefix (10.50.99.100) is replaced before shorter prefix (10.50.99.1),
+    and destfile / file_name columns are scrubbed."""
+    cfg = RedactionConfig(
+        infrastructure_ips=["10.50.99.1", "10.50.99.100"],
+        infrastructure_cidrs=["10.50.99.0/24"],
+        pseudonym_map={
+            "10.50.99.1": "honeywall-gw",
+            "10.50.99.100": "sensor-node",
+        },
+    )
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50"],
+            "message": ["connect from 10.50.99.100 via gateway 10.50.99.1"],
+            "destfile": ["/tmp/10.50.99.100.bin"],
+            "file_name": ["upload_10.50.99.100.elf"],
+        }
+    )
+    result = redact_infrastructure_ips(df, cfg)
+    row = result.row(0, named=True)
+    assert row["message"] == "connect from sensor-node via gateway honeywall-gw"
+    assert "honeywall-gw00" not in row["message"]
+    assert row["destfile"] == "/tmp/sensor-node.bin"
+    assert row["file_name"] == "upload_sensor-node.elf"
+
+
+def test_redact_expanded_ipv6_and_unmapped_cidr_passes_validate_no_leaks(
+    redaction_config: RedactionConfig,
+) -> None:
+    """Expanded IPv6 and unmapped subnet IPs in dst_endpoint_ip are redacted cleanly."""
+    from lantana.common.redact import validate_no_leaks
+
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["203.0.113.50", "198.51.100.22"],
+            "dst_endpoint_ip": [
+                "fd99:0010:0050:0099:0000:0000:0000:0100",
+                "10.50.99.250",
+            ],
+        }
+    )
+    redacted = redact_infrastructure_ips(df, redaction_config)
+    assert validate_no_leaks(redacted, redaction_config) is True
+    dst_vals = redacted.get_column("dst_endpoint_ip").to_list()
+    assert dst_vals[1] == "redacted-infra"
+    assert "fd99:0010:0050:0099:0000:0000:0000:0100" not in dst_vals

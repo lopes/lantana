@@ -58,7 +58,7 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
     "Pipeline Timing": WhatWhyHow(
         what="wall-clock duration of each scheduled pipeline step.",
         why="spots regressions in enrichment throughput or transform cost.",
-        how="systemd ActiveEnterTimestamp → InactiveEnterTimestamp per unit.",
+        how="systemd ExecMainStartTimestamp → ExecMainExitTimestamp per unit.",
     ),
     "Key Metrics": WhatWhyHow(
         what="day's aggregate event/IP counts across all datasets.",
@@ -264,7 +264,7 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
     "Commands": WhatWhyHow(
         what="post-login shell commands executed by attackers.",
         why="signals hands-on-keyboard activity beyond scanning.",
-        how="silver events with class_uid=1005 (Process Activity).",
+        how="silver events with class_uid=1007 (Process Activity).",
     ),
     "Findings": WhatWhyHow(
         what="IDS rule matches produced by Suricata.",

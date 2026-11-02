@@ -30,6 +30,11 @@ LOG_SOURCES: dict[str, list[str]] = {
         "log/lantana/sensor/cowrie/cowrie.json.1",
         "log/lantana/sensor/cowrie/cowrie.json.2",
     ],
+    "dionaea": [
+        "log/lantana/sensor/dionaea/connections.json",
+        "log/lantana/sensor/dionaea/connections.json.1",
+        "log/lantana/sensor/dionaea/connections.json.2",
+    ],
     "suricata": [
         "log/lantana/honeywall/suricata/eve.json",
         "log/lantana/honeywall/suricata/eve.json.1",
@@ -79,19 +84,9 @@ def ingest_log(path: Path, dataset: str) -> dict[str, list[str]]:
                 skipped += 1
                 continue
 
-            # Simulate Vector transforms: flatten nested objects that
-            # Vector would extract into top-level fields.
-            # Suricata: alert.signature -> alert_signature, etc.
-            if "alert" in record and isinstance(record["alert"], dict):
-                alert = record.pop("alert")
-                record["alert_signature"] = alert.get("signature")
-                record["alert_signature_id"] = alert.get("signature_id")
-                record["alert_severity"] = alert.get("severity")
-                record["alert_category"] = alert.get("category")
-                record["alert_action"] = alert.get("action")
-
-            # Drop nested objects the pipeline doesn't use (flow, tcp,
-            # metadata, etc.) — they cause Polars schema conflicts.
+            # Preserve nested `alert` dict as-is so bronze fixtures match
+            # what Vector ships (Principle 4: normalize in Polars, not upstream).
+            # Drop unused protocol sub-objects that cause Polars schema conflicts.
             for nested_key in (
                 "flow",
                 "tcp",
@@ -140,8 +135,8 @@ def write_bronze(
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "events.json"
 
-        # Append if file exists (multiple source logs for same date)
-        with out_path.open("a", encoding="utf-8") as fh:
+        # Write atomically per dataset/date run so re-running is idempotent
+        with out_path.open("w", encoding="utf-8") as fh:
             for json_line in lines:
                 fh.write(json_line + "\n")
 
@@ -216,16 +211,16 @@ def main() -> None:
     print(f"Injected {grand_total:,} events from {datasets_found} datasets into {bronze_root}")
     print()
     print("Next steps:")
-    print("  1. Run integration tests:  .venv/bin/pytest -m integration -v")
+    print("  1. Run integration tests:  uv run pytest -m integration -v")
     print("  2. Or run the pipeline manually:")
-    print('     .venv/bin/python -c "')
-    print("       from datetime import date")
-    print("       from lantana.common.datalake import read_bronze_ndjson")
+    print('     uv run python -c "')
+    print("from datetime import date")
+    print("from pathlib import Path")
+    print("from lantana.common.datalake import read_bronze_ndjson")
     print(
-        f"       df = read_bronze_ndjson("
-        f"date.fromisoformat('<DATE>'), bronze_root=Path('{bronze_root}'))"
+        f"df = read_bronze_ndjson(date.fromisoformat('<DATE>'), bronze_root=Path('{bronze_root}'))"
     )
-    print('       print(df)"')
+    print('print(df)"')
 
 
 if __name__ == "__main__":

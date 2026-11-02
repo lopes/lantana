@@ -97,9 +97,9 @@ def _ensure_gold_columns(silver: pl.DataFrame) -> pl.DataFrame:
 
 
 def _optional_first(df: pl.DataFrame, col: str, alias: str) -> pl.Expr:
-    """Return first() aggregation for a column, or null literal if column is absent."""
+    """Return first non-null value for a column, or null literal if column is absent."""
     if col in df.columns:
-        return pl.col(col).first().alias(alias)
+        return pl.col(col).drop_nulls().first().alias(alias)
     return pl.lit(None).alias(alias)
 
 
@@ -283,9 +283,9 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
         (cls == CLASS_FILE_ACTIVITY).sum().alias("downloads"),
         pl.col("time").min().alias("first_seen"),
         pl.col("time").max().alias("last_seen"),
-        pl.col("geo.country_code").first().alias("geo_country"),
-        pl.col("geo.asn").first().alias("geo_asn"),
-        pl.col("geo.isp").first().alias("geo_isp"),
+        _optional_first(silver, "geo.country_code", "geo_country"),
+        _optional_first(silver, "geo.asn", "geo_asn"),
+        _optional_first(silver, "geo.isp", "geo_isp"),
     ]
 
     # Optional enrichment columns — may be absent on any given day when a
@@ -577,9 +577,14 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
     # Top cities by unique IPs (with lat/lon for mapping)
     top_cities: list[str] = []
     if "geo.city" in silver.columns:
+        city_group_cols = [
+            c
+            for c in ("geo.city", "geo.country_code", "geo.latitude", "geo.longitude")
+            if c in silver.columns
+        ]
         cities = (
             silver.filter(pl.col("geo.city").is_not_null() & (pl.col("geo.city") != ""))
-            .group_by("geo.city", "geo.country_code", "geo.latitude", "geo.longitude")
+            .group_by(city_group_cols)
             .agg(
                 pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
                 pl.len().alias("total_events"),
@@ -614,6 +619,9 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
                 "top_asns": [top_asns],
             }
         )
+
+    if "geo.isp" not in silver.columns:
+        silver = silver.with_columns(pl.lit(None, dtype=pl.Utf8).alias("geo.isp"))
 
     # geo.asn is Int64 in production (MaxMind ASN MMDB returns int); is_not_null
     # is the only validity check needed. The previous `!= ""` comparison worked

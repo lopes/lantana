@@ -1,6 +1,6 @@
 ---
 # Post-first-cycle pipeline verification — the executable counterpart to
-# the manual walkthrough in docs/setup.md §11.
+# the manual walkthrough in docs/validation.md.
 #
 # Run after the first full pipeline cycle has completed (i.e. after the
 # 06:00 UTC lantana-report.service has fired for at least one day). All
@@ -10,7 +10,7 @@
 #   * lantana-enrich + lantana-transform emitted a run_summary line in
 #     the journal.
 #   * Silver parquet was written for each expected dataset.
-#   * Gold parquet exists for all seven expected tables.
+#   * Gold parquet exists for all six expected tables.
 #   * .provider_state.json file is present (its contents may be empty
 #     {} on day 1 — that's fine).
 #   * enrichment_errors.json contains no API-key residue (Phase B
@@ -41,6 +41,7 @@
       - lantana-report
     expected_silver_datasets:
       - cowrie
+      - dionaea
       - suricata
       - nftables
     expected_gold_tables:
@@ -62,7 +63,7 @@
       ansible.builtin.debug:
         msg: "Verifying pipeline cycle for target_date={{ target_date }}"
 
-    # === 5. Each pipeline unit's last invocation succeeded ===
+    # === 1. Each pipeline unit's last invocation succeeded ===
     - name: "Read systemd Result for each pipeline unit"
       become: true
       ansible.builtin.command: "systemctl show {{ item }}.service --property=Result --value"
@@ -81,13 +82,15 @@
       loop_control:
         label: "{{ item.item }}"
 
-    # === 6. run_summary structured events in journal ===
+    # === 2. run_summary structured events in journal ===
     - name: "Count run_summary events for enrich + transform"
       become: true
       ansible.builtin.shell: |
         set -o pipefail
         journalctl -u {{ item }}.service --since "{{ target_date }} 00:00 UTC" --no-pager 2>/dev/null \
           | grep -c run_summary || true
+      args:
+        executable: /bin/bash
       loop:
         - lantana-enrich
         - lantana-transform
@@ -105,7 +108,7 @@
       loop_control:
         label: "{{ item.item }}"
 
-    # === 7. Silver parquet present for each active dataset ===
+    # === 3. Silver parquet present for each active dataset ===
     - name: "Stat silver partition per dataset"
       become: true
       ansible.builtin.find:
@@ -123,7 +126,7 @@
       loop_control:
         label: "{{ item.item }}"
 
-    # === 8. Gold parquet present for all 7 expected tables ===
+    # === 4. Gold parquet present for all 6 expected tables ===
     - name: "Stat gold partition per table"
       become: true
       ansible.builtin.find:
@@ -140,7 +143,7 @@
       loop_control:
         label: "{{ item.item }}"
 
-    # === 9. Provider state file present ===
+    # === 5. Provider state file present ===
     - name: "Stat .provider_state.json"
       become: true
       ansible.builtin.stat:
@@ -152,7 +155,7 @@
         that: "provider_state_stat.stat.exists"
         fail_msg: "{{ datalake_root }}/.provider_state.json missing — Phase C cross-run state isn't being persisted."
 
-    # === 10. enrichment_errors.json has no API-key residue ===
+    # === 6. enrichment_errors.json has no API-key residue ===
     - name: "Scan enrichment_errors.json for API-key residue"
       become: true
       ansible.builtin.shell: |
@@ -162,6 +165,8 @@
         else
           echo 0
         fi
+      args:
+        executable: /bin/bash
       register: key_leak_count
       changed_when: false
 
@@ -174,7 +179,7 @@
           tests/test_enrichment/test_runner.py::TestSanitizeErrorMessage
           locally to bisect.
 
-    # === 11. Silver carries per-provider risk_score columns ===
+    # === 7. Silver carries per-provider risk_score columns ===
     - name: "Inspect cowrie silver schema for per-provider risk scores"
       become: true
       become_user: nectar
@@ -196,13 +201,15 @@
 
     - name: "Assert all four <provider>_risk_score columns present in cowrie silver"
       ansible.builtin.assert:
-        that: "(silver_score_cols.stdout | from_json).values() | reject() | list | length == 0"
+        that:
+          - "'error' not in (silver_score_cols.stdout | from_json)"
+          - "(silver_score_cols.stdout | from_json).values() | reject() | list | length == 0"
         fail_msg: >-
           Silver missing one or more per-provider risk_score columns:
           {{ silver_score_cols.stdout }}. Phase D.1 helpers may not be flowing
           through _build_lookup/_merge_lookup.
 
-    # === 12. Gold ip_reputation: composite + RIOT invariant ===
+    # === 8. Gold ip_reputation: composite + RIOT invariant ===
     - name: "Inspect gold ip_reputation for composite + RIOT invariant"
       become: true
       become_user: nectar
@@ -249,7 +256,7 @@
     - name: "Validation summary"
       ansible.builtin.debug:
         msg: |
-          ✅ All 10 mechanical checks passed for target_date={{ target_date }}.
+          ✅ All 8 mechanical checks passed for target_date={{ target_date }}.
           Manual visual check (not automatable): confirm Discord daily report
           arrived at 06:00 UTC with the A/V/S/G per-provider column and
           composite risk decomposition in Top Attackers.

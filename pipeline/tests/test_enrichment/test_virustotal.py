@@ -31,7 +31,7 @@ def _ok_ip_response() -> httpx.Response:
                 },
             },
         },
-        request=httpx.Request("GET", "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4"),
+        request=httpx.Request("GET", "https://www.virustotal.com/api/v3/ip_addresses/192.0.2.1"),
     )
 
 
@@ -67,7 +67,7 @@ class TestVirusTotalIP:
             new_callable=AsyncMock,
             return_value=_ok_ip_response(),
         ):
-            result = await provider.enrich_ip("1.2.3.4")
+            result = await provider.enrich_ip("192.0.2.1")
 
         assert result.data["vt_malicious_count"] == 2
         assert result.data["vt_suspicious_count"] == 1
@@ -222,7 +222,7 @@ class TestVirusTotalHash:
         """Some VT 200 responses lack `as_owner` (notably on private-space IPs).
 
         Observed in op_alpha's first enrichment run: KeyError('as_owner')
-        on 10.69.215.134. The runner now defends against missing optional
+        on 198.51.100.42. The runner now defends against missing optional
         attributes the same way it does for missing last_analysis_stats keys.
         """
         sparse = httpx.Response(
@@ -237,7 +237,7 @@ class TestVirusTotalHash:
             },
             request=httpx.Request(
                 "GET",
-                "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
+                "https://www.virustotal.com/api/v3/ip_addresses/192.0.2.1",
             ),
         )
         with patch.object(
@@ -246,7 +246,7 @@ class TestVirusTotalHash:
             new_callable=AsyncMock,
             return_value=sparse,
         ):
-            result = await provider.enrich_ip("1.2.3.4")
+            result = await provider.enrich_ip("192.0.2.1")
 
         assert result.data["vt_malicious_count"] == 0
         assert result.data["vt_as_owner"] == ""
@@ -270,7 +270,7 @@ class TestVirusTotalRetry:
             json={"error": "Rate limit"},
             request=httpx.Request(
                 "GET",
-                "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
+                "https://www.virustotal.com/api/v3/ip_addresses/192.0.2.1",
             ),
         )
         mock_get = AsyncMock(return_value=rate_limited)
@@ -278,7 +278,7 @@ class TestVirusTotalRetry:
             patch.object(provider._client, "get", mock_get),
             pytest.raises(httpx.HTTPStatusError) as exc_info,
         ):
-            await provider.enrich_ip("1.2.3.4")
+            await provider.enrich_ip("192.0.2.1")
         assert exc_info.value.response.status_code == 429
         assert mock_get.await_count == 1  # single attempt, no retry
 
@@ -290,12 +290,12 @@ class TestVirusTotalRetry:
             json={"error": "wrong key"},
             request=httpx.Request(
                 "GET",
-                "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4",
+                "https://www.virustotal.com/api/v3/ip_addresses/192.0.2.1",
             ),
         )
         mock_get = AsyncMock(return_value=forbidden)
         with patch.object(provider._client, "get", mock_get), pytest.raises(httpx.HTTPStatusError):
-            await provider.enrich_ip("1.2.3.4")
+            await provider.enrich_ip("192.0.2.1")
         assert mock_get.await_count == 1
 
 
@@ -382,11 +382,13 @@ class TestVtIpRiskScoreInResult:
                     },
                 },
             },
-            request=httpx.Request("GET", "https://www.virustotal.com/api/v3/ip_addresses/1.2.3.4"),
+            request=httpx.Request(
+                "GET", "https://www.virustotal.com/api/v3/ip_addresses/192.0.2.1"
+            ),
         )
         mock_get = AsyncMock(return_value=resp)
         with patch.object(provider._client, "get", mock_get):
-            result = await provider.enrich_ip("1.2.3.4")
+            result = await provider.enrich_ip("192.0.2.1")
         assert result.data["vt_malicious_count"] == 15
         assert result.data["virustotal_risk_score"] == 100.0
 

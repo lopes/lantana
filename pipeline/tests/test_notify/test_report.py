@@ -998,3 +998,26 @@ class TestEmbedTimingOneLiner:
         )
         # The clock emoji is the timing line's prefix — absent means line was skipped.
         assert "⏱" not in summary
+
+
+def test_colon_containing_isp_and_custom_tlp_footer() -> None:
+    """Colon inside ISP name parses cleanly via rsplit(':', 1) and TLP footer reflects config."""
+    geo = pl.DataFrame(
+        {
+            "top_countries": [["DE:12"]],
+            "top_cities": [["Berlin,DE:12"]],
+            "top_asns": [["64497|Example: Hosting ISP:12"]],
+        }
+    )
+    report = generate_daily_brief(
+        date(2026, 4, 25),
+        _make_summary(),
+        _make_reputation(),
+        _make_progression(),
+        _make_clusters(),
+        "Test Op",
+        geographic=geo,
+        tlp="AMBER",
+    )
+    assert "| 1 | 64497 | Example: Hosting ISP | 12 |" in report
+    assert "TLP:AMBER" in report

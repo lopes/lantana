@@ -24,15 +24,15 @@ def _ok_response() -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            "ip": "212.115.85.236",
+            "ip": "198.51.100.25",
             "noise": True,
             "riot": False,
             "classification": "malicious",
             "name": "Mass Scanner",
             "last_seen": "2026-05-15",
-            "link": "https://viz.greynoise.io/ip/212.115.85.236",
+            "link": "https://viz.greynoise.io/ip/198.51.100.25",
         },
-        request=httpx.Request("GET", "https://api.greynoise.io/v3/community/212.115.85.236"),
+        request=httpx.Request("GET", "https://api.greynoise.io/v3/community/198.51.100.25"),
     )
 
 
@@ -46,10 +46,10 @@ class TestGreyNoiseProvider:
             new_callable=AsyncMock,
             return_value=_ok_response(),
         ):
-            result = await keyed_provider.enrich_ip("212.115.85.236")
+            result = await keyed_provider.enrich_ip("198.51.100.25")
 
         assert result.provider == "greynoise"
-        assert result.ip == "212.115.85.236"
+        assert result.ip == "198.51.100.25"
         assert result.data["greynoise_classification"] == "malicious"
         assert result.data["greynoise_noise"] is True
         assert result.data["greynoise_riot"] is False
@@ -67,7 +67,7 @@ class TestGreyNoiseProvider:
         """When no API key is set, the `key` header must not be sent."""
         mock_get = AsyncMock(return_value=_ok_response())
         with patch.object(anonymous_provider._client, "get", mock_get):
-            await anonymous_provider.enrich_ip("212.115.85.236")
+            await anonymous_provider.enrich_ip("198.51.100.25")
 
         sent_headers = mock_get.call_args.kwargs["headers"]
         assert "key" not in sent_headers
@@ -81,7 +81,7 @@ class TestGreyNoiseProvider:
         """When an API key is set, it must be sent as the `key` header."""
         mock_get = AsyncMock(return_value=_ok_response())
         with patch.object(keyed_provider._client, "get", mock_get):
-            await keyed_provider.enrich_ip("212.115.85.236")
+            await keyed_provider.enrich_ip("198.51.100.25")
 
         sent_headers = mock_get.call_args.kwargs["headers"]
         assert sent_headers["key"] == "test-key"
@@ -92,7 +92,7 @@ class TestGreyNoiseProvider:
         provider = GreyNoiseProvider(api_key="")
         mock_get = AsyncMock(return_value=_ok_response())
         with patch.object(provider._client, "get", mock_get):
-            await provider.enrich_ip("212.115.85.236")
+            await provider.enrich_ip("198.51.100.25")
 
         sent_headers = mock_get.call_args.kwargs["headers"]
         assert "key" not in sent_headers
@@ -180,7 +180,7 @@ class TestGreyNoiseRiskScoreInResult:
         """Fixture has classification=malicious → expect 75 risk score."""
         mock_get = AsyncMock(return_value=_ok_response())
         with patch.object(anonymous_provider._client, "get", mock_get):
-            result = await anonymous_provider.enrich_ip("212.115.85.236")
+            result = await anonymous_provider.enrich_ip("198.51.100.25")
         assert result.data["greynoise_risk_score"] == 75.0
 
     @pytest.mark.asyncio()

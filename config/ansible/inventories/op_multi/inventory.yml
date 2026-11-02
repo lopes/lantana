@@ -6,6 +6,7 @@ all:
           ansible_host: 203.0.113.11
           node_hostname: honeywall-01
           node_role: "honeywall gateway"
+          lantana_profile: "honeywall"
 
     sensor_low_nodes:
       hosts:
@@ -13,6 +14,7 @@ all:
           ansible_host: 203.0.113.12
           node_hostname: low-01
           node_role: "low-interaction sensor"
+          lantana_profile: "sensor_low"
           sensor_honeypots:
             - cowrie
             - dionaea
@@ -23,6 +25,7 @@ all:
           ansible_host: 203.0.113.13
           node_hostname: high-01
           node_role: "high-interaction sensor"
+          lantana_profile: "sensor_high"
 
     collector_nodes:
       hosts:
@@ -30,3 +33,4 @@ all:
           ansible_host: 203.0.113.14
           node_hostname: collector-01
           node_role: "collector processor"
+          lantana_profile: "collector"

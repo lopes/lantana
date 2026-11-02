@@ -49,12 +49,25 @@ resource "proxmox_virtual_environment_vm" "node" {
     }
   }
 
+  agent {
+    enabled = true
+  }
+
   initialization {
     user_data_file_id = var.user_data_file_id
 
     ip_config {
       ipv4 {
         address = "dhcp"
+      }
+    }
+
+    dynamic "ip_config" {
+      for_each = var.wan_bridge != null && var.lan_bridge != null ? [1] : []
+      content {
+        ipv4 {
+          address = "dhcp"
+        }
       }
     }
   }

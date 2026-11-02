@@ -23,10 +23,10 @@ def _ok_response() -> httpx.Response:
             "os": None,
             "vulns": ["CVE-2024-1234"],
             "org": "Example Corp",
-            "asn": "AS12345",
-            "ip_str": "1.2.3.4",
+            "asn": "AS64501",
+            "ip_str": "192.0.2.1",
         },
-        request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
+        request=httpx.Request("GET", "https://api.shodan.io/shodan/host/192.0.2.1"),
     )
 
 
@@ -40,14 +40,14 @@ class TestShodanProvider:
             new_callable=AsyncMock,
             return_value=_ok_response(),
         ):
-            result = await provider.enrich_ip("1.2.3.4")
+            result = await provider.enrich_ip("192.0.2.1")
 
         assert result.provider == "shodan"
         assert result.data["shodan_ports"] == "22,80,443"
         assert result.data["shodan_os"] is None
         assert result.data["shodan_vulns"] == "CVE-2024-1234"
         assert result.data["shodan_org"] == "Example Corp"
-        assert result.data["shodan_asn"] == "AS12345"
+        assert result.data["shodan_asn"] == "AS64501"
 
     @pytest.mark.asyncio()
     async def test_404_returns_empty_result_without_raising(self, provider: ShodanProvider) -> None:
@@ -89,8 +89,8 @@ class TestShodanProvider:
         """
         sparse = httpx.Response(
             200,
-            json={"ports": [22], "ip_str": "1.2.3.4"},
-            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
+            json={"ports": [22], "ip_str": "192.0.2.1"},
+            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/192.0.2.1"),
         )
         with patch.object(
             provider._client,
@@ -98,7 +98,7 @@ class TestShodanProvider:
             new_callable=AsyncMock,
             return_value=sparse,
         ):
-            result = await provider.enrich_ip("1.2.3.4")
+            result = await provider.enrich_ip("192.0.2.1")
 
         assert result.data["shodan_ports"] == "22"
         assert result.data["shodan_asn"] == ""
@@ -111,14 +111,14 @@ class TestShodanProvider:
         bad_gateway = httpx.Response(
             502,
             text="bad gateway",
-            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
+            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/192.0.2.1"),
         )
         mock_get = AsyncMock(return_value=bad_gateway)
         with (
             patch.object(provider._client, "get", mock_get),
             pytest.raises(httpx.HTTPStatusError) as exc_info,
         ):
-            await provider.enrich_ip("1.2.3.4")
+            await provider.enrich_ip("192.0.2.1")
         assert exc_info.value.response.status_code == 502
         # Confirm retried at least twice (tenacity stop_after_attempt(3))
         assert mock_get.await_count >= 2
@@ -129,11 +129,11 @@ class TestShodanProvider:
         unauthorized = httpx.Response(
             401,
             json={"error": "No API key"},
-            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
+            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/192.0.2.1"),
         )
         mock_get = AsyncMock(return_value=unauthorized)
         with patch.object(provider._client, "get", mock_get), pytest.raises(httpx.HTTPStatusError):
-            await provider.enrich_ip("1.2.3.4")
+            await provider.enrich_ip("192.0.2.1")
         assert mock_get.await_count == 1
 
 
@@ -169,7 +169,7 @@ class TestShodanRiskScoreInResult:
     async def test_200_response_includes_risk_score(self, provider: ShodanProvider) -> None:
         mock_get = AsyncMock(return_value=_ok_response())
         with patch.object(provider._client, "get", mock_get):
-            result = await provider.enrich_ip("1.2.3.4")
+            result = await provider.enrich_ip("192.0.2.1")
         # Fixture has CVE-2024-1234 → expect 100.
         assert result.data["shodan_risk_score"] == 100.0
 
@@ -178,9 +178,9 @@ class TestShodanRiskScoreInResult:
         not_found = httpx.Response(
             404,
             json={},
-            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/1.2.3.4"),
+            request=httpx.Request("GET", "https://api.shodan.io/shodan/host/192.0.2.1"),
         )
         mock_get = AsyncMock(return_value=not_found)
         with patch.object(provider._client, "get", mock_get):
-            result = await provider.enrich_ip("1.2.3.4")
+            result = await provider.enrich_ip("192.0.2.1")
         assert result.data["shodan_risk_score"] == 0.0

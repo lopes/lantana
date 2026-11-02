@@ -1,8 +1,8 @@
 #!/bin/sh
-# Recursively grant world-read permission on directory trees.
-# Used by per-honeypot crons to expose rootless-container subUID-owned files
-# (which default to 0600) to the lantana pipeline user (nectar). Deployed by
-# ansible role base; called from /etc/cron.d/lantana-<honeypot>-* files.
+# Recursively grant group-read/traverse permission to nectar on directory trees
+# while stripping world permissions. Used by per-honeypot crons to expose
+# rootless-container files (which default to 0600) to the lantana pipeline user
+# (nectar) without exposing them world-readable. Deployed by ansible role base.
 set -eu
 
 if [ $# -eq 0 ]; then
@@ -15,5 +15,5 @@ for path in "$@"; do
     echo "Not a directory: $path" >&2
     exit 1
   fi
-  chmod -R o+r "$path"
+  chgrp -R nectar -- "$path" && chmod -R g+rX,o-rwx -- "$path"
 done

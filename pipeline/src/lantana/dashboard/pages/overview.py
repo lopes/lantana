@@ -21,6 +21,7 @@ _EVENT_TYPE_COLOURS: dict[str, str] = {
     "Commands": "#ff7f0e",
     "Findings": "#d62728",
     "Network": "#2ca02c",
+    "Downloads": "#9467bd",
 }
 
 
@@ -185,6 +186,7 @@ def render(selected_date: date) -> None:
                     "Commands": int(row["commands_executed"]),
                     "Findings": int(row["findings_detected"]),
                     "Network": int(row["network_events"]),
+                    "Downloads": int(row.get("downloads_captured", 0) or 0),
                 }
             ),
             width="stretch",
@@ -237,10 +239,10 @@ def render(selected_date: date) -> None:
             if asn_entries:
                 asn_rows = []
                 for entry in asn_entries:
-                    parts = entry.split(":")
+                    parts = entry.rsplit(":", 1)
                     asn_info = parts[0] if parts else ""
                     count = parts[1] if len(parts) > 1 else "0"
-                    asn_parts = asn_info.split("|")
+                    asn_parts = asn_info.split("|", 1)
                     asn = asn_parts[0] if asn_parts else ""
                     isp = asn_parts[1] if len(asn_parts) > 1 else ""
                     asn_rows.append({"ASN": asn, "ISP": isp, "Unique IPs": int(count)})

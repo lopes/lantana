@@ -88,6 +88,18 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  when: lantana.mode != "single"
+  notify:
+    - "Validate Vector config tree"
+    - "Restart Vector"
+  tags: [honeypots, vector]
+
+- name: "Remove duplicate sensor Vector forwarder on single-node hosts"
+  become: true
+  ansible.builtin.file:
+    path: /etc/vector/conf.d/forward-sensor.yaml
+    state: absent
+  when: lantana.mode == "single"
   notify:
     - "Validate Vector config tree"
     - "Restart Vector"

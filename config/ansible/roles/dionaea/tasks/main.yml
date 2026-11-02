@@ -52,7 +52,7 @@
 # /opt/dionaea/etc/dionaea/. We override those two subdirectories
 # (and ONLY those) with our generated files via :ro bind-mounts in
 # the Quadlet, so the dionaea.cfg and other bundled fixtures get
-# seeded normally while our 7 service files + log_json ihandler
+# seeded normally while our 6 service files + log_json ihandler
 # completely replace the default 16 services + 6 ihandlers.
 #
 # The Quadlet sets DIONAEA_FORCE_INIT_CONF=1 + DIONAEA_FORCE_INIT_DATA=1
@@ -81,9 +81,11 @@
     owner: "root"
     group: "root"
     mode: "0644"
+    validate: python3 -c "import sys; open(sys.argv[1], encoding='ascii').read()" %s
   loop: "{{ dionaea_service_catalog.keys() | list }}"
   loop_control:
     loop_var: _svc
+  notify: "Restart Dionaea container"
   tags: [dionaea]
 
 # Catalog idempotency: when a service is removed from
@@ -109,6 +111,7 @@
     loop_var: _yaml_file
     label: "{{ _yaml_file.path | basename }}"
   when: "(_yaml_file.path | basename | regex_replace('\\.yaml$', '')) not in dionaea_service_catalog"
+  notify: "Restart Dionaea container"
   tags: [dionaea]
 
 - name: "Render Dionaea log_json ihandler"
@@ -119,6 +122,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  notify: "Restart Dionaea container"
   tags: [dionaea]
 
 # The `store` ihandler is bundled with dionaea and writes attacker-
@@ -133,6 +137,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  notify: "Restart Dionaea container"
   tags: [dionaea]
 
 - name: "Deploy persona-consistent HTTP wwwroot index page"
@@ -189,7 +194,7 @@
     XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
   tags: [dionaea]
 
-- name: "Publish the Dionaea ports"
+- name: "Publish the Dionaea ports (single-node)"
   become: true
   ansible.builtin.template:
     src: dionaea.nft.j2
@@ -197,6 +202,23 @@
     owner: "root"
     group: "root"
     mode: "0600"
+  when: lantana.mode != "multi"
+  notify: "Reload nftables"
+  tags: [dionaea, nftables]
+
+- name: "Publish the Dionaea ports on honeywall nodes (multi-node)"
+  become: true
+  ansible.builtin.template:
+    src: dionaea.nft.j2
+    dest: /etc/lantana/honeywall/nftables/sensors/dionaea.nft
+    owner: "root"
+    group: "root"
+    mode: "0600"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['honeywall_nodes'] }}"
+  when:
+    - lantana.mode == "multi"
+    - groups['honeywall_nodes'] is defined
   notify: "Reload nftables"
   tags: [dionaea, nftables]
 

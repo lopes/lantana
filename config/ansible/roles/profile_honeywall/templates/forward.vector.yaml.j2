@@ -6,6 +6,5 @@ sinks:
     type: vector
     inputs:
       - "filter_*"
-      - "tag_*"
     address: "{{ network.collectors.collector_01.ipv4.split('/')[0] }}:{{ network.collectors.collector_01.port }}"
     version: "2"

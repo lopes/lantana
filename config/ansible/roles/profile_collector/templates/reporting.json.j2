@@ -26,6 +26,8 @@
     "pseudonym_map": {
       "{{ network.honeywall.wan.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.wan }}",
       "{{ network.honeywall.wan.ipv6.split('/')[0] }}": "{{ reporting.pseudonym_map.wan }}",
+      "{{ network.honeywall.lan.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.lan | default('honeypot-lan') }}",
+      "{{ network.honeywall.lan.ipv6.split('/')[0] }}": "{{ reporting.pseudonym_map.lan | default('honeypot-lan') }}",
       "{{ network.sensors.sensor_01.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.sensor_01 }}",
       "{{ network.sensors.sensor_01.ipv6.split('/')[0] }}": "{{ reporting.pseudonym_map.sensor_01 }}",
       "{{ network.collectors.collector_01.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.collector_01 }}",

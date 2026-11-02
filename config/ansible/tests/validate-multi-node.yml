@@ -273,29 +273,26 @@
         fail_msg: "Secrets file missing or wrong permissions"
 
     # ---------------------------------------------------------
-    # CRON JOBS
+    # PIPELINE PRUNE TIMER & BINARY
     # ---------------------------------------------------------
-    - name: "Check cron jobs"
+    - name: "Check lantana-prune systemd timer unit"
       ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - /etc/cron.d/lantana-prune
-      register: cron_check
+        path: /etc/systemd/system/lantana-prune.timer
+      register: prune_timer_check
 
-    - name: "Assert cron jobs exist"
+    - name: "Assert lantana-prune systemd timer exists"
       ansible.builtin.assert:
-        that: item.stat.exists
-        fail_msg: "Cron job {{ item.item }} is missing"
-      loop: "{{ cron_check.results }}"
+        that: prune_timer_check.stat.exists
+        fail_msg: "systemd timer /etc/systemd/system/lantana-prune.timer is missing"
 
-    - name: "Check lantana-prune is executable"
+    - name: "Check lantana-prune binary is executable"
       ansible.builtin.stat:
-        path: /usr/local/sbin/lantana-prune
+        path: /opt/lantana/pipeline/venv/bin/lantana-prune
       register: prune_script
 
-    - name: "Assert prune script is executable"
+    - name: "Assert lantana-prune binary is executable"
       ansible.builtin.assert:
         that:
           - prune_script.stat.exists
           - prune_script.stat.executable
-        fail_msg: "lantana-prune is missing or not executable"
+        fail_msg: "/opt/lantana/pipeline/venv/bin/lantana-prune is missing or not executable"

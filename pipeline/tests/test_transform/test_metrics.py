@@ -81,7 +81,7 @@ def silver_df() -> pl.DataFrame:
                 "finding_title": None,
                 "finding_uid": None,
                 "geo.country_code": "CN",
-                "geo.asn": "4134",
+                "geo.asn": "64498",
                 "geo.isp": "ChinaNet",
                 "abuseipdb_confidence_score": 85,
                 "abuseipdb_risk_score": 85.0,
@@ -124,7 +124,7 @@ def silver_df() -> pl.DataFrame:
                 "finding_title": None,
                 "finding_uid": None,
                 "geo.country_code": "CN",
-                "geo.asn": "4134",
+                "geo.asn": "64498",
                 "geo.isp": "ChinaNet",
                 "abuseipdb_confidence_score": 85,
                 "abuseipdb_risk_score": 85.0,
@@ -161,7 +161,7 @@ def silver_df() -> pl.DataFrame:
                 "finding_title": None,
                 "finding_uid": None,
                 "geo.country_code": "CN",
-                "geo.asn": "4134",
+                "geo.asn": "64498",
                 "geo.isp": "ChinaNet",
                 "abuseipdb_confidence_score": 85,
                 "abuseipdb_risk_score": 85.0,
@@ -200,7 +200,7 @@ def silver_df() -> pl.DataFrame:
             "file_url": "http://malware.example.com/payload.sh",
             "file_path": "/tmp/payload.sh",
             "geo.country_code": "CN",
-            "geo.asn": "4134",
+            "geo.asn": "64498",
             "geo.isp": "ChinaNet",
             "abuseipdb_confidence_score": 85,
             "abuseipdb_risk_score": 85.0,
@@ -236,7 +236,7 @@ def silver_df() -> pl.DataFrame:
             "finding_title": "ET SCAN Potential SSH Scan",
             "finding_uid": "2001219",
             "geo.country_code": "CN",
-            "geo.asn": "4134",
+            "geo.asn": "64498",
             "geo.isp": "ChinaNet",
             "abuseipdb_confidence_score": 85,
             "abuseipdb_risk_score": 85.0,
@@ -290,7 +290,7 @@ def silver_df() -> pl.DataFrame:
                 "finding_title": None,
                 "finding_uid": None,
                 "geo.country_code": "RU",
-                "geo.asn": "12389",
+                "geo.asn": "64499",
                 "geo.isp": "Rostelecom",
                 "abuseipdb_confidence_score": 42,
                 "abuseipdb_risk_score": 42.0,
@@ -327,7 +327,7 @@ def silver_df() -> pl.DataFrame:
                 "finding_title": None,
                 "finding_uid": None,
                 "geo.country_code": "US",
-                "geo.asn": "15169",
+                "geo.asn": "64500",
                 "geo.isp": "Google",
                 "abuseipdb_confidence_score": 10,
                 "abuseipdb_risk_score": 10.0,
@@ -574,7 +574,7 @@ class TestIPReputation:
                 "unmapped_password": [None],
                 "time": [datetime(2026, 5, 19, 12, 0, tzinfo=UTC)],
                 "geo.country_code": ["BR"],
-                "geo.asn": [12345],
+                "geo.asn": [64501],
                 "geo.isp": ["Example ISP"],
                 # No abuseipdb_*, greynoise_*, shodan_*, vt_* columns at all
             }
@@ -734,7 +734,7 @@ def _make_silver_row(
         "finding_title": None,
         "finding_uid": None,
         "geo.country_code": "CN",
-        "geo.asn": "4134",
+        "geo.asn": "64498",
         "geo.isp": "ChinaNet",
         "abuseipdb_confidence_score": 50,
         "greynoise_classification": "malicious",
@@ -764,7 +764,7 @@ class TestGeographicSummary:
 
     def test_missing_geo_columns(self) -> None:
         """DataFrame without geo columns returns empty."""
-        df = pl.DataFrame({"src_endpoint_ip": ["1.2.3.4"]})
+        df = pl.DataFrame({"src_endpoint_ip": ["192.0.2.1"]})
         assert compute_geographic_summary(df).is_empty()
 
     def test_int64_asn_column(self) -> None:
@@ -781,7 +781,7 @@ class TestGeographicSummary:
                 "geo.city": ["São Paulo", "New York"],
                 "geo.latitude": [-23.5, 40.7],
                 "geo.longitude": [-46.6, -74.0],
-                "geo.asn": pl.Series([262691, 15169], dtype=pl.Int64),
+                "geo.asn": pl.Series([65536, 64500], dtype=pl.Int64),
                 "geo.isp": ["CONECTA LTDA.", "Google"],
             }
         )
@@ -792,8 +792,8 @@ class TestGeographicSummary:
         assert len(asns) == 2
         # ASN values are stringified in the output entries
         joined = " ".join(asns)
-        assert "262691" in joined
-        assert "15169" in joined
+        assert "65536" in joined
+        assert "64500" in joined
 
 
 # ---------------------------------------------------------------------------
@@ -821,7 +821,7 @@ class TestDetectionFindings:
             {
                 "class_uid": [CLASS_NETWORK_ACTIVITY],
                 "finding_title": [None],
-                "src_endpoint_ip": ["1.2.3.4"],
+                "src_endpoint_ip": ["192.0.2.1"],
                 "severity_id": [3],
                 "time": [_ts()],
             }
@@ -851,7 +851,7 @@ class TestEnhancedRiskScoring:
             "time": _ts(),
             "message": "test",
             "status_id": STATUS_UNKNOWN,
-            "src_endpoint_ip": "1.2.3.4",
+            "src_endpoint_ip": "192.0.2.1",
             "src_endpoint_port": 12345,
             "dst_endpoint_ip": "honeypot-01",
             "dst_endpoint_port": 22,
@@ -907,7 +907,7 @@ class TestEnhancedRiskScoring:
             "time": _ts(),
             "message": "test",
             "status_id": STATUS_UNKNOWN,
-            "src_endpoint_ip": "1.2.3.4",
+            "src_endpoint_ip": "192.0.2.1",
             "src_endpoint_port": 12345,
             "dst_endpoint_ip": "honeypot-01",
             "dst_endpoint_port": 22,
@@ -961,7 +961,7 @@ class TestEnhancedRiskScoring:
             "time": _ts(),
             "message": "test",
             "status_id": STATUS_UNKNOWN,
-            "src_endpoint_ip": "1.2.3.4",
+            "src_endpoint_ip": "192.0.2.1",
             "src_endpoint_port": 12345,
             "dst_endpoint_ip": "honeypot-01",
             "dst_endpoint_port": 22,
@@ -988,7 +988,7 @@ class TestEnhancedRiskScoring:
             "shodan_ports": "22,80,443",
             "shodan_os": "Linux",
             "shodan_vulns": "CVE-2021-1234",
-            "shodan_org": "Hetzner",
+            "shodan_org": "Example Hosting ISP",
             "vt_malicious_count": 5,
             "vt_ip_reputation": -10,
         }
@@ -1018,7 +1018,7 @@ def _row_with(**overrides: object) -> dict[str, object]:
         "time": _ts(),
         "message": "test",
         "status_id": STATUS_UNKNOWN,
-        "src_endpoint_ip": "1.2.3.4",
+        "src_endpoint_ip": "192.0.2.1",
         "src_endpoint_port": 12345,
         "dst_endpoint_ip": "honeypot-01",
         "dst_endpoint_port": 22,
@@ -1228,3 +1228,34 @@ class TestRiskScoreDecomposition:
             "RIOT IP with hot AbuseIPDB+VT must end up below the STIX gate; "
             "if this fails, the RIOT short-circuit isn't doing its job."
         )
+
+
+def test_optional_first_skips_leading_nulls_across_diagonal_concat() -> None:
+    """When first row for an IP has null enrichment/geo fields and a later row has real values,
+    compute_ip_reputation picks the non-null value instead of returning None."""
+    df = pl.DataFrame(
+        [
+            _row_with(
+                **{
+                    "geo.country_code": None,
+                    "geo.asn": None,
+                    "geo.isp": None,
+                    "shodan_org": None,
+                }
+            ),
+            _row_with(
+                **{
+                    "geo.country_code": "DE",
+                    "geo.asn": "64497",
+                    "geo.isp": "Example Hosting ISP",
+                    "shodan_org": "Example Hosting ISP",
+                }
+            ),
+        ]
+    )
+    result = compute_ip_reputation(df)
+    row = result.row(0, named=True)
+    assert row["geo_country"] == "DE"
+    assert row["geo_asn"] == "64497"
+    assert row["geo_isp"] == "Example Hosting ISP"
+    assert row["shodan_org"] == "Example Hosting ISP"

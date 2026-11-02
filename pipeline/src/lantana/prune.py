@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import structlog
@@ -26,7 +26,7 @@ DISK_CRITICAL_THRESHOLD = 80.0
 
 def _cutoff_date(retention_days: int) -> date:
     """Compute the cutoff date: partitions older than this are pruned."""
-    return date.today() - timedelta(days=retention_days)
+    return datetime.now(UTC).date() - timedelta(days=retention_days)
 
 
 def _prune_date_partitions(root: Path, cutoff: date) -> int:

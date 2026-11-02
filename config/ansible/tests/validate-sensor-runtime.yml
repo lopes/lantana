@@ -154,6 +154,8 @@
             --no-pager 2>/dev/null \
           | grep -cE "Failed to load output engine|PermissionError|Could not open logfile|Unable to open file" \
           || true
+      args:
+        executable: /bin/bash
       loop: "{{ container_inspect.results }}"
       loop_control:
         loop_var: result
@@ -187,6 +189,8 @@
           fi
         done
         echo 0
+      args:
+        executable: /bin/bash
       loop: "{{ active_honeypots }}"
       loop_control:
         loop_var: honeypot
@@ -241,6 +245,8 @@
         set -o pipefail
         find {{ sensor_probes.cowrie.state_paths | join(' ') }} \
           {{ sensor_probes.cowrie.orphan_find_args }} 2>/dev/null | wc -l
+      args:
+        executable: /bin/bash
       register: cowrie_orphans
       changed_when: false
       when: "'cowrie' in active_honeypots"
@@ -261,6 +267,8 @@
         set -o pipefail
         find {{ sensor_probes.dionaea.state_paths | join(' ') }} \
           {{ sensor_probes.dionaea.orphan_find_args }} 2>/dev/null | wc -l
+      args:
+        executable: /bin/bash
       register: dionaea_orphans
       changed_when: false
       when: "'dionaea' in active_honeypots"

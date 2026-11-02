@@ -58,6 +58,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  notify: "Restart Cowrie container"
   tags: [cowrie]
 
 - name: "Deploy Cowrie health check script"
@@ -68,6 +69,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  notify: "Restart Cowrie container"
   tags: [cowrie]
 
 - name: "Create Quadlet directory for sensor user"
@@ -113,7 +115,7 @@
     XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
   tags: [cowrie]
 
-- name: "Publish the Cowrie ports"
+- name: "Publish the Cowrie ports (single-node)"
   become: true
   ansible.builtin.template:
     src: cowrie.nft.j2
@@ -121,6 +123,23 @@
     owner: "root"
     group: "root"
     mode: "0600"
+  when: lantana.mode != "multi"
+  notify: "Reload nftables"
+  tags: [cowrie, nftables]
+
+- name: "Publish the Cowrie ports on honeywall nodes (multi-node)"
+  become: true
+  ansible.builtin.template:
+    src: cowrie.nft.j2
+    dest: /etc/lantana/honeywall/nftables/sensors/cowrie.nft
+    owner: "root"
+    group: "root"
+    mode: "0600"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['honeywall_nodes'] }}"
+  when:
+    - lantana.mode == "multi"
+    - groups['honeywall_nodes'] is defined
   notify: "Reload nftables"
   tags: [cowrie, nftables]
 

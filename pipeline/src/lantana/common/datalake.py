@@ -8,6 +8,9 @@ from datetime import date
 from pathlib import Path
 
 import polars as pl
+import structlog
+
+logger = structlog.get_logger()
 
 BRONZE_ROOT: Path = Path(os.environ.get("LANTANA_BRONZE_ROOT", "/var/lib/lantana/datalake/bronze"))
 SILVER_ROOT: Path = Path(os.environ.get("LANTANA_SILVER_ROOT", "/var/lib/lantana/datalake/silver"))
@@ -39,12 +42,35 @@ def read_bronze_ndjson(
         ds = _extract_partition_value(parts, "dataset")
         server = _extract_partition_value(parts, "server")
 
-        # Read NDJSON line by line
+        # Read NDJSON line by line resiliently
         lines = file_path.read_text(encoding="utf-8").strip().splitlines()
         if not lines:
             continue
 
-        records = [json.loads(line) for line in lines]
+        records: list[dict[str, object]] = []
+        malformed_count = 0
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict):
+                    records.append(parsed)
+                else:
+                    malformed_count += 1
+            except json.JSONDecodeError:
+                malformed_count += 1
+
+        if malformed_count > 0:
+            logger.warning(
+                "bronze_malformed_lines_skipped",
+                path=str(file_path),
+                count=malformed_count,
+            )
+
+        if not records:
+            continue
 
         # Real honeypot logs have mixed-type fields (e.g., a field is a
         # string in some events but an empty list in others).  Coerce
@@ -66,13 +92,12 @@ def read_bronze_ndjson(
             df = df.with_columns(pl.col(c).str.replace(r"^::ffff:", "").alias(c) for c in ip_cols)
 
         # Ensure timestamp is Datetime (raw logs store it as string).
-        # Cowrie uses "Z" suffix, Suricata uses "+0000". Strip both
+        # Strip ISO-8601 timezone suffixes ("Z", "+0000", "+00:00")
         # and parse as naive datetime (all events are UTC).
         if "timestamp" in df.columns and df.schema["timestamp"] == pl.Utf8:
             ts = (
                 df.get_column("timestamp")
-                .str.replace(r"[+-]\d{4}$", "")
-                .str.replace(r"Z$", "")
+                .str.replace(r"(?:[+-]\d{2}:\d{2}|[+-]\d{4}|Z)$", "")
                 .str.to_datetime(strict=False)
             )
             df = df.with_columns(ts.alias("timestamp"))
@@ -189,7 +214,10 @@ def list_gold_dates(
     for entry in entries:
         if entry.is_dir() and entry.name.startswith("date="):
             date_str = entry.name[5:]  # strip "date="
-            dates.append(date.fromisoformat(date_str))
+            try:
+                dates.append(date.fromisoformat(date_str))
+            except ValueError:
+                continue
     return sorted(dates, reverse=True)
 
 

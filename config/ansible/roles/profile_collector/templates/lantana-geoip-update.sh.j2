@@ -16,7 +16,9 @@ for edition in GeoLite2-City GeoLite2-ASN; do
   workdir="${tmpdir}/${edition}"
   mkdir -p "$workdir"
   url="https://download.maxmind.com/app/geoip_download?edition_id=${edition}&license_key=${KEY}&suffix=tar.gz"
-  curl -fsSL "$url" -o "${workdir}/payload.tar.gz"
+  curl -fsSL --config - -o "${workdir}/payload.tar.gz" <<EOF
+url = "${url}"
+EOF
   tar -xzf "${workdir}/payload.tar.gz" -C "${workdir}"
   mmdb=$(find "${workdir}" -name "${edition}.mmdb" -type f -print -quit)
   [ -n "$mmdb" ] || { echo "No ${edition}.mmdb in tarball" >&2; exit 1; }

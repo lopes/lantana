@@ -18,8 +18,16 @@ from __future__ import annotations
 import gzip
 import io
 import ipaddress
+from datetime import UTC, datetime
 
 import polars as pl
+
+
+def _ensure_utc(value: object) -> datetime | None:
+    """Attach UTC tzinfo to naive datetime objects so Polars 2.0 strict schemas succeed."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return None
 
 
 def _is_real_attacker_ip(ip: str) -> bool:
@@ -86,8 +94,8 @@ def _build_ip_rows(
                 "datasets": datasets,
                 "count": int(r["count"]),
                 "risk_score": r.get("risk_score"),
-                "first_seen": r["first_seen"],
-                "last_seen": r["last_seen"],
+                "first_seen": _ensure_utc(r["first_seen"]),
+                "last_seen": _ensure_utc(r["last_seen"]),
             }
         )
     return rows
@@ -131,8 +139,8 @@ def _build_value_rows(
                 "datasets": datasets,
                 "count": int(r["count"]),
                 "risk_score": None,
-                "first_seen": r["first_seen"],
-                "last_seen": r["last_seen"],
+                "first_seen": _ensure_utc(r["first_seen"]),
+                "last_seen": _ensure_utc(r["last_seen"]),
             }
         )
     return rows

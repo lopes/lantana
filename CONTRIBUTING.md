@@ -58,7 +58,7 @@ Real values live only inside each operation's `config/ansible/inventories/op_<na
 | Python pipeline | `cd pipeline && uv sync --frozen --extra dev` |
 | Ansible | `pip install ansible ansible-lint`. Run from `config/ansible/`. |
 | Shell | `shellcheck` from `apt` / `brew`. |
-| Terraform | `terraform >= 1.15.5` (matches CI). |
+| Terraform | `terraform >= 1.5` (tested with `1.15.5` in CI). |
 
 Target OS for runtime is Debian 13. Local dev on macOS / other Linux distros is fine for everything except live-deploy testing.
 
@@ -83,7 +83,7 @@ Code requirements:
 - **Pylance strict mode** — full type annotations on every function signature and return type. No `Any` escape hatches.
 - **TDD** — write the test first, then the implementation. Every module has a corresponding test file mirroring the `src/` structure.
 - **Functional style** — pure functions for data transforms, Pydantic models for structured data, push IO to the edges. Prefer Polars expression chains over imperative loops. Minimize side effects.
-- **Boring, reliable tooling only** — Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly. No exotic or trendy dependencies — propose them in an issue first.
+- **Boring, reliable tooling only** — Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly, maxminddb. No exotic or trendy dependencies — propose them in an issue first.
 - **Fail-safe principles** — if you touch enrichment, normalisation, or transform code, the six principles in [CLAUDE.md](/CLAUDE.md#pipeline-fail-safe-principles) are not optional. Skipping them is what produced 8 distinct defects in op_alpha's first production run.
 
 ### Ansible (config/ansible/)

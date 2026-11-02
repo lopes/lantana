@@ -169,7 +169,7 @@ class TestNormalizeCowrie:
         """
         ndjson = (
             '{"timestamp":"2026-06-13T20:59:29Z","eventid":"cowrie.session.file_upload",'
-            '"src_ip":"130.12.180.51","src_port":54321,"dst_ip":"10.50.99.100",'
+            '"src_ip":"198.51.100.51","src_port":54321,"dst_ip":"10.50.99.100",'
             '"dst_port":22,"session":"abc999","protocol":"ssh",'
             '"filename":"redtail.x86_64",'
             '"outfile":"/cowrie/cowrie-git/var/lib/cowrie/downloads/59c29436755b0778e968d49feeae20ed65f5fa5e35f9f7965b8ed93420db91e5",'
@@ -565,7 +565,7 @@ class TestGeoStructFlattening:
                 "timestamp": ["2026-05-19T20:48:48Z"],
                 "geo": [
                     {
-                        "asn": 12345,
+                        "asn": 64501,
                         "isp": "Example ISP",
                         "country_code": "BR",
                         "region_code": "SP",
@@ -591,7 +591,7 @@ class TestGeoStructFlattening:
         ):
             assert f"geo.{field}" in result.columns
         assert result.get_column("geo.country_code").to_list() == ["BR"]
-        assert result.get_column("geo.asn").to_list() == [12345]
+        assert result.get_column("geo.asn").to_list() == [64501]
 
     def test_missing_geo_column_fills_nulls(self) -> None:
         """Bronze without any geo enrichment still produces the flat columns
@@ -637,14 +637,14 @@ class TestGeoStructFlattening:
                 "geo": [
                     '{"country_code": "BR", "region_code": "SP", "city": "Sao Paulo",'
                     ' "latitude": -23.5, "longitude": -46.6,'
-                    ' "timezone": "America/Sao_Paulo", "asn": 12345, "isp": "Example"}'
+                    ' "timezone": "America/Sao_Paulo", "asn": 64501, "isp": "Example"}'
                 ],
             }
         )
         result = normalize_dataset(stringified, "cowrie")
         assert "geo" not in result.columns
         assert result.get_column("geo.country_code").to_list() == ["BR"]
-        assert result.get_column("geo.asn").to_list() == [12345]
+        assert result.get_column("geo.asn").to_list() == [64501]
         assert result.get_column("geo.isp").to_list() == ["Example"]
 
 
@@ -960,3 +960,44 @@ class TestEdgeCases:
         assert "dataset" in result.columns
         assert "server" in result.columns
         assert "operation" in result.columns
+
+    def test_binary_only_dionaea_day_does_not_crash(self) -> None:
+        """normalize_dionaea succeeds on binary-only frames lacking connection_protocol/type."""
+        from lantana.models.normalize import normalize_dionaea
+        from lantana.models.ocsf import CLASS_FILE_ACTIVITY
+
+        binary_only = pl.DataFrame(
+            {
+                "eventid": ["dionaea.binary.captured"],
+                "timestamp": [pl.Series([None], dtype=pl.Datetime).to_list()[0]],
+                "shasum": ["a" * 64],
+                "binary_file_name": ["00aabbcc11ddeeff"],
+                "dataset": ["dionaea"],
+                "server": ["sn-01"],
+            }
+        )
+        result = normalize_dionaea(binary_only)
+        assert result.height == 1
+        row = result.row(0, named=True)
+        assert row["class_uid"] == CLASS_FILE_ACTIVITY
+        assert row["file_hash_sha256"] == "a" * 64
+        assert row["file_name"] == "00aabbcc11ddeeff"
+        assert row["message"] == "dionaea binary captured 00aabbcc11ddeeff"
+
+    def test_missing_required_columns_return_empty_or_null(self) -> None:
+        """Defensive guards handle missing eventid / event_type / length without crashing."""
+        from lantana.models.normalize import normalize_suricata
+
+        assert normalize_cowrie(pl.DataFrame({"src_ip": ["192.0.2.1"]})).is_empty()
+        assert normalize_suricata(pl.DataFrame({"src_ip": ["192.0.2.1"]})).is_empty()
+        nft_no_len = pl.DataFrame(
+            {
+                "action": ["drop"],
+                "chain": ["input"],
+                "protocol": ["tcp"],
+                "src_ip": ["192.0.2.1"],
+            }
+        )
+        res = normalize_nftables(nft_no_len)
+        assert res.height == 1
+        assert res.get_column("traffic_bytes_in").to_list() == [None]

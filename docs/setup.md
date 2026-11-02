@@ -17,7 +17,7 @@ The flow is the same for every operation:
 > Steps 1–5 are mechanical. Step 6 is creative and load-bearing. Budget more time for the narrative than for everything else combined.
 
 > [!NOTE]
-> All IPs, ports, hostnames, and domains in this guide are placeholders — IPs come from RFC 5737 (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and RFC 3849 (`2001:db8::/32`); domains from RFC 2606. Substitute your own values throughout. For the SSH admin port, **pick a random ephemeral port (49152–65535)** rather than reusing the example `60090` — a known default makes a host fingerprintable as a Lantana deployment.
+> All IPs, ports, hostnames, and domains in this guide are placeholders — IPs come from RFC 5737 (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and RFC 3849 (`2001:db8::/32`); domains from RFC 2606. Substitute your own values throughout. For the SSH admin port, **pick a random ephemeral port (49152–65535)** rather than reusing the example placeholder `51820` — a known default makes a host fingerprintable as a Lantana deployment.
 
 ---
 
@@ -43,7 +43,7 @@ The Ansible playbooks assume the target host is already in this state when a dep
   - Name matches `ansible_user` in the operation's `main.yml`.
 - **SSH service** — `/etc/ssh/sshd_config.d/00-lantana.conf` contains:
   - `PasswordAuthentication no`, `PubkeyAuthentication yes`, `AuthenticationMethods publickey`, `PermitRootLogin no`.
-  - `Port <random ephemeral port 49152–65535 chosen by the operator>` — never `22`, never the example `60090`.
+  - `Port <random ephemeral port 49152–65535 chosen by the operator>` — never `22`, never a fixed default (examples below use `51820` as a placeholder).
   - That port matches `ansible_port` in the operation's `main.yml`.
 - **`ssh.socket` disabled** — Debian 13 ships socket activation enabled, which silently keeps `sshd` listening on `22` regardless of the drop-in config.
 - **Python 3** installed (required for Ansible module execution).
@@ -64,7 +64,7 @@ For a Debian-family VPS or pre-existing host you already have SSH access to. `bo
 scripts/bootstrap-ssh.sh <host> <initial_ssh_user> <ssh_key> <ssh_port>
 
 # Example: fresh cloud-image VPS where the default user is `debian`
-scripts/bootstrap-ssh.sh 203.0.113.42 debian ~/.ssh/id_ed25519 60090
+scripts/bootstrap-ssh.sh 203.0.113.42 debian ~/.ssh/id_ed25519 51820
 ```
 
 The script will:
@@ -101,10 +101,10 @@ Expected output: `ok`. Anything else means the contract isn't fully satisfied �
 On the prepared server, collect the values you'll plug into the inventory.
 
 ```bash
-ssh -p 60090 -i ~/.ssh/id_ed25519 lantana@<host>
+ssh -p 51820 -i ~/.ssh/id_ed25519 lantana@<host>
 
 # WAN interface and addressing
-ip -br link                       # interface name (eno1, ens3, enp2s0, ...)
+ip -br link                       # interface name (default template uses enp2s0; may be eno1, ens3, ...)
 ip -br addr show dev <iface>      # IPv4 + IPv6, with netmask
 ip -4 route show default          # confirm IPv4 default route
 ip -6 route show default          # confirm IPv6 default route if dual-stack
@@ -112,7 +112,7 @@ ip -6 route show default          # confirm IPv6 default route if dual-stack
 
 Record the following — you'll paste them into the inventory in step 4:
 
-- WAN interface name (e.g. `eno1`)
+- WAN interface name (`enp2s0` by default in `op_single`; replace with `eno1`, `ens3`, etc. if your host differs)
 - IPv4 address with prefix (e.g. `203.0.113.42/24`)
 - IPv6 address with prefix (e.g. `2001:db8:1::1/64`) — or note that IPv6 is unavailable on this host.
 
@@ -172,7 +172,7 @@ Confirm the SSH user, port, and key path match what `bootstrap-ssh.sh` configure
 
 ```yaml
 ansible_user: "lantana"
-ansible_port: "60090"                          # the ephemeral port you chose in step 1
+ansible_port: "51820"                          # the ephemeral port you chose in step 1
 ansible_private_key_file: "~/.ssh/id_ed25519"
 
 lantana:
@@ -181,15 +181,15 @@ lantana:
 
 ### `group_vars/all/network.yml`
 
-Set the WAN block to the values from step 2.
+Set the WAN block to the values from step 2 (`enp2s0` is the default interface in the template; replace if your host uses `eno1`, `ens3`, etc.).
 
 ```yaml
 network:
   honeywall:
     wan:
-      interface: "eno1"                       # from `ip -br link` on the server
-      ipv4: "203.0.113.42/24"                 # public IPv4 with prefix length
-      ipv6: "2001:db8:1::1/64"                # public IPv6 with prefix, or remove the key entirely
+      interface: "enp2s0"                      # default in template; verify via `ip -br link`
+      ipv4: "203.0.113.42/24"                  # public IPv4 with prefix length
+      ipv6: "2001:db8:1::1/64"                 # public IPv6 with prefix, or remove the key entirely
 ```
 
 > [!WARNING]
@@ -210,7 +210,7 @@ reporting:
     pgp_fingerprint: ""                       # optional
 
   sharing:
-    tlp: "GREEN"                              # CLEAR / GREEN / AMBER / RED
+    tlp: "GREEN"                              # CLEAR (or legacy alias WHITE) / GREEN / AMBER / RED
     community: "Lantana Threat Intel"
     discord_channel: "lantana-intel"          # channel name shown in reports
 ```
@@ -424,10 +424,11 @@ The platform runs itself from here. Pipeline jobs are systemd `oneshot` services
 |---|---|---|
 | Continuous | Vector | Reads honeypot logs, enriches with GeoIP, writes bronze NDJSON |
 | 00:15 daily | `lantana-prune` | Enforces 180-day retention; emergency prune at >80% disk |
-| 01:00 daily | `lantana-enrich` | Bronze → silver: OCSF normalisation, redaction, Parquet |
-| 04:00 daily | `lantana-transform` | Silver → gold: aggregated intelligence, STIX bundles |
+| 00:30 daily | `lantana-grant-read` (cron) | Grants `nectar` read access to Cowrie `downloads/` and Dionaea `binaries/` |
+| 01:00 daily | `lantana-enrich` | Bronze → silver: IOC extraction, API enrichment, OCSF normalisation, redaction, Parquet |
+| 05:30 daily | `lantana-transform` | Silver → gold: computes the 6 aggregated gold Parquet tables (STIX 2.1 bundles are generated on demand from gold) |
 | 06:00 daily | `lantana-report` | Merged daily flow (absorbed the retired `lantana-alert.timer`): enrichment-error severity classification drives the embed colour, full intel brief attached; always posts |
-| 02:30 (1st of month) | `lantana-geoip-update` | Refreshes MaxMind City + ASN databases |
+| 02:30 (1st of month) | `lantana-geoip-update` (cron) | Refreshes MaxMind City + ASN databases |
 
 **Day one** — bronze accumulates from live traffic. Enrichment has nothing to process yet (it runs against yesterday's data).
 

@@ -27,9 +27,14 @@ table ip6 lantana_nat6 {
 
 # --- FILTER TABLE ---
 table inet lantana_filter {
-    set allowed_egress_ports {
+    set allowed_egress_tcp_ports {
         type inet_service
-        elements = { 53, 67, 80, 123, 443 }
+        elements = { 53, 80, 443 }
+    }
+
+    set allowed_egress_udp_ports {
+        type inet_service
+        elements = { 53, 67, 123, 547 }
     }
 
     chain input {
@@ -75,8 +80,8 @@ table inet lantana_filter {
         ct state established,related accept
 
         # 2. MAINTENANCE
-        udp dport @allowed_egress_ports accept
-        tcp dport @allowed_egress_ports accept
+        udp dport @allowed_egress_udp_ports accept
+        tcp dport @allowed_egress_tcp_ports accept
 
         # 3. ICMP
         ip protocol icmp accept

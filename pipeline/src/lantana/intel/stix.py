@@ -10,6 +10,7 @@ Produces a STIX Bundle containing:
 
 from __future__ import annotations
 
+import ipaddress
 from datetime import UTC, date, datetime
 
 import polars as pl
@@ -28,11 +29,38 @@ RISK_HIGH_THRESHOLD: float = 70.0
 
 # TLP marking definition IDs (predefined by STIX)
 _TLP_MAP: dict[str, stix2.MarkingDefinition] = {
+    "CLEAR": stix2.TLP_WHITE,
     "WHITE": stix2.TLP_WHITE,
     "GREEN": stix2.TLP_GREEN,
     "AMBER": stix2.TLP_AMBER,
+    "AMBER+STRICT": stix2.TLP_AMBER,
     "RED": stix2.TLP_RED,
 }
+
+
+def _date_to_utc_midnight(target_date: date) -> datetime:
+    """Return deterministic UTC midnight datetime for a partition date."""
+    return datetime(target_date.year, target_date.month, target_date.day, tzinfo=UTC)
+
+
+def _ip_stix_pattern(ip: str) -> str:
+    """Build a STIX 2.1 pattern for an IPv4 or IPv6 address literal."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return f"[ipv4-addr:value = '{ip}']"
+    if isinstance(addr, ipaddress.IPv6Address):
+        return f"[ipv6-addr:value = '{ip}']"
+    return f"[ipv4-addr:value = '{ip}']"
+
+
+def _assert_no_infra_leaks(serialized_bundle: str, reporting: ReportingConfig) -> None:
+    """Raise ValueError if any configured infrastructure IP appears in serialized STIX JSON."""
+    for infra_ip in reporting.redact.infrastructure_ips:
+        if infra_ip and infra_ip in serialized_bundle:
+            msg = f"Infrastructure IP leak in STIX bundle: {infra_ip}"
+            raise ValueError(msg)
+
 
 # Behavioral stage -> STIX indicator label
 _STAGE_LABELS: dict[str, list[str]] = {
@@ -59,11 +87,13 @@ def _make_indicators(
     progression: pl.DataFrame,
     identity: stix2.Identity,
     tlp: stix2.MarkingDefinition,
+    default_ts: datetime | None = None,
 ) -> list[stix2.Indicator]:
     """Create Indicator objects for high-risk IPs."""
     if reputation.is_empty():
         return []
 
+    fallback_ts = default_ts if default_ts is not None else datetime.now(tz=UTC)
     risky = reputation.filter(pl.col("risk_score") >= RISK_THRESHOLD)
     indicators: list[stix2.Indicator] = []
 
@@ -117,15 +147,16 @@ def _make_indicators(
 
         valid_from = row.get("first_seen")
         if valid_from is None or not isinstance(valid_from, datetime):
-            valid_from = datetime.now(tz=UTC)
+            valid_from = fallback_ts
 
         indicators.append(
             stix2.Indicator(
                 name=ip,
                 description=". ".join(description_parts),
-                pattern=f"[ipv4-addr:value = '{ip}']",
+                pattern=_ip_stix_pattern(str(ip)),
                 pattern_type="stix",
                 valid_from=valid_from,
+                created=fallback_ts,
                 labels=labels,
                 created_by_ref=identity.id,
                 object_marking_refs=[tlp.id],
@@ -140,16 +171,18 @@ def _make_campaigns(
     clusters: pl.DataFrame,
     identity: stix2.Identity,
     tlp: stix2.MarkingDefinition,
+    default_ts: datetime | None = None,
 ) -> list[stix2.Campaign]:
     """Create Campaign objects from credential clusters."""
     if clusters.is_empty():
         return []
 
+    fallback_ts = default_ts if default_ts is not None else datetime.now(tz=UTC)
     campaigns: list[stix2.Campaign] = []
     for row in clusters.iter_rows(named=True):
         first_seen = row.get("first_seen")
         if first_seen is None or not isinstance(first_seen, datetime):
-            first_seen = datetime.now(tz=UTC)
+            first_seen = fallback_ts
 
         campaigns.append(
             stix2.Campaign(
@@ -160,6 +193,7 @@ def _make_campaigns(
                     f"Total events: {row['total_events']}."
                 ),
                 first_seen=first_seen,
+                created=fallback_ts,
                 created_by_ref=identity.id,
                 object_marking_refs=[tlp.id],
             )
@@ -173,11 +207,14 @@ def _make_relationships(
     campaigns: list[stix2.Campaign],
     clusters: pl.DataFrame,
     identity: stix2.Identity,
+    tlp: stix2.MarkingDefinition,
+    default_ts: datetime | None = None,
 ) -> list[stix2.Relationship]:
     """Create Relationship objects linking indicators to campaigns."""
     if not indicators or not campaigns or clusters.is_empty():
         return []
 
+    fallback_ts = default_ts if default_ts is not None else datetime.now(tz=UTC)
     # Build lookup: IP -> indicator ID
     ip_to_indicator: dict[str, str] = {ind.name: ind.id for ind in indicators}
 
@@ -193,7 +230,9 @@ def _make_relationships(
                         relationship_type="indicates",
                         source_ref=ip_to_indicator[ip],
                         target_ref=campaign.id,
+                        created=fallback_ts,
                         created_by_ref=identity.id,
+                        object_marking_refs=[tlp.id],
                     )
                 )
 
@@ -204,26 +243,29 @@ def _make_malware_indicators(
     summary: pl.DataFrame,
     identity: stix2.Identity,
     tlp: stix2.MarkingDefinition,
-) -> tuple[list[stix2.Malware], list[stix2.Indicator]]:
-    """Create Malware and file-hash Indicator objects from captured samples."""
+    default_ts: datetime | None = None,
+) -> tuple[list[stix2.Malware], list[stix2.Indicator], list[stix2.Relationship]]:
+    """Create Malware, file-hash Indicator, and Relationship objects from captured samples."""
     if summary.is_empty():
-        return [], []
+        return [], [], []
 
+    fallback_ts = default_ts if default_ts is not None else datetime.now(tz=UTC)
     row = summary.row(0, named=True)
     hash_entries = row.get("top_download_hashes", []) or []
     hashes: list[str] = [e["value"] for e in hash_entries]
     if not hashes:
-        return [], []
+        return [], [], []
 
     malware_objects: list[stix2.Malware] = []
     hash_indicators: list[stix2.Indicator] = []
+    malware_relationships: list[stix2.Relationship] = []
 
     for sha256 in hashes:
         malware = stix2.Malware(
             name=f"sample-{sha256[:12]}",
             description=f"Malware sample captured by honeypot (SHA256: {sha256})",
             is_family=False,
-            hashes={"SHA-256": sha256},
+            created=fallback_ts,
             created_by_ref=identity.id,
             object_marking_refs=[tlp.id],
         )
@@ -234,31 +276,48 @@ def _make_malware_indicators(
             description="Malware hash captured by honeypot",
             pattern=f"[file:hashes.'SHA-256' = '{sha256}']",
             pattern_type="stix",
-            valid_from=datetime.now(tz=UTC),
+            valid_from=fallback_ts,
+            created=fallback_ts,
             labels=["malicious-activity"],
             created_by_ref=identity.id,
             object_marking_refs=[tlp.id],
         )
         hash_indicators.append(indicator)
 
-    return malware_objects, hash_indicators
+        malware_relationships.append(
+            stix2.Relationship(
+                relationship_type="indicates",
+                source_ref=indicator.id,
+                target_ref=malware.id,
+                created=fallback_ts,
+                created_by_ref=identity.id,
+                object_marking_refs=[tlp.id],
+            )
+        )
+
+    return malware_objects, hash_indicators, malware_relationships
 
 
 def _make_finding_indicators(
     detection: pl.DataFrame,
     identity: stix2.Identity,
     tlp: stix2.MarkingDefinition,
+    default_ts: datetime | None = None,
 ) -> list[stix2.Indicator]:
     """Create Indicator objects from detection findings with broad IP coverage."""
     if detection.is_empty():
         return []
 
+    fallback_ts = default_ts if default_ts is not None else datetime.now(tz=UTC)
     # Only rules triggered by >= 5 unique IPs are worth sharing as intel
     broad_rules = detection.filter(pl.col("unique_ips") >= 5)
     indicators: list[stix2.Indicator] = []
 
     for row in broad_rules.iter_rows(named=True):
         title = row.get("finding_title", "unknown")
+        valid_from = row.get("first_seen")
+        if valid_from is None or not isinstance(valid_from, datetime):
+            valid_from = fallback_ts
         indicators.append(
             stix2.Indicator(
                 name=f"rule-{title}",
@@ -268,7 +327,8 @@ def _make_finding_indicators(
                 ),
                 pattern="[network-traffic:extensions.'http-request-ext'.request_method = 'alert']",
                 pattern_type="stix",
-                valid_from=row.get("first_seen") or datetime.now(tz=UTC),
+                valid_from=valid_from,
+                created=fallback_ts,
                 labels=["anomalous-activity"],
                 created_by_ref=identity.id,
                 object_marking_refs=[tlp.id],
@@ -288,6 +348,7 @@ def generate_bundle(
     detection: pl.DataFrame | None = None,
 ) -> stix2.Bundle:
     """Generate a STIX 2.1 bundle from gold-layer data for a given date."""
+    default_ts = _date_to_utc_midnight(gold_date)
     tlp = _TLP_MAP.get(reporting.sharing.tlp.upper(), stix2.TLP_GREEN)
     identity = _make_identity(reporting)
 
@@ -298,24 +359,43 @@ def generate_bundle(
         progression,
         identity,
         tlp,
+        default_ts=default_ts,
     )
     objects.extend(indicators)
 
-    campaigns = _make_campaigns(clusters, identity, tlp)
+    campaigns = _make_campaigns(clusters, identity, tlp, default_ts=default_ts)
     objects.extend(campaigns)
 
-    relationships = _make_relationships(indicators, campaigns, clusters, identity)
+    relationships = _make_relationships(
+        indicators,
+        campaigns,
+        clusters,
+        identity,
+        tlp,
+        default_ts=default_ts,
+    )
     objects.extend(relationships)
 
     # Malware objects from captured file hashes
     if summary is not None:
-        malware_objects, hash_indicators = _make_malware_indicators(summary, identity, tlp)
+        malware_objects, hash_indicators, malware_rels = _make_malware_indicators(
+            summary,
+            identity,
+            tlp,
+            default_ts=default_ts,
+        )
         objects.extend(malware_objects)
         objects.extend(hash_indicators)
+        objects.extend(malware_rels)
 
     # Finding-based indicators from detection rules
     if detection is not None:
-        finding_indicators = _make_finding_indicators(detection, identity, tlp)
+        finding_indicators = _make_finding_indicators(
+            detection,
+            identity,
+            tlp,
+            default_ts=default_ts,
+        )
         objects.extend(finding_indicators)
 
     # Create a Report wrapping all objects
@@ -328,7 +408,8 @@ def generate_bundle(
                 f"Daily threat intelligence from {reporting.operation.name} "
                 f"for {gold_date.isoformat()}"
             ),
-            published=datetime.now(tz=UTC),
+            published=default_ts,
+            created=default_ts,
             object_refs=object_refs,
             labels=["threat-report"],
             created_by_ref=identity.id,
@@ -336,4 +417,6 @@ def generate_bundle(
         )
         objects.append(report)
 
-    return stix2.Bundle(objects=objects)
+    bundle = stix2.Bundle(objects=objects)
+    _assert_no_infra_leaks(bundle.serialize(), reporting)
+    return bundle

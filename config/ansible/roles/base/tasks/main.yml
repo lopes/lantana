@@ -25,6 +25,7 @@
     name:
       - cron
       - git
+      - logrotate
       - rsyslog
   tags: [base]
 
@@ -98,8 +99,9 @@
     dest: /etc/cron.d/lantana-logs
     content: |
       # Process all logs scheduled for 00:00 (Midnight)
-      0 0 * * * root /usr/sbin/logrotate -f /etc/lantana/logrotate.d/00_00/*
-
+      0 0 * * * root find /etc/lantana/logrotate.d/00_00 -maxdepth 1 -type f -exec /usr/sbin/logrotate -f {} +
+    owner: root
+    group: root
     mode: "0644"
   tags: [base]
 

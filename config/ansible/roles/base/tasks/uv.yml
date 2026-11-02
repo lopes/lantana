@@ -40,6 +40,7 @@
       tar -xzf "/tmp/uv-{{ uv_version }}-{{ uv_target }}.tar.gz" -C "$tmpdir"
       find "$tmpdir" -name 'uv'  -type f -exec install -m 0755 {} /usr/local/bin/uv  \;
       find "$tmpdir" -name 'uvx' -type f -exec install -m 0755 {} /usr/local/bin/uvx \;
+    executable: /bin/bash
   when: uv_version not in (_uv_installed.stdout | default(''))
   changed_when: true
   tags: [base, uv]

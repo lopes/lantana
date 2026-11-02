@@ -55,6 +55,11 @@ variable "lan_bridge" {
   description = "Proxmox bridge for LAN (internal, multi-node only, e.g. vmbr1)"
   type        = string
   default     = null
+
+  validation {
+    condition     = var.deployment_mode != "multi" || var.lan_bridge != null
+    error_message = "lan_bridge must be set when deployment_mode is 'multi'."
+  }
 }
 
 # --- DEPLOYMENT ---
