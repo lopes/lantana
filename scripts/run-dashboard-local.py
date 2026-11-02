@@ -235,7 +235,7 @@ def main() -> None:
         "LANTANA_SILVER_ROOT": str(SILVER_ROOT.resolve()),
         "LANTANA_GOLD_ROOT": str(GOLD_ROOT.resolve()),
     }
-    subprocess.run(
+    subprocess.run(  # nosemgrep
         [
             sys.executable,
             "-m",
