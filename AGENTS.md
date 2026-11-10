@@ -1,10 +1,17 @@
 # AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance and operational guardrails for AI coding agents working in this repository.
 
 ## Project Overview
 
 Lantana is a honeypot-as-code platform built on Ansible that deploys and operates IPv4/IPv6 dual-stack honeypots aligned with MITRE Engage principles. It supports single-node (all-in-one) and multi-node (distributed) deployment models using a zoned architecture (Honeywall, Sensor, Collector).
+
+## Agent Skills (`.agents/skills/`)
+
+Load these domain skills on demand to keep context focused:
+- [`scaffold-narrative`](.agents/skills/scaffold-narrative/SKILL.md) — Generate internally consistent `narrative.yml` deception personas, OS/kernel strings, and service banners.
+- [`deploy-sensors`](.agents/skills/deploy-sensors/SKILL.md) — Vector VRL merged-tree validation discipline, Cowrie/Dionaea Quadlet container invariants, and `validate-single-node.yml` / `validate-sensor-runtime.yml`.
+- [`verify-pipeline`](.agents/skills/verify-pipeline/SKILL.md) — Free-tier API quota cost model, SQLite enrichment cache inspection, mid-run hotfix protocol, targeted `--date` re-runs, and `validate-pipeline-cycle.yml`.
 
 ## Deployment Commands
 
@@ -167,70 +174,17 @@ Defect #11 (2026-05-21): without these, a Shodan re-run with 4670 IPs / 1243 cac
 
 Full reference (including all per-provider formulas, worked examples, and the FAQ): [docs/risk-scoring.md](/docs/risk-scoring.md). Any change to the formula must update that doc and the test fixtures in `pipeline/tests/test_transform/test_metrics.py::TestRiskScoreDecomposition`.
 
-## Pipeline verification discipline
+## Pipeline, Vector & Honeypot Deployment Discipline
 
-End-to-end pipeline runs on a live operation consume real provider budget and real time. They are a final verification step, never a feedback loop.
+Before running live pipeline verification or modifying Ansible roles, Vector VRL configs, or Cowrie/Dionaea Quadlets, load the corresponding operational skill:
 
-**Free-tier cost model** (no cached IOCs, ~1100 unique attacker IPs/day on op_alpha):
-
-- AbuseIPDB: 1000/day → exhausts before all IPs covered.
-- Shodan: 100/month → exhausts in minutes.
-- VirusTotal: 4/min throttle + 500/day → dominates wall-clock time (hours).
-- GreyNoise Community: 50/week → exhausts fast on busy days.
-
-**Discipline:**
-
-- **Mock first.** `tests/test_enrichment/` patterns (`AsyncMock` + `patch.object(provider._client, "get", ...)`) cover status codes, sparse responses, retries, RetryError unwrapping, and parse errors without an API call. If a change can be validated against mocked unit tests, it must be — before any live run.
-- **Gate the live run.** `uv run pytest && uv run ruff check && uv run mypy --strict` must be clean before touching the VPS.
-- **Inspect the cache before a re-run.** `sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT provider, ioc_type, COUNT(*) FROM cache GROUP BY provider, ioc_type"` tells you how much fresh budget the re-run will burn.
-- **Use `--date YYYY-MM-DD` for targeted re-runs** rather than waiting for the 01:00 UTC systemd timer (`lantana-enrich.timer`). `write_silver_partition` overwrites the date partition, so a re-run cleanly replaces a partial earlier write.
-- **A failed live run is expensive.** It may have burned the day's / month's quota for the providers it reached, blocking the next attempt for 24h+ on AbuseIPDB, until UTC midnight on VT, until the monthly reset on Shodan, and 7 days on GreyNoise.
-- **Mid-run hotfix protocol.** If a defect surfaces during an active live run, do not kill the run and do not redeploy mid-flight. Silver write is the last phase — killing means no silver. Let it finish, deploy the fix, then targeted re-run with `--date` after the relevant rate-limit windows reset.
-- **Three validation playbooks codify the post-deploy invariants** so verification is mechanical, not eyeball-driven:
-  - `config/ansible/tests/validate-single-node.yml` — runs immediately after `deploy_single.yml`. Asserts users, network, firewall, log directories, and the four `lantana-*.timer` units installed + enabled (plus the five `.service` units including manual/replay `lantana-alert.service`).
-  - `config/ansible/tests/validate-sensor-runtime.yml` — runs after `deploy_honeypots.yml` (or `deploy_single.yml`) with a ~30 s settle window. Asserts the cowrie + dionaea Quadlet ownership invariants (`UserNS=keep-id` for cowrie, no `,U` for either), container Status/Health/RestartCount, no log-plugin failure tracebacks since each container's `StartedAt`, the worker holds a write FD on `cowrie.json` / `dionaea.json`, today's bronze NDJSON is fresh within `sensor_freshness_window_seconds` (default 120 s), and no orphan-UID files under the sensor state trees. The executable counterpart to the post-restart manual check pattern from the 2026-06-08 → 2026-06-11 incident loop.
-  - `config/ansible/tests/validate-pipeline-cycle.yml` — runs after the first 06:00 UTC cycle. Asserts each pipeline unit's last `Result=success`, `run_summary` in journal, silver+gold parquet presence (all 6 gold tables), `.provider_state.json` exists, no API-key residue in `enrichment_errors.json`, per-provider risk_score columns in silver, gold composite + sub-scores + the GreyNoise RIOT invariant. Defaults `target_date` to yesterday UTC; override with `-e target_date=...`.
-  - Visual checks (Discord report rendering, dashboard pages, STIX bundle) stay manual — see [docs/validation.md](/docs/validation.md) (Day 7: Reports, STIX, and Dashboard).
-
-## Vector deployment discipline
-
-Vector configs span multiple files: `/etc/vector/vector.yaml` (main, with the keepalive blackhole sink) plus every `conf.d/*.yaml` (honeypot pipelines, firewall, receiver). Vector loads them as a single merged tree at startup, but `vector validate <file>` on a single conf.d file usually fails on "No sinks defined" — sinks live in `forward-honeywall.yaml` / `forward-sensor.yaml`, sources/transforms live elsewhere.
-
-A broken VRL fragment renders fine via Ansible's `template` module, the `Restart Vector` task succeeds (systemd starts the process), then Vector exits 78/CONFIG, systemd's restart-on-failure policy kicks in, and you get a crashloop with no source ingestion (2026-05-21 10:47 outage — every cowrie/suricata/nftables event for ~4 hours sat in the source files unshipped).
-
-**Every Ansible role that renders a Vector config must `notify:` the merged-tree validate handler BEFORE the Vector restart fires.** The handler lives once in `roles/base/handlers/main.yml`:
-
-```yaml
-- name: "Validate Vector config tree"
-  become: true
-  ansible.builtin.shell: |
-    set -e
-    extra_files=$(find /etc/vector/conf.d -maxdepth 1 -name '*.yaml' 2>/dev/null || true)
-    vector validate --no-environment /etc/vector/vector.yaml $extra_files
-  changed_when: false
-```
-
-`find` enumerates the conf.d files rather than relying on a shell glob because on a **fresh install** the handler can fire from the base role before any `conf.d/*.yaml` has been templated. In that state the glob `/etc/vector/conf.d/*.yaml` is left literal by the shell, Vector receives a path that doesn't exist, and exits 78/CONFIG — the crashloop the validate is supposed to prevent (2026-05-22 fresh-install regression). When `find` returns empty, `vector validate` runs against just `vector.yaml`, which is fine: no sources/transforms exist yet to interact with the sinks.
-
-Every role that renders Vector configs must `notify:` this handler immediately after the render task, ordered before the "Restart Vector" handler. If the validate fails, the play stops, Vector keeps running on whatever config was previously loaded, and the operator gets the VRL compile error in Ansible output rather than discovering it from a silently-stopped pipeline hours later. The 2026-05-21 10:47 outage (every cowrie/suricata/nftables event for ~4 hours sat in the source files unshipped) is the failure mode being prevented.
-
-## Honeypot deployment discipline
-
-v1.0.0 ships two honeypots: Cowrie (SSH+Telnet) and Dionaea (FTP, HTTP, EPMAP, SMB, MSSQL, MySQL). Several Dionaea decisions are load-bearing — silent failures (status 133, zero bound ports, no log lines) result if any are reverted. The full rationale is in `docs/honeypots.md` and the failure-mode debug recipes are in `docs/troubleshooting.md` — this section is the "don't break it" summary for future contributors.
-
-- **Dionaea image is pinned to `docker.io/dinotools/dionaea:nightly`, not `:latest`.** `:latest` was frozen at 2020-11-30 (0.11.0 release) and has a half-empty config tree; `:nightly` is the actively-rebuilt tag from the same 0.11.0 source. Never switch to `:latest`.
-- **Per-service directory overlay, not single-file.** The image's bundled `dionaea.cfg` globs `services-enabled/*.yaml` and `ihandlers-enabled/*.yaml`; a single-file overlay at `dionaea.yaml` is invisible. Lantana renders one `services-enabled/<svc>.yaml` per catalog entry and mounts the dir `:ro` over the image's, replacing the bundled 16 services with our 6.
-- **Service catalog drives everything.** `roles/dionaea/defaults/main.yml::dionaea_service_catalog` is the single source of truth — templates iterate it for the per-service yamls, Quadlet `PublishPort` lines, nftables DNAT rules, and the validate-single-node port assertion. Drop or add a protocol by editing the catalog; the rest follows.
-- **All service yaml content must be 7-bit ASCII.** The dinotools image runs Python 3.6 + PyYAML, which falls back to the ASCII codec without a BOM. One non-ASCII byte (em-dash, arrow, smart quote) in any `services-enabled/*.yaml` triggers `UnicodeDecodeError` and the *entire* service-registration loop aborts — zero ports bind. Use `--` instead of `—`, `->` instead of `→`. The `dionaea.container.j2` and `dionaea.nft.j2` templates are exempt (their consumers handle UTF-8).
-- **Five capabilities must stay added.** Quadlet drops all then adds back `NET_BIND_SERVICE` (privileged ports inside the container), `SETUID` + `SETGID` (entrypoint drops privs via `-u dionaea -g dionaea` — without these dionaea exits 133 silently), `CHOWN` + `FOWNER` (clean `cp -a` ownership preservation during `init_lib`).
-- **`ReadOnly=true` is incompatible.** The entrypoint must write seeded configs into `/opt/dionaea/etc/dionaea/`. The Dionaea Quadlet intentionally omits `ReadOnly=true`; containment comes from `DropCapability=ALL` + explicit cap allowlist + rootless user namespace + `NoNewPrivileges=true`.
-- **`DIONAEA_FORCE_INIT_CONF=1` + `DIONAEA_FORCE_INIT_DATA=1` env vars must stay set.** Our bind-mounts create the entrypoint's "does the config dir exist?" target as a side-effect, defeating the `test ! -d` check. The two env vars force the seed every boot.
-- **SIP is intentionally absent from the v1.0.0 catalog.** The bundled SIP module hits an unfixable sqlite ownership race between the supervisor (container root) and the worker (dionaea user). `:memory:` doesn't help — additional on-disk state in the SIP module fails the same way. The `templates/services-enabled/sip.yaml.j2` template stays in the repo so a future image fix lets us re-enable SIP by adding the catalog entry back. The fintech persona doesn't lose meaningful intel from this gap.
-- **Cowrie sub-protocol toggle is via `cowrie.cfg`, not inventory.** Cowrie's SSH (22) and Telnet (23) are governed by `[ssh] enabled` / `[telnet] enabled` flags in `cowrie.cfg.j2`. Cowrie is intentionally simpler than Dionaea — no catalog, no per-protocol directory overlay. Stick with the upstream's single-cfg model.
-- **Cowrie health check must use `CMD prefix` format, not `CMD-SHELL`.** The cowrie image has no shell (`sh`) and no `nc` — `CMD-SHELL` silently exits 1 on every check (OCI runtime error goes to stderr, Podman swallows it). The JSON array format `["CMD","python3","..."]` is also broken in Podman 5.4.2: Quadlet passes it as a single-element string array instead of parsing the JSON. The only working format is `HealthCmd=CMD python3 /healthcheck.py` with the probe script mounted from the host. Verify with `podman inspect sensor-cowrie --format "{{json .Config.Healthcheck.Test}}"` — must show `["CMD","python3","/healthcheck.py"]`, not a single-element array. The probe lives at `roles/cowrie/files/healthcheck.py`. Every Quadlet deploy task must `notify:` a restart handler or the running container keeps the old health check config — see `roles/cowrie/handlers/main.yml`.
-- **Cowrie ownership flows via `UserNS=keep-id:uid=999,gid=999`, not `,U`.** The `,U` volume flag only chowns at first volume init; when the upstream `cowrie/cowrie:latest` image rebased and bumped the `cowrie` user UID (998 → 999 around 2026-06-08), `,U` did not re-fire and every command session crashed silently on TTY transcript write (`PermissionError: tty/<sid>-Ne.log`). Cowrie still logged login events but Twisted aborted the exec path before emitting `cowrie.command.input` — four days of attacker command intel lost before the symptom surfaced as a downstream pipeline crash. `UserNS=keep-id:uid=999,gid=999` makes the rootless host user (stigma) appear inside the container as cowrie (UID 999), so stigma-owned bind-mount paths are writable by cowrie regardless of `,U`'s init-time semantics. The `999` literal is the only image-UID coupling — review it whenever `cowrie/cowrie:latest` rebases.
-- **Dionaea ownership flows from the entrypoint, not `,U`.** Dionaea's image has a two-user runtime — supervisor as container root (UID 0) for privileged setup, worker as dionaea (UID 1000) for everything else, dropped via `-u dionaea -g dionaea`. The entrypoint chowns `/opt/dionaea/var/log/dionaea` and `/opt/dionaea/var/lib/dionaea` to `dionaea:dionaea` on every start, but only the directories — not files inside them. With `,U` on the bind-mount, Podman would race the entrypoint by re-chowning the source tree (including files) back to the container `User=` (root → host stigma) on every start, leaving the worker (UID 1000) unable to truncate-and-open its log files. The Quadlet has no `,U`; the entrypoint is the single source of ownership truth. Recovery for a host with mismatched ownership (worker can't open `dionaea.json`): delete the stale log file and restart the container — see [docs/troubleshooting.md](/docs/troubleshooting.md) "Dionaea Sensor — log_json silent fail" for the full recipe. `UserNS=keep-id` does NOT work here: mapping host stigma → container UID 1000 would break the supervisor's setup phase that expects to be container UID 0.
-- **The structural fragility is rolling-tag upstream images + bind-mount ownership flags.** Both incidents above traced back to the same combination: a `:latest` / `:nightly` image rebase (which we silently pull) shifts in-container UIDs, and a `,U` or similar volume flag that fires every container start interacts badly with what the image's own entrypoint expects. The right long-term answer is to build our own images from a pinned upstream git ref and own the in-container UID/GID as a repo constant — see [TODO.md](/TODO.md) "Self-built honeypot images." Until then, every upstream rebase is an operational risk that may surface only days later via the runner-kill-blind-spot path (silent failure → pipeline reads as "no events" → green Discord brief → 4+ days to detect).
+- **Pipeline Verification & Quota Discipline ([`verify-pipeline`](.agents/skills/verify-pipeline/SKILL.md)):**
+  - Mock first (`tests/test_enrichment/`), gate every live run on `cd pipeline && uv run pytest && uv run ruff check && uv run mypy --strict`, inspect `.enrichment_cache.db` before re-running, use `--date YYYY-MM-DD` for targeted re-runs, never kill an active live run mid-flight (silver writes last), and verify post-cycle invariants with `config/ansible/tests/validate-pipeline-cycle.yml`.
+- **Vector & Honeypot Sensor Discipline ([`deploy-sensors`](.agents/skills/deploy-sensors/SKILL.md)):**
+  - **Vector:** Every Ansible role rendering a Vector config must `notify: "Validate Vector config tree"` (`roles/base/handlers/main.yml`, using `find /etc/vector/conf.d`) *before* `"Restart Vector"` fires.
+  - **Dionaea (`docker.io/dinotools/dionaea:nightly`):** Driven by `dionaea_service_catalog`; 7-bit ASCII only in `services-enabled/*.yaml` (Python 3.6 + PyYAML); keep `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`, `FOWNER`; omit `ReadOnly=true`; keep `DIONAEA_FORCE_INIT_CONF=1` and `DIONAEA_FORCE_INIT_DATA=1`; no `,U` or `UserNS=keep-id`.
+  - **Cowrie:** Health check must use `HealthCmd=CMD python3 /healthcheck.py` (never `CMD-SHELL` or JSON array); ownership flows via `UserNS=keep-id:uid=999,gid=999` (never `,U`).
+  - **Validation Playbooks:** Run `tests/validate-single-node.yml` and `tests/validate-sensor-runtime.yml` after deployments.
 
 ## Daily Discord report
 
