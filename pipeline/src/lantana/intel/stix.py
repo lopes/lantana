@@ -64,6 +64,38 @@ def _date_to_utc_midnight(target_date: date) -> datetime:
     return datetime(target_date.year, target_date.month, target_date.day, tzinfo=UTC)
 
 
+def _ensure_utc_dt(value: object, fallback: datetime) -> datetime:
+    """Coerce naive/aware datetime or ISO string to a UTC-aware datetime.
+
+    Gold Parquet frames built from mixed sensor datasets (e.g. Dionaea's
+    tz-naive timestamps combined with Cowrie's UTC timestamps) can store
+    ``first_seen`` as tz-naive ``pl.Datetime``. ``stix2.Indicator`` compares
+    ``valid_until <= valid_from`` and raises ``TypeError`` if one is naive
+    and the other is UTC-aware.
+    """
+    fb = fallback.replace(tzinfo=UTC) if fallback.tzinfo is None else fallback.astimezone(UTC)
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return fb
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    return fb
+
+
+def _ensure_valid_until(
+    valid_from: datetime,
+    default_until: datetime,
+    min_days: int,
+) -> datetime:
+    """Guarantee ``valid_until > valid_from`` even under minor clock skew."""
+    if default_until > valid_from:
+        return default_until
+    return valid_from + timedelta(days=min_days)
+
+
 def _escape_stix_value(value: str) -> str:
     """Escape backslashes and single quotes inside a STIX 2.1 pattern string literal."""
     return value.replace("\\", "\\\\").replace("'", "\\'")
@@ -239,9 +271,8 @@ def _make_indicators(
             vuln_count = len(str(row["shodan_vulns"]).split(","))
             description_parts.append(f"Known CVEs: {vuln_count}")
 
-        valid_from = row.get("first_seen")
-        if valid_from is None or not isinstance(valid_from, datetime):
-            valid_from = fallback_ts
+        valid_from = _ensure_utc_dt(row.get("first_seen"), fallback_ts)
+        ind_valid_until = _ensure_valid_until(valid_from, valid_until, INBOUND_IP_VALID_DAYS)
 
         indicators.append(
             stix2.Indicator(
@@ -250,7 +281,7 @@ def _make_indicators(
                 pattern=_ip_stix_pattern(str(ip)),
                 pattern_type="stix",
                 valid_from=valid_from,
-                valid_until=valid_until,
+                valid_until=ind_valid_until,
                 created=fallback_ts,
                 labels=labels,
                 created_by_ref=identity.id,
@@ -275,9 +306,7 @@ def _make_campaigns(
     fallback_ts = default_ts if default_ts is not None else datetime.now(tz=UTC)
     campaigns: list[stix2.Campaign] = []
     for row in clusters.iter_rows(named=True):
-        first_seen = row.get("first_seen")
-        if first_seen is None or not isinstance(first_seen, datetime):
-            first_seen = fallback_ts
+        first_seen = _ensure_utc_dt(row.get("first_seen"), fallback_ts)
 
         campaigns.append(
             stix2.Campaign(
@@ -432,9 +461,13 @@ def _make_durable_ioc_objects(
         if not ioc_value:
             continue
 
-        valid_from = row.get("first_seen")
-        if valid_from is None or not isinstance(valid_from, datetime):
-            valid_from = fallback_ts
+        valid_from = _ensure_utc_dt(row.get("first_seen"), fallback_ts)
+        row_infra_until = _ensure_valid_until(
+            valid_from, infra_valid_until, OUTBOUND_INFRA_VALID_DAYS
+        )
+        row_artifact_until = _ensure_valid_until(
+            valid_from, artifact_valid_until, MALWARE_PERSISTENCE_VALID_DAYS
+        )
 
         vhash = row.get("vhash")
         family = row.get("malware_family")
@@ -477,7 +510,7 @@ def _make_durable_ioc_objects(
                 pattern=f"[file:hashes.'SHA-256' = '{_escape_stix_value(ioc_value)}']",
                 pattern_type="stix",
                 valid_from=valid_from,
-                valid_until=artifact_valid_until,
+                valid_until=row_artifact_until,
                 created=fallback_ts,
                 labels=labels,
                 created_by_ref=identity.id,
@@ -518,7 +551,7 @@ def _make_durable_ioc_objects(
                     pattern=_ip_stix_pattern(ioc_value),
                     pattern_type="stix",
                     valid_from=valid_from,
-                    valid_until=infra_valid_until,
+                    valid_until=row_infra_until,
                     created=fallback_ts,
                     labels=["malicious-activity", "command-and-control"],
                     created_by_ref=identity.id,
@@ -534,7 +567,7 @@ def _make_durable_ioc_objects(
                     pattern=f"[url:value = '{_escape_stix_value(ioc_value)}']",
                     pattern_type="stix",
                     valid_from=valid_from,
-                    valid_until=infra_valid_until,
+                    valid_until=row_infra_until,
                     created=fallback_ts,
                     labels=["malicious-activity", "malware-staging"],
                     created_by_ref=identity.id,
@@ -550,7 +583,7 @@ def _make_durable_ioc_objects(
                     pattern=f"[domain-name:value = '{_escape_stix_value(ioc_value)}']",
                     pattern_type="stix",
                     valid_from=valid_from,
-                    valid_until=infra_valid_until,
+                    valid_until=row_infra_until,
                     created=fallback_ts,
                     labels=["malicious-activity", "malware-staging"],
                     created_by_ref=identity.id,
@@ -566,7 +599,7 @@ def _make_durable_ioc_objects(
                     pattern=f"[x-lantana-ssh-key:fingerprint = '{_escape_stix_value(ioc_value)}']",
                     pattern_type="stix",
                     valid_from=valid_from,
-                    valid_until=artifact_valid_until,
+                    valid_until=row_artifact_until,
                     created=fallback_ts,
                     labels=["malicious-activity", "persistence"],
                     created_by_ref=identity.id,

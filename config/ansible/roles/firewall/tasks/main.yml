@@ -40,6 +40,35 @@
   notify: "Restart rsyslog"
   tags: [nftables]
 
+- name: "Check whether rsyslog loaded 10-nftables.conf"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    conf_mtime=$(stat -c %Y /etc/rsyslog.d/10-nftables.conf)
+    rsyslog_ts=$(systemctl show rsyslog.service --property=ActiveEnterTimestamp --value)
+    if [ -z "$rsyslog_ts" ]; then
+      echo stale
+      exit 0
+    fi
+    rsyslog_epoch=$(date -d "$rsyslog_ts" +%s 2>/dev/null || echo 0)
+    if [ "$conf_mtime" -gt "$rsyslog_epoch" ]; then
+      echo stale
+    else
+      echo fresh
+    fi
+  register: rsyslog_nftables_state
+  changed_when: false
+  tags: [nftables]
+
+- name: "Restart rsyslog when 10-nftables.conf post-dates last rsyslog start"
+  become: true
+  ansible.builtin.systemd:
+    name: rsyslog
+    state: restarted
+    enabled: true
+  when: rsyslog_nftables_state.stdout | trim == "stale"
+  tags: [nftables]
+
 - name: "Setup log rotation of firewall connections"
   become: true
   ansible.builtin.copy:

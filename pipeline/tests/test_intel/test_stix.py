@@ -501,3 +501,37 @@ class TestStixV15DurablePivot:
                 date(2026, 4, 25), reporting, _make_reputation(), _make_progression(), host_clusters
             )
         assert "vps-secret-node.example.net" not in str(exc_host.value)
+
+    def test_naive_datetime_first_seen_does_not_raise_typeerror(self) -> None:
+        """Tz-naive first_seen values (production mixed-dataset Parquet) normalize to UTC."""
+        naive_ts = datetime(2026, 4, 25, 14, 0, 1)  # intentionally tz-naive
+        rep = _make_reputation().with_columns(pl.lit(naive_ts).alias("first_seen"))
+        clusters = _make_clusters().with_columns(pl.lit(naive_ts).alias("first_seen"))
+        extracted = pl.DataFrame(
+            {
+                "ioc_type": ["c2_ip", "malware_hash"],
+                "ioc_value": ["203.0.113.88", "a" * 64],
+                "vhash": [None, None],
+                "first_seen": [naive_ts, naive_ts],
+                "last_seen": [naive_ts, naive_ts],
+                "event_count": [1, 1],
+                "unique_src_ips": [1, 1],
+                "vt_status": [None, None],
+                "vt_malicious": [None, None],
+                "gti_verdict": [None, None],
+                "gti_score": [None, None],
+                "malware_family": [None, None],
+                "actor_associations": [None, None],
+            }
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            _reporting(),
+            rep,
+            _make_progression(),
+            clusters,
+            extracted_iocs=extracted,
+        )
+        inds = [o for o in bundle.objects if o.type == "indicator"]
+        assert len(inds) == 4
+        assert all(ind.valid_until > ind.valid_from for ind in inds)
