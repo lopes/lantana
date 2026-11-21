@@ -441,3 +441,26 @@ def test_redact_config_alias_unified() -> None:
     from lantana.common.config import RedactConfig
 
     assert RedactConfig is RedactionConfig
+
+
+def test_redact_dionaea_http_preview_and_host_headers() -> None:
+    """OPSEC: WAN IP / variants inside Dionaea HTTP preview, host, and URI are scrubbed."""
+    cfg = RedactionConfig(
+        infrastructure_ips=["203.0.113.97"],
+        infrastructure_cidrs=["10.50.99.0/24"],
+        pseudonym_map={"203.0.113.97": "honeypot-wan"},
+        infrastructure_hostnames=["vps-test-01.example.net"],
+    )
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["198.51.100.10"],
+            "http_host": ["203.0.113.97:80"],
+            "http_uri": ["/probe?target=vps-test-01.example.net"],
+            "http_body_preview": ['{"target":"203-0-113-97","host":"vps-test-01.example.net"}'],
+        }
+    )
+    out = redact_infrastructure_ips(df, cfg).row(0, named=True)
+    for col in ("http_host", "http_uri", "http_body_preview"):
+        assert "203.0.113.97" not in out[col]
+        assert "203-0-113-97" not in out[col]
+        assert "vps-test-01.example.net" not in out[col]

@@ -40,6 +40,20 @@ transforms:
       }
       del(.ftp)
 
+      # Normalize rich lantana_json fields when present so bronze schema stays
+      # flat across HTTP probes, MSSQL/MySQL queries, and attributed binaries.
+      if exists(.http_method) { .http_method = to_string(.http_method) ?? null }
+      if exists(.http_uri) { .http_uri = to_string(.http_uri) ?? null }
+      if exists(.http_user_agent) { .http_user_agent = to_string(.http_user_agent) ?? null }
+      if exists(.http_host) { .http_host = to_string(.http_host) ?? null }
+      if exists(.http_content_type) { .http_content_type = to_string(.http_content_type) ?? null }
+      if exists(.http_body_preview) { .http_body_preview = to_string(.http_body_preview) ?? null }
+      if exists(.sql_command) { .sql_command = to_string(.sql_command) ?? null }
+      if exists(.shasum) { .shasum = to_string(.shasum) ?? null }
+      if exists(.download_url) { .download_url = to_string(.download_url) ?? null }
+      if exists(.binary_file_name) { .binary_file_name = to_string(.binary_file_name) ?? null }
+      if exists(.eventid) { .eventid = to_string(.eventid) ?? null }
+
       .dataset = "dionaea"
       .server = "{{ inventory_hostname }}"
       .operation = "{{ narrative.operation_name }}"

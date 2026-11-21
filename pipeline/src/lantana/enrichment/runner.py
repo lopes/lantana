@@ -889,13 +889,18 @@ async def run_enrichment(
                 continue
             dfs[dataset] = df
 
-        # Phase A.1: synthesise dionaea file-activity rows from binaries dir
+        # Phase A.1: synthesise fallback dionaea file-activity rows from disk
+        # only for hashes not already attributed in bronze by lantana_json.
         default_server = _infer_default_server(dfs)
+        attributed_dionaea_hashes = (
+            extract_hashes_from_bronze(dfs["dionaea"]) if "dionaea" in dfs else set()
+        )
         binary_events = extract_dionaea_binary_events(
             sensor_dir,
             target_date,
             default_server=default_server,
             default_operation=reporting.operation.name,
+            exclude_hashes=attributed_dionaea_hashes,
         )
         if binary_events:
             synth_df = pl.DataFrame(binary_events)

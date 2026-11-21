@@ -1,0 +1,180 @@
+---
+name: Build Dionaea Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "containers/dionaea/**"
+      - "config/ansible/roles/dionaea/**"
+      - ".github/workflows/build-dionaea.yml"
+  pull_request:
+    paths:
+      - "containers/dionaea/**"
+      - "config/ansible/roles/dionaea/**"
+      - ".github/workflows/build-dionaea.yml"
+  schedule:
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-dionaea-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/lopes/lantana-dionaea
+  CHANNEL_TAG: v1.5
+  DIONAEA_REF: 4e459f1b672a5b4c1e8335c0bff1b93738019215
+
+jobs:
+  build-and-verify:
+    name: Build, smoke-test & publish lantana-dionaea
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Compute upstream short SHA
+        id: meta
+        run: |
+          echo "short_sha=${DIONAEA_REF:0:12}" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Build local candidate image
+        uses: docker/build-push-action@v6
+        with:
+          context: containers/dionaea
+          file: containers/dionaea/Containerfile
+          load: true
+          tags: lantana-dionaea:ci-test
+          build-args: |
+            DIONAEA_REF=${{ env.DIONAEA_REF }}
+            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.epoch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test UID/GID, bistreams disabled, healthcheck, and lantana_json HTTP POST capture
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /bin/sh lantana-dionaea:ci-test -c \
+            'id -u dionaea | grep -qx 1000 && id -g dionaea | grep -qx 1000 && grep -qx "processors=filter_emu" /opt/dionaea/etc/dionaea/dionaea.cfg'
+
+          TMPDIR=$(mktemp -d)
+          mkdir -p "$TMPDIR/services" "$TMPDIR/ihandlers" "$TMPDIR/log" "$TMPDIR/lib/binaries" "$TMPDIR/lib/wwwroot" "$TMPDIR/lib/tmp"
+          echo "<html>ok</html>" > "$TMPDIR/lib/wwwroot/index.html"
+          cat > "$TMPDIR/services/http.yaml" <<'EOF'
+          - name: http
+            config:
+              root: /opt/dionaea/var/lib/dionaea/wwwroot
+              ports:
+                - 80
+              headers:
+                - ["Server", "nginx/1.22.1"]
+          EOF
+          cat > "$TMPDIR/ihandlers/lantana_json.yaml" <<'EOF'
+          - name: lantana_json
+            config:
+              handlers:
+                - file:///opt/dionaea/var/log/dionaea/dionaea.json
+          EOF
+          cat > "$TMPDIR/ihandlers/store.yaml" <<'EOF'
+          - name: store
+            config:
+              path: "/opt/dionaea/var/lib/dionaea/binaries"
+          EOF
+
+          CID=$(docker run -d --rm \
+            --cap-drop=ALL \
+            --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID --cap-add=CHOWN --cap-add=FOWNER \
+            -v "$PWD/config/ansible/roles/dionaea/files/healthcheck.py:/healthcheck.py:ro" \
+            -v "$TMPDIR/services:/opt/dionaea/etc/dionaea/services-enabled:ro" \
+            -v "$TMPDIR/ihandlers:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro" \
+            -v "$TMPDIR/log:/opt/dionaea/var/log/dionaea:rw" \
+            -v "$TMPDIR/lib:/opt/dionaea/var/lib/dionaea:rw" \
+            lantana-dionaea:ci-test)
+          trap 'docker stop "$CID" >/dev/null 2>&1 || true; rm -rf "$TMPDIR"' EXIT
+
+          for i in $(seq 1 20); do
+            if docker exec "$CID" python3 /healthcheck.py; then
+              echo "Dionaea healthcheck passed on attempt $i"
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              docker logs "$CID"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Send synthetic HTTP POST probe inside container and verify lantana_json output
+          docker exec "$CID" python3 -c '
+          import socket
+          body = b"{\"method\":\"tools/call\",\"params\":{\"name\":\"ci_probe\"}}"
+          req = (
+              b"POST /mcp?probe=1 HTTP/1.0\r\n"
+              b"Host: example.com\r\n"
+              b"User-Agent: LantanaCIProbe/1.5\r\n"
+              b"Content-Type: application/json\r\n"
+              + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+              + body
+          )
+          s = socket.create_connection(("127.0.0.1", 80), timeout=3)
+          s.sendall(req)
+          s.recv(4096)
+          s.close()
+          '
+          sleep 2
+
+          python3 - "$TMPDIR/log/dionaea.json" <<'PY'
+          import json, sys
+          lines = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+          posts = [r for r in lines if r.get("http_method") == "POST"]
+          assert posts, f"No HTTP POST captured in {lines}"
+          p = posts[-1]
+          assert p.get("http_uri") == "/mcp?probe=1", p
+          assert p.get("http_user_agent") == "LantanaCIProbe/1.5", p
+          assert "tools/call" in (p.get("http_body_preview") or ""), p
+          assert str(p.get("timestamp", "")).endswith("Z"), p
+          print("Dionaea lantana_json POST capture OK:", p)
+          PY
+
+          if [ -d "$TMPDIR/lib/bistreams" ] && [ -n "$(ls -A "$TMPDIR/lib/bistreams" 2>/dev/null)" ]; then
+            echo "ERROR: bistreams directory is non-empty!"
+            exit 1
+          fi
+          if grep -qi "Traceback" "$TMPDIR/log/dionaea-errors.log" 2>/dev/null; then
+            cat "$TMPDIR/log/dionaea-errors.log"
+            exit 1
+          fi
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push verified image to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: containers/dionaea
+          file: containers/dionaea/Containerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.CHANNEL_TAG }}
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.short_sha }}
+          build-args: |
+            DIONAEA_REF=${{ env.DIONAEA_REF }}
+            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.epoch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

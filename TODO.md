@@ -9,7 +9,12 @@ Effort key:
 
 ---
 
-## Self-built honeypot images (Effort: medium)
+## ~~Self-built honeypot images~~ (Completed in v1.5.0)
+
+**Status:** Implemented in `containers/{cowrie,dionaea}/Containerfile`, `.github/workflows/build-{cowrie,dionaea}.yml`, `containers/dionaea/{dionaea.cfg,lantana_json.py,patch_http.py,entrypoint.sh}`, and `config/ansible/roles/{cowrie,dionaea}/`. Both images build from pinned upstream commit SHAs with constant UIDs (`999` / `1000`), permanently disabled Dionaea `bistreams`, structured HTTP/SQL telemetry, and per-session SHA-256 binary attribution.
+
+<details>
+<summary>Original design brief (archived)</summary>
 
 **What.** Replace the upstream rolling tags `docker.io/cowrie/cowrie:latest` and `docker.io/dinotools/dionaea:nightly` with images built by our own CI from a pinned upstream git ref. Push to `ghcr.io/lopes/lantana-cowrie` and `ghcr.io/lopes/lantana-dionaea`. Quadlets point at the new registry + tag.
 
@@ -41,3 +46,5 @@ Owning the build pipeline removes three classes of risk:
 - ghcr.io rate limits on anonymous pulls; if a clean deploy ever runs without GitHub auth, the image won't pull. Mitigation: the deploy is interactive (operator-driven), and we can mirror to a second registry if needed.
 - Honoring upstream's intent: cowrie and dionaea ship under permissive licences, and the build is mechanical, but we should still credit upstream in the image labels and link back from `ghcr.io`'s package page.
 - Synchronisation with upstream security advisories. Today we get them implicitly via `:latest`/`:nightly` — once we pin, we own the responsibility to watch upstream releases and bump the ref.
+
+</details>

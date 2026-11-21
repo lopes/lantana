@@ -7,13 +7,13 @@ After=network-online.target
 StartLimitIntervalSec=0
 
 [Container]
-Image=docker.io/cowrie/cowrie:latest
+Image={{ cowrie_image }}
 ContainerName=sensor-cowrie
 Network=pasta
 
 # Map the rootless host user (stigma) to the image's cowrie user (UID 999) so
 # stigma-owned bind-mount paths appear inside the container as cowrie-owned.
-# UID coupling is explicit: review on cowrie image rebase (see CLAUDE.md).
+# UID 999:999 is pinned as a repo constant in containers/cowrie/Containerfile.
 UserNS=keep-id:uid=999,gid=999
 
 PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:2222:2222

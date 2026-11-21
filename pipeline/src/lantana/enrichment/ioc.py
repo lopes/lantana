@@ -36,7 +36,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _FILE_EVENT_IDS: frozenset[str] = frozenset(
-    {"cowrie.session.file_download", "cowrie.session.file_upload"}
+    {
+        "cowrie.session.file_download",
+        "cowrie.session.file_upload",
+        "dionaea.binary.captured",
+    }
 )
 
 _BINARY_MAX_BYTES: int = 100 * 1024 * 1024  # 100 MiB cap shared with disk-scan
@@ -107,18 +111,21 @@ def extract_dionaea_binary_events(
     target_date: date,
     default_server: str = "unknown",
     default_operation: str = "unknown",
+    exclude_hashes: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build synthetic OCSF-bound events for dionaea-captured binaries.
+    """Build synthetic fallback OCSF-bound events for unattributed dionaea binaries.
 
     Each regular file under ``<sensor_dir>/dionaea/binaries`` whose UTC mtime
-    matches ``target_date`` yields one ``dionaea.binary.captured`` event with
-    naive UTC ``timestamp``, ``shasum``, ``binary_file_name``, ``dataset``,
-    ``server``, and ``operation``. Symlinks are skipped defensively.
+    matches ``target_date`` and whose SHA-256 is not already in ``exclude_hashes``
+    (emitted directly by ``lantana_json`` with per-session ``src_ip`` &
+    ``download_url``) yields one fallback ``dionaea.binary.captured`` event.
+    Symlinks are skipped defensively.
     """
     binaries_dir = sensor_dir / "dionaea" / "binaries"
     if not binaries_dir.exists():
         return []
 
+    excluded = exclude_hashes or set()
     events: list[dict[str, Any]] = []
     for file_path in binaries_dir.iterdir():
         try:
@@ -137,6 +144,8 @@ def extract_dionaea_binary_events(
                 path=str(file_path),
                 reason=type(exc).__name__,
             )
+            continue
+        if sha in excluded:
             continue
         events.append(
             {
@@ -305,13 +314,13 @@ def extract_outbound_urls(df: pl.DataFrame, config: RedactionConfig) -> set[str]
     url_df = df
     if "file_intent" in df.columns:
         url_df = df.filter(pl.col("file_intent").fill_null("malware") != "probe")
-    for direct_url in _iter_text_column(url_df, ("file_url", "url")):
+    for direct_url in _iter_text_column(url_df, ("file_url", "url", "download_url")):
         cleaned = _clean_url_token(direct_url)
         if cleaned:
             raw_candidates.add(cleaned)
 
-    # URLs embedded in post-auth shell commands
-    for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input")):
+    # URLs embedded in post-auth shell / SQL commands
+    for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input", "sql_command")):
         for match in _URL_RE.findall(cmd):
             cleaned = _clean_url_token(match)
             if cleaned:
@@ -370,7 +379,7 @@ def extract_outbound_c2_ips(df: pl.DataFrame, config: RedactionConfig) -> set[st
             with contextlib.suppress(ValueError):
                 candidates.add(str(ipaddress.ip_address(host)))
 
-    for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input")):
+    for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input", "sql_command")):
         for raw_ip in _DEV_TCP_UDP_RE.findall(cmd):
             try:
                 candidates.add(str(ipaddress.ip_address(raw_ip)))
@@ -411,7 +420,7 @@ def extract_ssh_public_keys(
         return set()
 
     fingerprints: set[str] = set()
-    for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input")):
+    for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input", "sql_command")):
         for key_type, key_blob in _SSH_PUBKEY_RE.findall(cmd):
             fp = _format_ssh_pubkey_fingerprint(key_type, key_blob)
             if fp is not None:

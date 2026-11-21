@@ -1,0 +1,9 @@
+# Managed by Ansible (7-bit ASCII only -- Dionaea embeds Python 3.6 + PyYAML).
+# Lantana rich JSON ihandler (containers/dionaea/lantana_json.py).
+# Streams connections, credentials, FTP/SQL commands, structured HTTP requests
+# (method, URI, user-agent, bounded body preview), and per-session SHA-256
+# binary captures directly to dionaea.json as NDJSON.
+- name: lantana_json
+  config:
+    handlers:
+      - file:///opt/dionaea/var/log/dionaea/dionaea.json

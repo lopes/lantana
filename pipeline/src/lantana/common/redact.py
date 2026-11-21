@@ -79,6 +79,11 @@ ATTACKER_CONTENT_COLUMNS: list[str] = [
     "http-body-printable",
     "http_body",
     "http_body_printable",
+    "http_body_preview",
+    "http_uri",
+    "http_host",
+    "http_user_agent",
+    "download_url",
 ]
 
 
