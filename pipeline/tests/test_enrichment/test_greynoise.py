@@ -214,11 +214,11 @@ class TestGreyNoiseRiskScoreInResult:
         assert result.data["greynoise_risk_score"] == 0.0
 
     @pytest.mark.asyncio()
-    async def test_404_score_is_default_unknown(
+    async def test_404_score_is_none(
         self,
         anonymous_provider: GreyNoiseProvider,
     ) -> None:
-        """404 → classification=unknown, noise=False, riot=False → 10.0."""
+        """404 = not in GreyNoise dataset -> risk_score=None (never dilutes enrichment mean)."""
         not_found = httpx.Response(
             404,
             json={},
@@ -227,4 +227,4 @@ class TestGreyNoiseRiskScoreInResult:
         mock_get = AsyncMock(return_value=not_found)
         with patch.object(anonymous_provider._client, "get", mock_get):
             result = await anonymous_provider.enrich_ip("9.9.9.9")
-        assert result.data["greynoise_risk_score"] == 10.0
+        assert result.data["greynoise_risk_score"] is None

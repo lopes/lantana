@@ -62,8 +62,9 @@ class ShodanProvider:
         )
 
         # 404 = Shodan has never scanned this IP. Common for residential
-        # botnets — treat it as "no info" rather than an error so the
-        # daily run doesn't drop the row's other-provider enrichment.
+        # botnets — treat it as "no info" rather than an error, and emit
+        # shodan_risk_score=None (not 0.0) so an unindexed IP never dilutes
+        # enrichment_risk_score from other providers.
         if response.status_code == 404:
             return EnrichmentResult(
                 provider="shodan",
@@ -74,7 +75,7 @@ class ShodanProvider:
                     "shodan_vulns": None,
                     "shodan_org": "",
                     "shodan_asn": "",
-                    "shodan_risk_score": 0.0,
+                    "shodan_risk_score": None,
                 },
                 queried_at=datetime.now(tz=UTC),
             )

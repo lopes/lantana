@@ -370,7 +370,7 @@ class TestProviderRiskFormatter:
 
 
 class TestRiskBreakdownFormatter:
-    """`composite (enrichment+behavioral)/2` — the why-this-score cell."""
+    """`composite (E=enrichment, B=behavioral)` — the why-this-score cell."""
 
     def test_full_decomposition_rendered(self) -> None:
         out = _fmt_risk_breakdown(
@@ -380,7 +380,7 @@ class TestRiskBreakdownFormatter:
                 "behavioral_risk_score": 85.0,
             }
         )
-        assert out == "87.5 (90+85)/2"
+        assert out == "87.5 (E=90, B=85)"
 
     def test_composite_only_when_sub_scores_missing(self) -> None:
         """Backward-compat for pre-Phase-D.2 gold partitions."""
@@ -398,7 +398,34 @@ class TestRiskBreakdownFormatter:
                 "behavioral_risk_score": None,
             }
         )
-        assert out == "50.0 (100+—)/2"
+        assert out == "50.0 (E=100, B=—)"
+
+    def test_threat_actor_attribution_excludes_benign_scanners_and_riot(self) -> None:
+        """Benign GreyNoise scanners (Censys/Shadowserver/Driftnet) and RIOT IPs must not
+        appear in Threat Actor Attribution; only malicious non-RIOT actors do."""
+        rep = pl.DataFrame(
+            {
+                "src_endpoint_ip": ["203.0.113.10", "203.0.113.20", "198.51.100.30"],
+                "risk_score": [85.0, 0.0, 12.0],
+                "total_events": [40, 20, 10],
+                "geo_country": ["CN", "US", "NL"],
+                "greynoise_name": ["Mirai Bot", "Censys", "Shadowserver"],
+                "greynoise_class": ["malicious", "benign", "malicious"],
+                "greynoise_riot": [False, False, True],
+            }
+        )
+        report = generate_daily_brief(
+            date(2026, 4, 25),
+            _make_summary(),
+            rep,
+            _make_progression(),
+            _make_clusters(),
+            "Test Op",
+        )
+        assert "## Threat Actor Attribution" in report
+        assert "Mirai Bot" in report
+        assert "Censys" not in report
+        assert "Shadowserver" not in report
 
 
 class TestReportEnrichmentSurfacing:
@@ -433,8 +460,8 @@ class TestReportEnrichmentSurfacing:
             _make_clusters(),
             "Test Op",
         )
-        # Composite (enrichment + behavioral) layout for the fully-enriched IP.
-        assert "87.5 (90+85)/2" in report
+        # Composite (E=enrichment, B=behavioral) layout for the fully-enriched IP.
+        assert "87.5 (E=90, B=85)" in report
 
     def test_table_includes_legend_explaining_columns(self) -> None:
         """A reader new to the report should be able to decode the columns

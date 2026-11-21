@@ -90,8 +90,9 @@ class GreyNoiseProvider:
             headers=self._headers(),
         )
 
-        # 404 = the IP is not in GreyNoise's dataset. Treat it as a valid
-        # "no info" response rather than an error so the pipeline keeps moving.
+        # 404 = the IP is not in GreyNoise's dataset. Emit
+        # greynoise_risk_score=None (not 10.0) so unindexed IPs never dilute
+        # enrichment_risk_score from other providers.
         if response.status_code == 404:
             return EnrichmentResult(
                 provider="greynoise",
@@ -103,7 +104,7 @@ class GreyNoiseProvider:
                     "greynoise_name": "",
                     "greynoise_last_seen": None,
                     "greynoise_link": "",
-                    "greynoise_risk_score": compute_risk_score("unknown", False, False),
+                    "greynoise_risk_score": None,
                 },
                 queried_at=datetime.now(tz=UTC),
             )

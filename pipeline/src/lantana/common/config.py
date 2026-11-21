@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from lantana.common.redact import RedactionConfig
+
 DEFAULT_SECRETS_PATH = Path("/etc/lantana/collector/secrets.json")
 DEFAULT_REPORTING_PATH = Path("/etc/lantana/collector/reporting.json")
 
@@ -40,22 +42,21 @@ _DROPPED_KEYS: frozenset[str] = frozenset(
 class SecretsConfig(BaseModel):
     """API keys loaded from secrets.json.
 
-    The on-disk JSON mirrors the Ansible vault verbatim — keys are
-    ``vault_apikey_<service>`` / ``vault_webhook_<service>``. Python
-    attributes use short names (``secrets.virustotal``, etc.) via Pydantic
-    field aliases, so consumer code stays clean.
-
-    ``greynoise`` is optional. A missing or null entry disables the
-    provider; an empty string keeps it enabled in its unauthenticated
-    mode (GreyNoise community endpoint).
+    All enrichment provider keys are optional (``None`` or empty string skips
+    that provider cleanly without firing 401 errors). ``greynoise`` retains
+    its special anonymous-community contract: ``None`` disables GreyNoise,
+    ``""`` enables unauthenticated Community API mode, and a non-empty string
+    enables keyed Community API mode.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    virustotal: str = Field(alias="vault_apikey_virustotal")
-    shodan: str = Field(alias="vault_apikey_shodan")
-    abuseipdb: str = Field(alias="vault_apikey_abuseipdb")
+    virustotal: str | None = Field(alias="vault_apikey_virustotal", default=None)
+    shodan: str | None = Field(alias="vault_apikey_shodan", default=None)
+    abuseipdb: str | None = Field(alias="vault_apikey_abuseipdb", default=None)
     greynoise: str | None = Field(alias="vault_apikey_greynoise", default=None)
+    gti: str | None = Field(alias="vault_apikey_gti", default=None)
+    gti_enabled: bool = Field(default=False)
     maxmind: str | None = Field(alias="vault_apikey_maxmind", default=None)
     discord_webhook: str = Field(alias="vault_webhook_discord", default="")
 
@@ -104,13 +105,8 @@ class OperationConfig(BaseModel):
     )
 
 
-class RedactConfig(BaseModel):
-    """OPSEC redaction targets."""
-
-    infrastructure_ips: list[str]
-    infrastructure_cidrs: list[str]
-    pseudonym_map: dict[str, str]
-    infrastructure_hostnames: list[str] = Field(default_factory=list)
+# Single canonical redaction model shared by config.py and redact.py.
+RedactConfig = RedactionConfig
 
 
 class ReportingConfig(BaseModel):
@@ -119,7 +115,7 @@ class ReportingConfig(BaseModel):
     operator: OperatorConfig
     sharing: SharingConfig
     operation: OperationConfig
-    redact: RedactConfig
+    redact: RedactionConfig
 
 
 def _strip_dropped_keys(raw: dict[str, Any]) -> dict[str, Any]:

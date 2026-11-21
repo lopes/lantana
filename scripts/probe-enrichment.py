@@ -88,11 +88,19 @@ def _load_secrets(path: Path) -> SecretsConfig:
 def _build_provider(name: str, secrets: SecretsConfig) -> tuple[Any | None, str | None]:
     """Return (provider, disabled_reason). Exactly one of the two is None."""
     if name == "abuseipdb":
-        return AbuseIPDBProvider(secrets.abuseipdb), None
+        if not secrets.abuseipdb or not secrets.abuseipdb.strip():
+            return None, "secrets.abuseipdb is not configured"
+        return AbuseIPDBProvider(secrets.abuseipdb.strip()), None
     if name == "shodan":
-        return ShodanProvider(secrets.shodan), None
+        if not secrets.shodan or not secrets.shodan.strip():
+            return None, "secrets.shodan is not configured"
+        return ShodanProvider(secrets.shodan.strip()), None
     if name == "virustotal":
-        return VirusTotalProvider(secrets.virustotal), None
+        if secrets.gti_enabled and secrets.gti and secrets.gti.strip():
+            return VirusTotalProvider(secrets.gti.strip(), gti_enabled=True), None
+        if not secrets.virustotal or not secrets.virustotal.strip():
+            return None, "secrets.virustotal is not configured"
+        return VirusTotalProvider(secrets.virustotal.strip(), gti_enabled=secrets.gti_enabled), None
     if name == "greynoise":
         if secrets.greynoise is None:
             return None, "secrets.greynoise is null"

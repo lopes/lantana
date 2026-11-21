@@ -17,17 +17,21 @@ from pathlib import Path
 
 import structlog
 
+from lantana.common.config import load_reporting
 from lantana.common.datalake import (
     GOLD_ROOT,
     SILVER_ROOT,
     read_silver_partition,
     write_gold_table,
 )
+from lantana.common.redact import RedactionConfig
+from lantana.enrichment.runner import CACHE_DB_PATH, load_enrichment_cache_lookup
 from lantana.transform.metrics import (
     compute_behavioral_progression,
     compute_campaign_clusters,
     compute_daily_summary,
     compute_detection_findings,
+    compute_extracted_iocs,
     compute_geographic_summary,
     compute_ip_reputation,
 )
@@ -73,6 +77,8 @@ def run_transform(
     target_date: date,
     silver_root: Path = SILVER_ROOT,
     gold_root: Path = GOLD_ROOT,
+    cache_db_path: Path = CACHE_DB_PATH,
+    redact_config: RedactionConfig | None = None,
 ) -> None:
     """Run the full transform pipeline for a given date."""
     logger.info("transform_start", date=target_date.isoformat())
@@ -86,12 +92,21 @@ def run_transform(
 
     logger.info("silver_loaded", rows=len(silver), columns=len(silver.columns))
 
+    effective_redact = redact_config
+    if effective_redact is None:
+        try:
+            effective_redact = load_reporting().redact
+        except (OSError, ValueError):
+            effective_redact = RedactionConfig()
+
+    enrichment_lookup = load_enrichment_cache_lookup(cache_db_path)
+
     # Per-table row counts feed the final `run_summary` log line so
     # operators can read the day's gold output in one event instead of
     # grepping for seven separate `gold_written` lines.
     gold_rows: dict[str, int] = {}
 
-    # Compute and write each gold table
+    # Compute and write all 7 gold tables
     tables = [
         ("daily_summary", compute_daily_summary),
         ("ip_reputation", compute_ip_reputation),
@@ -99,6 +114,14 @@ def run_transform(
         ("campaign_clusters", compute_campaign_clusters),
         ("geographic_summary", compute_geographic_summary),
         ("detection_findings", compute_detection_findings),
+        (
+            "extracted_iocs",
+            lambda frame: compute_extracted_iocs(
+                frame,
+                redact_config=effective_redact,
+                enrichment_lookup=enrichment_lookup,
+            ),
+        ),
     ]
 
     failed_tables: list[tuple[str, Exception]] = []

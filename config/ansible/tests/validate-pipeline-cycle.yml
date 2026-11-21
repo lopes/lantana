@@ -49,6 +49,7 @@
       - campaign_clusters
       - daily_summary
       - detection_findings
+      - extracted_iocs
       - geographic_summary
       - ip_reputation
     expected_provider_score_cols:
@@ -231,27 +232,33 @@
                 raise SystemExit(0)
             # RIOT invariant — any greynoise_riot=True MUST have greynoise_risk_score=0.0
             violators = df.filter(
-                pl.col("greynoise_riot") & (pl.col("greynoise_risk_score") != 0.0)
+                pl.col("greynoise_riot").fill_null(False) & (pl.col("greynoise_risk_score") != 0.0)
             ).select("src_endpoint_ip").to_series().to_list()
+            null_ips = int(df.get_column("src_endpoint_ip").null_count())
+            scanner_violators = df.filter(
+                (pl.col("behavioral_risk_score") <= 0.0) & (pl.col("risk_score") > 35.0)
+            ).height
             print(json.dumps({
                 "rows": df.height,
+                "null_ips": null_ips,
+                "scanner_violators": scanner_violators,
                 "riot_present": int(df.get_column("greynoise_riot").fill_null(False).any()),
                 "riot_violators": violators,
             }))
       register: gold_invariants
       changed_when: false
 
-    - name: "Assert gold has composite + sub-scores and RIOT invariant holds"
+    - name: "Assert gold has composite + sub-scores, zero null IPs, scanner cap, and RIOT invariant"
       ansible.builtin.assert:
         that:
           - "'error' not in (gold_invariants.stdout | from_json)"
+          - "(gold_invariants.stdout | from_json).null_ips == 0"
+          - "(gold_invariants.stdout | from_json).scanner_violators == 0"
           - "(gold_invariants.stdout | from_json).riot_violators | length == 0"
         fail_msg: >-
           Gold ip_reputation invariant violated: {{ gold_invariants.stdout }}.
-          If 'error' is set, Phase D.2 columns missing. If 'riot_violators'
-          is non-empty, the GreyNoise RIOT short-circuit failed for those IPs —
-          run pytest tests/test_integration_production_shape.py::test_riot_signal_survives_bronze_to_gold
-          locally to bisect.
+          Verify monotonic risk_score formula, null src_endpoint_ip filtering,
+          and GreyNoise RIOT short-circuit.
 
     - name: "Validation summary"
       ansible.builtin.debug:

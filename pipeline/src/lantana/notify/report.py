@@ -92,11 +92,11 @@ def _fmt_provider_risk(row: dict[str, Any]) -> str:
 
 
 def _fmt_risk_breakdown(row: dict[str, Any]) -> str:
-    """`{composite} = ({enrichment}+{behavioral})/2` — risk decomposition.
+    """``{composite} (E={enrichment}, B={behavioral})`` — risk decomposition.
 
     Lets the analyst answer "what drove this score?" without leaving the
-    report. Defaults gracefully when sub-scores are absent (e.g. old gold
-    partitions written before Phase D.2)."""
+    report. Defaults gracefully when sub-scores are absent (e.g. legacy gold).
+    """
     composite = row.get("risk_score")
     enrichment = row.get("enrichment_risk_score")
     behavioral = row.get("behavioral_risk_score")
@@ -106,7 +106,7 @@ def _fmt_risk_breakdown(row: dict[str, Any]) -> str:
         return f"{composite:.1f}"
     e_str = f"{enrichment:.0f}" if enrichment is not None else "—"
     b_str = f"{behavioral:.0f}" if behavioral is not None else "—"
-    return f"{composite:.1f} ({e_str}+{b_str})/2"
+    return f"{composite:.1f} (E={e_str}, B={b_str})"
 
 
 def _url_tail(url: str, max_len: int = 60) -> str:
@@ -431,25 +431,31 @@ def generate_daily_brief(
             )
         lines.append("")
         lines.append(
-            "_Risk legend: `composite (enrichment+behavioral)/2`. "
+            "_Risk legend: `composite (E=enrichment, B=behavioral)`. "
             "A/V/S/G = AbuseIPDB/VirusTotal/Shodan/GreyNoise per-provider "
             "risk (0..100, `-` = provider didn't contribute)._"
         )
         lines.append("")
 
-    # Threat actor attribution
+    # Threat actor attribution — strictly exclude benign scanners (Censys,
+    # Shadowserver, Driftnet) and RIOT infrastructure.
     if not reputation.is_empty() and "greynoise_name" in reputation.columns:
-        named = reputation.filter(
+        actor_mask = (
             pl.col("greynoise_name").is_not_null()
             & (pl.col("greynoise_name") != "")
             & (pl.col("greynoise_name") != "unknown")
         )
+        if "greynoise_class" in reputation.columns:
+            actor_mask = actor_mask & (pl.col("greynoise_class") == "malicious")
+        if "greynoise_riot" in reputation.columns:
+            actor_mask = actor_mask & ~pl.col("greynoise_riot").fill_null(False)
+        named = reputation.filter(actor_mask)
         if named.height > 0:
             lines.append("## Threat Actor Attribution\n")
             caption = _section_caption("Threat Actor Attribution")
             if caption:
                 lines.append(caption + "\n")
-            lines.append("IPs with known threat actor labels (GreyNoise):\n")
+            lines.append("IPs with malicious threat actor labels (GreyNoise):\n")
             lines.append("| Rank | Actor | IP | Classification |")
             lines.append("|------|-------|----|---------------|")
             for rank, r in enumerate(named.head(TOP_N).iter_rows(named=True), start=1):

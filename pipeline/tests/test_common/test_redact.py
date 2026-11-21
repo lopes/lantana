@@ -346,3 +346,98 @@ def test_redact_expanded_ipv6_and_unmapped_cidr_passes_validate_no_leaks(
     dst_vals = redacted.get_column("dst_endpoint_ip").to_list()
     assert dst_vals[1] == "redacted-infra"
     assert "fd99:0010:0050:0099:0000:0000:0000:0100" not in dst_vals
+
+
+def test_redact_non_dotted_wan_variants_and_hostnames_and_suricata_payloads() -> None:
+    """Non-dotted IPv4/PTR variants, expanded IPv6, and VPS hostnames are scrubbed across all
+    attacker-content columns including Suricata payload/http-body fields."""
+    cfg = RedactionConfig(
+        infrastructure_ips=["203.0.113.97", "2001:db8:205:200::8382"],
+        infrastructure_cidrs=["10.50.99.0/24"],
+        pseudonym_map={
+            "203.0.113.97": "honeypot-wan",
+            "2001:db8:205:200::8382": "honeypot-wan-v6",
+        },
+        infrastructure_hostnames=["vps-test-01.example.net", "sn-test-01"],
+    )
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["198.51.100.10"],
+            "actor_process_cmd_line": [
+                "echo 203_0_113_97 203-0-113-97 97.113.0.203 97.ip-203-0-113 "
+                "VPS-TEST-01.EXAMPLE.NET"
+            ],
+            "payload-printable": [
+                "GET / HTTP/1.1\r\nHost: 97.ip-203-0-113.example.org\r\n"
+                "X-Node: sn-test-01 2001:0db8:0205:0200:0000:0000:0000:8382"
+            ],
+            "http-body-printable": ["target=203-0-113-97"],
+        }
+    )
+    out = redact_infrastructure_ips(df, cfg).row(0, named=True)
+    for col in ("actor_process_cmd_line", "payload-printable", "http-body-printable"):
+        val = out[col]
+        for forbidden in (
+            "203.0.113.97",
+            "203_0_113_97",
+            "203-0-113-97",
+            "97.113.0.203",
+            "97.ip-203-0-113",
+            "vps-test-01.example.net",
+            "VPS-TEST-01.EXAMPLE.NET",
+            "sn-test-01",
+            "2001:0db8:0205:0200:0000:0000:0000:8382",
+        ):
+            assert forbidden not in val, f"{forbidden} leaked in {col}: {val}"
+    assert "honeypot-wan" in out["actor_process_cmd_line"]
+    assert "honeypot-host" in out["actor_process_cmd_line"]
+    assert "honeypot-wan-v6" in out["payload-printable"]
+
+
+def test_expanded_wan_ipv6_without_cidr_caught_in_drop_and_validate() -> None:
+    """Expanded WAN IPv6 (no CIDR) is dropped and caught by validate_no_leaks."""
+    cfg = RedactionConfig(
+        infrastructure_ips=["2001:db8:205:200::8382"],
+        infrastructure_cidrs=[],
+        pseudonym_map={"2001:db8:205:200::8382": "honeypot-wan-v6"},
+    )
+    expanded = "2001:0db8:0205:0200:0000:0000:0000:8382"
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": [expanded, "2001:db8:1::beef"],
+            "dst_endpoint_ip": ["honeypot-wan-v6", expanded],
+        }
+    )
+    dropped = drop_infrastructure_source_rows(df, cfg)
+    assert dropped.height == 1
+    assert dropped.get_column("src_endpoint_ip").to_list() == ["2001:db8:1::beef"]
+
+    with pytest.raises(ValueError, match="Infrastructure IP leak") as exc_info:
+        validate_no_leaks(dropped, cfg)
+    # OPSEC: exception text must NEVER contain the raw leaked IP address
+    assert expanded not in str(exc_info.value)
+    assert "2001:db8:205:200::8382" not in str(exc_info.value)
+    assert "sha256=" in str(exc_info.value)
+
+
+def test_validate_no_leaks_never_embeds_raw_ipv4_or_cidr_in_error(
+    redaction_config: RedactionConfig,
+) -> None:
+    """OPSEC: raw leaked IPs and CIDRs never appear in ValueError (prevents Discord leak chain)."""
+    df_direct = pl.DataFrame({"dst_endpoint_ip": ["172.31.99.129"]})
+    with pytest.raises(ValueError, match="Infrastructure IP leak") as exc1:
+        validate_no_leaks(df_direct, redaction_config)
+    assert "172.31.99.129" not in str(exc1.value)
+
+    df_cidr = pl.DataFrame({"src_endpoint_ip": ["10.50.99.42"]})
+    with pytest.raises(ValueError, match="Infrastructure IP leak") as exc2:
+        validate_no_leaks(df_cidr, redaction_config)
+    assert "10.50.99.42" not in str(exc2.value)
+    assert "10.50.99.0/24" not in str(exc2.value)
+
+
+def test_redact_config_alias_unified() -> None:
+    """common.config.RedactConfig and common.redact.RedactionConfig are the same class."""
+    from lantana.common.config import RedactConfig
+
+    assert RedactConfig is RedactionConfig
