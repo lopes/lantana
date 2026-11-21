@@ -127,7 +127,7 @@
       loop_control:
         label: "{{ item.item }}"
 
-    # === 4. Gold parquet present for all 6 expected tables ===
+    # === 4. Gold parquet present for all 7 expected tables ===
     - name: "Stat gold partition per table"
       become: true
       ansible.builtin.find:

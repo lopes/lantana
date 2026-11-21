@@ -12,7 +12,15 @@ Before=suricata.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'for f in tx gro gso tso; do /usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} "$f" off 2>/dev/null || true; done'
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ExecStart=-/usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} tx off
+ExecStart=-/usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} gro off
+ExecStart=-/usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} gso off
+ExecStart=-/usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} tso off
 
 [Install]
 WantedBy=multi-user.target

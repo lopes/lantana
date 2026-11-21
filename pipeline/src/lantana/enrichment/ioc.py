@@ -3,7 +3,7 @@
 Supports:
 - Inbound source IPs (`extract_ips`)
 - Malware SHA-256 hashes from bronze (`extract_hashes_from_bronze`) and date-scoped
-  sensor disk scans (`extract_hashes_from_disk`, `extract_dionaea_binary_events`)
+  symlink-safe sensor disk scans (`extract_hashes_from_disk`, `extract_dionaea_binary_events`)
 - Post-auth outbound stager URLs (`extract_outbound_urls`), stager domains
   (`extract_stager_domains`), outbound C2 IPs (`extract_outbound_c2_ips`), and
   persistent OpenSSH public-key fingerprints (`extract_ssh_public_keys`)
@@ -17,10 +17,12 @@ import binascii
 import contextlib
 import hashlib
 import ipaddress
+import os
 import re
+import stat
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import polars as pl
 import structlog
@@ -44,6 +46,9 @@ _FILE_EVENT_IDS: frozenset[str] = frozenset(
 )
 
 _BINARY_MAX_BYTES: int = 100 * 1024 * 1024  # 100 MiB cap shared with disk-scan
+_SSH_KEY_FILE_MAX_BYTES: int = 1024 * 1024  # 1 MiB cap for persistence files
+_CMD_SCAN_MAX_CHARS: int = 65536  # Hard cap per shell line to bound regex work
+_READ_CHUNK_BYTES: int = 65536
 
 # Non-routable IPv4/IPv6 ranges that should never be sent to a threat-intel
 # provider or exported as outbound C2 indicators. Deliberately does NOT include
@@ -66,10 +71,20 @@ _NON_ROUTABLE_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ipaddress.ip_network("ff00::/8"),  # multicast IPv6
 ]
 
-_URL_RE = re.compile(r"""(?i)\b(?:https?|ftp|tftp)://[^\s'"`<>|;)}\]]+""")
+# Allows RFC 3986 bracketed IPv6 hosts (e.g. http://[2001:db8::1]:8080/a) while
+# excluding whitespace and common shell delimiters.
+_URL_RE = re.compile(
+    r"""(?i)\b(?:https?|ftp|tftp)://(?:\[[0-9A-Fa-f:.]+\]|[^\s'"`<>|;)}\]]+)[^\s'"`<>|;)}\]]*"""
+)
 _DEV_TCP_UDP_RE = re.compile(r"/dev/(?:tcp|udp)/([0-9A-Fa-f:.]+)/\d+")
-_OUTBOUND_TOOL_IP_RE = re.compile(
-    r"""(?i)\b(?:tftp|nc|ncat|netcat|scp|rsync|curl|wget|busybox\s+wget|busybox\s+tftp)\b[^\n;|&]*?\b(\d{1,3}(?:\.\d{1,3}){3})\b"""
+_CMD_SEGMENT_SPLIT_RE = re.compile(r"[\n;|&]+")
+_OUTBOUND_TOOL_KW_RE = re.compile(
+    r"(?i)\b(?:tftp|nc|ncat|netcat|scp|rsync|curl|wget|busybox\s+(?:wget|tftp))\b"
+)
+_IPV4_TOKEN_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+_SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_LDH_DOMAIN_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
 )
 _SSH_PUBKEY_RE = re.compile(
     r"\b(ssh-(?:rsa|ed25519|ecdsa-sha2-nistp(?:256|384|521)))\s+([A-Za-z0-9+/=]{20,})"
@@ -82,6 +97,90 @@ _NON_GLOBAL_DOMAIN_SUFFIXES: tuple[str, ...] = (
     ".home",
     ".arpa",
 )
+
+
+def _unwrap_ip(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Unwrap IPv4-mapped IPv6 addresses (``::ffff:a.b.c.d``) to their IPv4 address."""
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
+
+
+def _open_dir_chain_nofollow(base: Path, *parts: str) -> int | None:
+    """Open ``base / parts...`` traversing every relative component with ``O_NOFOLLOW``."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        cur_fd = os.open(str(base), flags)
+    except OSError:
+        return None
+    for part in parts:
+        try:
+            next_fd = os.open(part, flags, dir_fd=cur_fd)
+        except OSError:
+            os.close(cur_fd)
+            return None
+        os.close(cur_fd)
+        cur_fd = next_fd
+    return cur_fd
+
+
+def _hash_regular_file_at(
+    dir_fd: int,
+    name: str,
+    *,
+    max_bytes: int,
+    target_date: date | None = None,
+) -> tuple[str, datetime] | None:
+    """Atomically open, validate, and SHA-256 hash a regular file via ``dir_fd`` + ``O_NOFOLLOW``.
+
+    Guards against symlink TOCTOU, FIFO/device opens (``O_NONBLOCK`` + ``S_ISREG``),
+    and unbounded growth past ``max_bytes``.
+    """
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+            return None
+        mtime_dt = datetime.fromtimestamp(st.st_mtime, tz=UTC)
+        if target_date is not None and mtime_dt.date() != target_date:
+            return None
+        hasher = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, _READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            hasher.update(chunk)
+        return hasher.hexdigest(), mtime_dt
+    finally:
+        os.close(fd)
+
+
+def _read_regular_text_at(dir_fd: int, name: str, *, max_bytes: int) -> str | None:
+    """Atomically read a bounded UTF-8 regular file via ``dir_fd`` + ``O_NOFOLLOW``."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, _READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8", errors="ignore")
+    finally:
+        os.close(fd)
 
 
 def extract_ips(df: pl.DataFrame) -> set[str]:
@@ -119,45 +218,50 @@ def extract_dionaea_binary_events(
     matches ``target_date`` and whose SHA-256 is not already in ``exclude_hashes``
     (emitted directly by ``lantana_json`` with per-session ``src_ip`` &
     ``download_url``) yields one fallback ``dionaea.binary.captured`` event.
-    Symlinks are skipped defensively.
+    Uses ``dir_fd`` + ``O_NOFOLLOW`` + ``O_NONBLOCK`` so compromised sensor
+    symlinks or FIFOs cannot hijack collector reads.
     """
-    binaries_dir = sensor_dir / "dionaea" / "binaries"
-    if not binaries_dir.exists():
+    dir_fd = _open_dir_chain_nofollow(sensor_dir, "dionaea", "binaries")
+    if dir_fd is None:
         return []
 
     excluded = exclude_hashes or set()
     events: list[dict[str, Any]] = []
-    for file_path in binaries_dir.iterdir():
-        try:
-            if file_path.is_symlink():
+    try:
+        entries = list(os.scandir(dir_fd))
+        for entry in entries:
+            try:
+                hashed = _hash_regular_file_at(
+                    dir_fd,
+                    entry.name,
+                    max_bytes=_BINARY_MAX_BYTES,
+                    target_date=target_date,
+                )
+            except OSError as exc:
+                logger.warning(
+                    "dionaea_binary_skipped",
+                    path=str(sensor_dir / "dionaea" / "binaries" / entry.name),
+                    reason=type(exc).__name__,
+                )
                 continue
-            stat = file_path.stat()
-            if not file_path.is_file() or stat.st_size > _BINARY_MAX_BYTES:
+            if hashed is None:
                 continue
-            mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
-            if mtime_dt.date() != target_date:
+            sha, mtime_dt = hashed
+            if sha in excluded:
                 continue
-            sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
-        except (PermissionError, FileNotFoundError, OSError) as exc:
-            logger.warning(
-                "dionaea_binary_skipped",
-                path=str(file_path),
-                reason=type(exc).__name__,
+            events.append(
+                {
+                    "eventid": "dionaea.binary.captured",
+                    "timestamp": mtime_dt.replace(tzinfo=None),
+                    "shasum": sha,
+                    "binary_file_name": entry.name,
+                    "dataset": "dionaea",
+                    "server": default_server,
+                    "operation": default_operation,
+                }
             )
-            continue
-        if sha in excluded:
-            continue
-        events.append(
-            {
-                "eventid": "dionaea.binary.captured",
-                "timestamp": mtime_dt.replace(tzinfo=None),
-                "shasum": sha,
-                "binary_file_name": file_path.name,
-                "dataset": "dionaea",
-                "server": default_server,
-                "operation": default_operation,
-            }
-        )
+    finally:
+        os.close(dir_fd)
     return events
 
 
@@ -169,31 +273,43 @@ def extract_hashes_from_disk(
 
     When ``target_date`` is provided, scopes hashing strictly to files whose
     UTC mtime falls on ``target_date`` so nightly runs do not re-hash weeks of
-    historical files. Symlinks and files > 100 MiB are skipped.
+    historical files. Uses ``dir_fd`` + ``O_NOFOLLOW`` + ``O_NONBLOCK`` to
+    defend against symlinks and FIFOs; files > 100 MiB are skipped.
     """
-    download_dirs = list(sensor_dir.glob("*/downloads")) + list(sensor_dir.glob("*/binaries"))
+    sensor_fd = _open_dir_chain_nofollow(sensor_dir)
+    if sensor_fd is None:
+        return set()
+
     hashes: set[str] = set()
-    for download_dir in download_dirs:
-        if not download_dir.exists():
-            continue
-        for file_path in download_dir.iterdir():
-            try:
-                if file_path.is_symlink():
+    try:
+        sensor_entries = list(os.scandir(sensor_fd))
+        for sensor_entry in sensor_entries:
+            for leaf in ("downloads", "binaries"):
+                dir_fd = _open_dir_chain_nofollow(sensor_dir, sensor_entry.name, leaf)
+                if dir_fd is None:
                     continue
-                stat = file_path.stat()
-                if not file_path.is_file() or stat.st_size > _BINARY_MAX_BYTES:
-                    continue
-                if target_date is not None:
-                    mtime_date = datetime.fromtimestamp(stat.st_mtime, tz=UTC).date()
-                    if mtime_date != target_date:
-                        continue
-                hashes.add(hashlib.sha256(file_path.read_bytes()).hexdigest())
-            except (PermissionError, FileNotFoundError, OSError) as exc:
-                logger.warning(
-                    "disk_hash_skipped",
-                    path=str(file_path),
-                    reason=type(exc).__name__,
-                )
+                try:
+                    for entry in os.scandir(dir_fd):
+                        try:
+                            hashed = _hash_regular_file_at(
+                                dir_fd,
+                                entry.name,
+                                max_bytes=_BINARY_MAX_BYTES,
+                                target_date=target_date,
+                            )
+                        except OSError as exc:
+                            logger.warning(
+                                "disk_hash_skipped",
+                                path=str(sensor_dir / sensor_entry.name / leaf / entry.name),
+                                reason=type(exc).__name__,
+                            )
+                            continue
+                        if hashed is not None:
+                            hashes.add(hashed[0])
+                finally:
+                    os.close(dir_fd)
+    finally:
+        os.close(sensor_fd)
     return hashes
 
 
@@ -208,7 +324,7 @@ def _parse_infra_sets(
     parsed_infra: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     for ip_str in infra_set:
         try:
-            parsed_infra.add(ipaddress.ip_address(ip_str))
+            parsed_infra.add(_unwrap_ip(ipaddress.ip_address(ip_str)))
         except ValueError:
             continue
     cidr_nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
@@ -226,11 +342,12 @@ def _is_blocked_ip(
     parsed_infra: set[ipaddress.IPv4Address | ipaddress.IPv6Address],
     cidr_nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
 ) -> bool:
-    """Return True if ``ip_str`` is infra-owned or non-routable."""
-    if ip_str in infra_set:
+    """Return True if ``ip_str`` is infra-owned or non-routable (unwrapping ::ffff:)."""
+    cleaned = ip_str.strip()
+    if cleaned in infra_set:
         return True
     try:
-        addr = ipaddress.ip_address(ip_str)
+        addr = _unwrap_ip(ipaddress.ip_address(cleaned))
     except ValueError:
         return False
     if addr in parsed_infra:
@@ -280,9 +397,42 @@ def _is_infra_host(host: str, config: RedactionConfig) -> bool:
     return False
 
 
+def _url_leaks_infra(url: str, config: RedactionConfig) -> bool:
+    """Return True if any infra IP variant, CIDR member, or hostname appears anywhere in a URL.
+
+    Blocks pre-redaction OPSEC exfiltration when an attacker embeds the honeypot's
+    WAN IP or hostname in a callback URL path/query (e.g. ``?ip=<WAN>&h=<HOST>``)
+    before VirusTotal URL lookups execute.
+    """
+    haystacks = (url.lower(), unquote(url).lower())
+    for hostname in config.infrastructure_hostnames:
+        cleaned = hostname.strip().lower()
+        if cleaned and any(cleaned in h for h in haystacks):
+            return True
+    for ip_str in config.infrastructure_ips:
+        for variant in derive_ip_variants(ip_str):
+            v_low = variant.lower()
+            if v_low and any(v_low in h for h in haystacks):
+                return True
+    _, parsed_infra, cidr_nets = _parse_infra_sets(config)
+    if parsed_infra or cidr_nets:
+        for haystack in haystacks:
+            for raw_ip in _IPV4_TOKEN_RE.findall(haystack):
+                try:
+                    addr = _unwrap_ip(ipaddress.ip_address(raw_ip))
+                except ValueError:
+                    continue
+                if addr in parsed_infra or any(addr in net for net in cidr_nets):
+                    return True
+    return False
+
+
 def _clean_url_token(raw: str) -> str:
     """Trim trailing shell/sentence punctuation from an extracted URL."""
-    cleaned = raw.strip().rstrip(".,;:'\"`)>]}")
+    cleaned = raw.strip().rstrip(".,;:'\"`)>}")
+    # Only strip trailing ']' when not balancing an IPv6 literal '[...]'
+    while cleaned.endswith("]") and "[" not in cleaned:
+        cleaned = cleaned[:-1]
     return cleaned
 
 
@@ -303,8 +453,9 @@ def extract_outbound_urls(df: pl.DataFrame, config: RedactionConfig) -> set[str]
     """Extract external post-auth stager URLs from file URLs and shell command lines.
 
     Works on both bronze (``url``, ``input``) and silver (``file_url``,
-    ``actor_process_cmd_line``) DataFrames. Filters out any URL pointing at
-    infrastructure IPs/hostnames or non-routable addresses.
+    ``actor_process_cmd_line``) DataFrames. Filters out malformed URLs, URLs
+    pointing at infrastructure/non-routable hosts, and URLs leaking infra IPs
+    or hostnames anywhere in their path/query string.
     """
     if df.is_empty():
         return set()
@@ -315,36 +466,47 @@ def extract_outbound_urls(df: pl.DataFrame, config: RedactionConfig) -> set[str]
     if "file_intent" in df.columns:
         url_df = df.filter(pl.col("file_intent").fill_null("malware") != "probe")
     for direct_url in _iter_text_column(url_df, ("file_url", "url", "download_url")):
-        cleaned = _clean_url_token(direct_url)
+        cleaned = _clean_url_token(direct_url[:_CMD_SCAN_MAX_CHARS])
         if cleaned:
             raw_candidates.add(cleaned)
 
     # URLs embedded in post-auth shell / SQL commands
     for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input", "sql_command")):
-        for match in _URL_RE.findall(cmd):
+        for match in _URL_RE.findall(cmd[:_CMD_SCAN_MAX_CHARS]):
             cleaned = _clean_url_token(match)
             if cleaned:
                 raw_candidates.add(cleaned)
 
     valid_urls: set[str] = set()
     for url in raw_candidates:
-        parsed = urlparse(url)
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname
+        except ValueError:
+            continue
         if parsed.scheme.lower() not in {"http", "https", "ftp", "tftp"}:
             continue
-        host = parsed.hostname
         if not host or _is_infra_host(host, config):
+            continue
+        if _url_leaks_infra(url, config):
             continue
         valid_urls.add(url)
     return valid_urls
 
 
 def extract_stager_domains(urls: set[str], config: RedactionConfig) -> set[str]:
-    """Extract unique external domain names (non-IP hosts) from stager URLs."""
+    """Extract unique external LDH domain names (non-IP hosts) from stager URLs."""
     domains: set[str] = set()
     for url in urls:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower().strip().rstrip(".")
-        if not host or "." not in host:
+        try:
+            parsed = urlparse(url)
+            raw_host = parsed.hostname
+        except ValueError:
+            continue
+        host = (raw_host or "").lower().strip().rstrip(".")
+        if not host or len(host) > 253 or "." not in host:
+            continue
+        if not _LDH_DOMAIN_RE.fullmatch(host):
             continue
         try:
             ipaddress.ip_address(host)
@@ -366,7 +528,8 @@ def extract_outbound_c2_ips(df: pl.DataFrame, config: RedactionConfig) -> set[st
     - ``tftp`` / ``nc`` / ``ncat`` / ``netcat`` / ``scp`` / ``wget`` / ``curl`` IP arguments
 
     Every candidate is validated as a real IP literal and filtered against
-    operation infrastructure and non-routable ranges.
+    operation infrastructure and non-routable ranges. Uses strictly linear
+    segment scanning (no backtracking regexes).
     """
     if df.is_empty():
         return set()
@@ -374,22 +537,29 @@ def extract_outbound_c2_ips(df: pl.DataFrame, config: RedactionConfig) -> set[st
     candidates: set[str] = set()
 
     for url in extract_outbound_urls(df, config):
-        host = urlparse(url).hostname
+        try:
+            host = urlparse(url).hostname
+        except ValueError:
+            continue
         if host:
             with contextlib.suppress(ValueError):
-                candidates.add(str(ipaddress.ip_address(host)))
+                candidates.add(str(_unwrap_ip(ipaddress.ip_address(host))))
 
     for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input", "sql_command")):
-        for raw_ip in _DEV_TCP_UDP_RE.findall(cmd):
+        bounded = cmd[:_CMD_SCAN_MAX_CHARS]
+        for raw_ip in _DEV_TCP_UDP_RE.findall(bounded):
             try:
-                candidates.add(str(ipaddress.ip_address(raw_ip)))
+                candidates.add(str(_unwrap_ip(ipaddress.ip_address(raw_ip))))
             except ValueError:
                 continue
-        for raw_ip in _OUTBOUND_TOOL_IP_RE.findall(cmd):
-            try:
-                candidates.add(str(ipaddress.ip_address(raw_ip)))
-            except ValueError:
+        for segment in _CMD_SEGMENT_SPLIT_RE.split(bounded):
+            if not _OUTBOUND_TOOL_KW_RE.search(segment):
                 continue
+            for raw_ip in _IPV4_TOKEN_RE.findall(segment):
+                try:
+                    candidates.add(str(_unwrap_ip(ipaddress.ip_address(raw_ip))))
+                except ValueError:
+                    continue
 
     return filter_internal_ips(candidates, config)
 
@@ -415,13 +585,14 @@ def extract_ssh_public_keys(
     Matches ``ssh-rsa``, ``ssh-ed25519``, and ``ssh-ecdsa-sha2-nistp*`` blobs
     written via shell commands (e.g. ``echo "ssh-ed25519 AAAA..." >> ~/.ssh/authorized_keys``)
     and optionally from Cowrie persistence downloads when ``sensor_dir`` is given.
+    Enforces strict 64-hex SHA-256 filenames and ``dir_fd`` + ``O_NOFOLLOW`` opens.
     """
     if df.is_empty():
         return set()
 
     fingerprints: set[str] = set()
     for cmd in _iter_text_column(df, ("actor_process_cmd_line", "input", "sql_command")):
-        for key_type, key_blob in _SSH_PUBKEY_RE.findall(cmd):
+        for key_type, key_blob in _SSH_PUBKEY_RE.findall(cmd[:_CMD_SCAN_MAX_CHARS]):
             fp = _format_ssh_pubkey_fingerprint(key_type, key_blob)
             if fp is not None:
                 fingerprints.add(fp)
@@ -437,28 +608,34 @@ def extract_ssh_public_keys(
         else:
             persistence_df = df.clear()
 
-        downloads_dir = sensor_dir / "cowrie" / "downloads"
-        if not persistence_df.is_empty() and downloads_dir.exists():
-            shas = (
-                persistence_df.get_column("file_hash_sha256")
-                .drop_nulls()
-                .unique()
-                .cast(pl.Utf8)
-                .to_list()
-            )
-            for sha in shas:
-                candidate = downloads_dir / str(sha)
+        if not persistence_df.is_empty():
+            dir_fd = _open_dir_chain_nofollow(sensor_dir, "cowrie", "downloads")
+            if dir_fd is not None:
                 try:
-                    if candidate.is_symlink() or not candidate.is_file():
-                        continue
-                    if candidate.stat().st_size > 1024 * 1024:
-                        continue
-                    text = candidate.read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    continue
-                for key_type, key_blob in _SSH_PUBKEY_RE.findall(text):
-                    fp = _format_ssh_pubkey_fingerprint(key_type, key_blob)
-                    if fp is not None:
-                        fingerprints.add(fp)
+                    shas = (
+                        persistence_df.get_column("file_hash_sha256")
+                        .drop_nulls()
+                        .unique()
+                        .cast(pl.Utf8)
+                        .to_list()
+                    )
+                    for sha in shas:
+                        sha_str = str(sha)
+                        if not _SHA256_HEX_RE.fullmatch(sha_str):
+                            continue
+                        try:
+                            text = _read_regular_text_at(
+                                dir_fd, sha_str, max_bytes=_SSH_KEY_FILE_MAX_BYTES
+                            )
+                        except OSError:
+                            continue
+                        if not text:
+                            continue
+                        for key_type, key_blob in _SSH_PUBKEY_RE.findall(text):
+                            fp = _format_ssh_pubkey_fingerprint(key_type, key_blob)
+                            if fp is not None:
+                                fingerprints.add(fp)
+                finally:
+                    os.close(dir_fd)
 
     return fingerprints

@@ -167,7 +167,7 @@ OPSEC enforcement: `_assert_no_infra_leaks()` in [`intel/stix.py`](/pipeline/src
 
 #### Discord Intel Reports & Dead-Man's-Switch
 
-Generated from gold data via [`notify/report.py`](/pipeline/src/lantana/notify/report.py), sent via `lantana-report` (`lantana-report.timer` at `06:00 UTC` daily, merged with the legacy `lantana-alert` flow — embed colour follows max severity, brief always posts). Includes stateless D-1/D-2 dataset silence detection (`expected_datasets` in `reporting.yml`), live collector disk usage (`statvfs` usable `%`), systemd unit `StepTiming` (highlighting failed units), key metrics, geographic origin, escalation funnel, top attackers with score decomposition, extracted durable IOCs, campaign clusters, detection highlights, malware captured, and top credentials/commands. The brief footer points at the Vigil dashboard's **STIX Export** view for the STIX 2.1 bundle and raw IOC CSV.gz.
+Generated from gold data via [`notify/report.py`](/pipeline/src/lantana/notify/report.py), sent via `lantana-report` (`lantana-report.timer` at `06:00 UTC` daily, merged with the legacy `lantana-alert` flow — embed colour follows max severity, brief always posts). Includes stateless D-1/D-2 dataset silence detection (`evaluate_liveness_alerts()` in `notify/alerts.py`, using `expected_datasets` auto-derived from `sensor_honeypots` + `['suricata', 'nftables']` in `reporting.json.j2`), live collector disk usage (`statvfs` usable `%` via `prune.py`), systemd unit `StepTiming` (highlighting failed units), key metrics, geographic origin, escalation funnel, top attackers with score decomposition, campaign clusters, detection highlights, malware captured, and top credentials/commands. The brief footer points at the Vigil dashboard's `/iocs` and `/stix` views for the durable IOC inventory, STIX 2.1 bundle, and raw IOC CSV.gz.
 
 Section captions and dashboard help drawers share one source — `WhatWhyHow` triplets in [`notify/explanations.py`](/pipeline/src/lantana/notify/explanations.py) (`BRIEF_SECTIONS` + `METRICS`).
 
@@ -203,34 +203,30 @@ The OCSF schema contract is defined in [`models/ocsf.py`](/pipeline/src/lantana/
 
 ---
 
-## 5. OPSEC: Three-Layer IP Redaction Model
+## 5. OPSEC: Four-Layer Redaction & Isolation Model
 
-Lantana produces shareable intelligence (Discord reports, STIX bundles). The primary OPSEC concern is **external/WAN IP leakage** — the public-facing addresses that identify the honeypot on the internet. If an attacker or peer discovers these, they can blacklist the honeypot, fingerprint the setup, or map the operator's infrastructure. Only the honeypot owner should know these addresses.
+Lantana produces shareable intelligence (Discord reports, STIX bundles). The primary OPSEC concern is **external/WAN IP and infrastructure hostname leakage** — the public-facing addresses and hostnames that identify the honeypot on the internet. Only the honeypot owner should know these values.
 
-Three layers enforce this, each catching what the previous layer might miss:
+Four layers enforce this (matching [`AGENTS.md` §3](/AGENTS.md#1-opsec-is-non-negotiable-layers-03)):
+
+### Layer 0: Public Repository Hygiene
+- Tracked files, test fixtures, docs, and commits strictly use RFC 5737 / RFC 3849 / RFC 2606 / RFC 5398 placeholders. Real values live solely inside gitignored/vault-encrypted `inventories/op_<name>/group_vars/all/`.
 
 ### Layer 1: Vector Noise Filter (Sensor/Honeywall)
 
 - **Where**: VRL transforms in each honeypot's Vector pipeline, before data leaves the sensor.
-- **What**: Drops events where the source IP is not an external attacker. Filtered sources: loopback (`127.0.0.0/8`, `::1`, IPv4-mapped `::ffff:127.0.0.1`), link-local (`fe80::`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`), and the honeypot's own WAN addresses (`network.honeywall.wan.ipv4`, `network.honeywall.wan.ipv6`). This catches health check probes, inter-zone traffic, operational noise, and outbound-response packets from the honeypot itself (which Suricata sees in both flow directions).
-- **Why here**: Eliminating noise at the earliest point reduces data volume, prevents internal and WAN IPs from reaching the datalake as source addresses, and avoids polluting enrichment queries with non-attacker IPs.
-- **Pattern**: Each honeypot role's Vector config includes a `filter_<honeypot>` transform using non-aborting VRL `ip_cidr_contains() ?? false` against the operation's network prefixes plus exact-match exclusion on `network.honeywall.wan.ipv4/ipv6`. Every new honeypot role must replicate this filter (see `suricata.vector.yaml.j2`).
+- **What**: Strips `^::ffff:` and drops events where the source IP is not an external attacker (loopback, RFC 1918, link-local, ULA, internal prefixes, and the honeypot's own WAN addresses).
+- **Pattern**: Every sensor/honeywall Vector config includes a `filter_<dataset>` transform using non-aborting VRL `ip_cidr_contains() ?? false` plus exact-match exclusion on `network.honeywall.wan.ipv4/ipv6`.
 
-### Layer 2: Silver Redaction (Python Pipeline)
+### Layer 2: Silver & Output Redaction (Python Pipeline)
 
-- **Where**: [`common/redact.py`](/pipeline/src/lantana/common/redact.py), called during bronze-to-silver enrichment.
-- **What**: `redact_infrastructure_ips()` runs two passes after `drop_infrastructure_source_rows()` removes any residual infrastructure-source rows:
-  1. **IP-typed columns (`DST_IP_COLUMNS`)** — exact-match + canonical IPv6/CIDR pseudonym swap (e.g., `203.0.113.42` -> `honeypot-wan`; internal IPs also pseudonymized for defense in depth).
-  2. **Attacker-content columns (`ATTACKER_CONTENT_COLUMNS`, including `destfile`, `file_name`, `unmapped_password`, `actor_process_cmd_line`, `file_url`, `message`, etc.)** — longest-prefix-first literal substring replacement so embedded WAN addresses (e.g., WAN-as-password or kernel log `DST=<wan>`) never survive.
-  After replacement, `validate_no_leaks()` validates IP-typed columns (`DST_IP_COLUMNS + SRC_IP_COLUMNS`) via exact match and CIDR containment, asserting zero infrastructure IPs remain.
-- **Why here**: Layer 1 filters by source IP; Layer 2 handles destination IPs and attacker-supplied free text in event data. This is the last point where the pipeline has access to the real IPs (via `reporting.json` pseudonym map).
-- **Configuration**: Controlled by `reporting.json` -> `redact.infrastructure_ips`, `redact.infrastructure_cidrs`, and `redact.pseudonym_map`. The Ansible template merges infrastructure IPs from `network.yml` at deploy time.
+- **Where**: [`common/redact.py`](/pipeline/src/lantana/common/redact.py) during bronze-to-silver enrichment, pre-enrichment URL filtering in [`enrichment/ioc.py`](/pipeline/src/lantana/enrichment/ioc.py), and output verification in [`intel/stix.py`](/pipeline/src/lantana/intel/stix.py).
+- **What**: `drop_infrastructure_source_rows()` removes any residual infrastructure-source rows; `redact_infrastructure_ips()` pseudonymizes IP-typed columns (including canonical IPv6 and `::ffff:`-mapped variants) and scrubs attacker-controlled columns against derived WAN IP variants (dotted, non-dotted, PTR, expanded IPv6) and `infrastructure_hostnames`. `validate_no_leaks()` and `_assert_no_infra_leaks()` assert zero leaks across Silver and serialized STIX 2.1 bundles (reporting SHA-256 prefixes only on failure).
 
-### Layer 3: Gold/Reports/STIX Absence (Python Pipeline)
+### Layer 3: Air-Gapped Local Dashboard
 
-- **Where**: Gold aggregation, Discord reports, STIX bundles.
-- **What**: Gold reads exclusively from silver (already redacted). `generate_bundle()` in [`intel/stix.py`](/pipeline/src/lantana/intel/stix.py) explicitly asserts Layer-3 absence of all infrastructure IPs in the serialized STIX 2.1 bundle JSON. Discord reports are generated from gold data only. Reports never contain: honeypot WAN IPs, internal IPs, server hostnames, network topology, SSH admin port, interface names, or CIDRs.
-- **Why here**: Defense in depth. Even if a bug in Layer 2 allowed a leak into silver, Layer 3 catches it at output time. The `generate_bundle()` check is an explicit runtime assertion, not just a data flow guarantee.
+- **Where**: `lantana-dashboard` (`127.0.0.1:8501` only, SSH tunnel required).
+- **What**: Strict `Content-Security-Policy: connect-src 'none'`, zero external CDNs or fonts, and fail-closed STIX export (HTTP 503 if `reporting.json` redaction rules cannot be loaded).
 
 ---
 
@@ -385,21 +381,20 @@ pipeline/
 │   │   ├── iocs.py                   # Raw IOC inventory extraction and CSV.gz export
 │   │   └── stix.py                   # STIX 2.1 bundle generation (durable pivot + Layer-3 leak check)
 │   ├── notify/
-│   │   ├── alerts.py                 # Enrichment-error severity classifier + lantana-alert CLI
+│   │   ├── alerts.py                 # Enrichment-error severity classifier, D-1/D-2 dataset liveness & lantana-alert CLI
 │   │   ├── cli.py                    # Discord webhook CLI
 │   │   ├── discord.py                # Notification sending + report CLI entry
 │   │   ├── explanations.py           # Shared WhatWhyHow registry (BRIEF_SECTIONS + METRICS)
-│   │   ├── health.py                 # Stateless D-1/D-2 dataset silence detector + live disk %
 │   │   ├── report.py                 # Markdown daily brief generation
 │   │   └── timing.py                 # Systemd unit runtime duration & failure helper for daily brief
 │   ├── dashboard/
 │   │   ├── app.py                    # Air-gapped stdlib ThreadingHTTPServer (127.0.0.1:8501)
 │   │   ├── queries.py                # Pure Polars multi-day rollups (5 date windows)
-│   │   ├── charts.py                 # Pure plotly.graph_objects builders (zero Pandas)
+│   │   ├── charts.py                 # Pure plotly.graph_objects builders (incl. offline world map, zero Pandas)
 │   │   ├── html.py                   # Server-rendered Vigil HTML + help drawers + CSP
 │   │   ├── theme.py                  # Vigil dark/light chart tokens + Plotly config
 │   │   └── static/vigil.css          # Local tailored Vigil stylesheet (zero external URLs)
-│   └── prune.py                      # Decoupled retention, symlink-safe scratch prune, statvfs monitor
+│   └── prune.py                      # Decoupled retention, symlink-safe scratch prune, live statvfs disk %
 └── tests/                            # Tests mirroring src/ structure
 ```
 

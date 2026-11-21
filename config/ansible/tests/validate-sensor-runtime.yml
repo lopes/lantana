@@ -111,7 +111,7 @@
           dionaea.container carries a ,U volume flag. ,U races the
           entrypoint's own chown of /opt/dionaea/var/log/dionaea and
           breaks the worker's reopen of dionaea.json on every restart.
-          See troubleshooting.md "Dionaea Sensor — log_json silent fail."
+          See troubleshooting.md "Dionaea Sensor — lantana_json (or legacy log_json) silent fail."
       when: "'dionaea' in active_honeypots"
 
     # === 3. Container state: running + healthy + RestartCount=0 ===
@@ -281,5 +281,5 @@
           owned neither by stigma nor by the worker subuid 100999.
           This is the failure mode from 2026-06-08 — an upstream image
           rebase may have shifted the dionaea user UID. See
-          docs/troubleshooting.md "Dionaea Sensor — log_json silent fail".
+          docs/troubleshooting.md "Dionaea Sensor — lantana_json (or legacy log_json) silent fail".
       when: "'dionaea' in active_honeypots"

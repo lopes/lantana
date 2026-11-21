@@ -259,7 +259,7 @@ If you re-deploy often, point `ANSIBLE_VAULT_PASSWORD_FILE` at a 0600-mode file 
 - `type` is `apikey` or `webhook`
 - `service` is the lowercase provider name (`virustotal`, `shodan`, `discord`, ...)
 
-The same keys appear unchanged in the rendered `/etc/lantana/collector/secrets.json` on the collector — that file is just the decrypted view of the vault, not a separate schema. See [Vault ↔ secrets.json nomenclature](/docs/pipeline.md#vault--secretsjson-nomenclature) for the reasoning.
+The same keys appear unchanged in the rendered `/etc/lantana/collector/secrets.json` on the collector — that file is just the decrypted view of the vault, not a separate schema. See [Vault ↔ secrets.json nomenclature](/docs/pipeline.md#73-vault--secretsjson-nomenclature) for the reasoning.
 
 ### What goes in the template
 

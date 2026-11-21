@@ -88,7 +88,7 @@ IOC_TYPE_URL = "url"
 IOC_TYPE_DOMAIN = "domain"
 
 # Free VT daily quota is 500/day shared across hashes/IPs/URLs/domains; keep a
-# 20-request margin and stay comfortably inside the 01:00-04:00 UTC window.
+# 20-request margin and stay comfortably inside the 01:00-05:30 UTC window.
 VT_FREE_DAILY_REQUEST_BUDGET = 480
 
 # Per-provider IP-selection policy.

@@ -254,7 +254,7 @@ Per (provider, payload) pair the probe prints:
 { <fields the pipeline writes to silver> }
 ```
 
-Errors are printed in-place as `[error] <type>: <message>` and don't abort the run, so a single misconfigured key doesn't mask the other four providers. Exit code is `0` when every pair returned cleanly, `1` if anything errored, `2` for usage errors.
+Errors are printed in-place as `[error] <type>: <message>` and don't abort the run, so a single misconfigured key doesn't mask the other three providers. Exit code is `0` when every pair returned cleanly, `1` if anything errored, `2` for usage errors.
 
 ### `probe-mmdb.py` — MaxMind GeoLite2 (full stack)
 
@@ -272,22 +272,23 @@ The MMDB directory defaults differ by environment:
 cd pipeline
 
 # Workstation — defaults to /tmp/lantana/mmdb, downloads if missing
-uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8 \
+# (Swap 203.0.113.7 for a live public IP when verifying populated MMDB records.)
+uv run python ../scripts/probe-mmdb.py --ip 203.0.113.7 \
     --secrets ./local-secrets.json
 
 # Query-only on the collector (MMDBs already populated by Ansible)
-uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8
+uv run python ../scripts/probe-mmdb.py --ip 203.0.113.7
 
 # Multiple IPs, custom directory
-uv run python ../scripts/probe-mmdb.py --ip 1.1.1.1 --ip 203.0.113.7 \
+uv run python ../scripts/probe-mmdb.py --ip 198.51.100.7 --ip 203.0.113.7 \
     --mmdb-dir ~/lantana-mmdb --secrets ./local-secrets.json
 
 # Force refresh (re-download even though files exist — mirrors the monthly cron)
-uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8 \
+uv run python ../scripts/probe-mmdb.py --ip 203.0.113.7 \
     --secrets ./local-secrets.json --force-download
 
 # Workstation TLS workaround (Homebrew Python 3.14 cert chain issue)
-uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8 \
+uv run python ../scripts/probe-mmdb.py --ip 203.0.113.7 \
     --secrets ./local-secrets.json --insecure
 ```
 

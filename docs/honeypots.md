@@ -91,17 +91,17 @@ To stop accepting the packet at the firewall too, remove the matching line from 
 - **Container image:** `ghcr.io/lopes/lantana-dionaea:v1.5` (override via `dionaea_image`).
 - **Quadlet unit:** `sensor-dionaea` (`/etc/containers/systemd/users/2001/dionaea.container`).
 - **Config layout:** `/etc/lantana/sensor/dionaea/services-enabled/<svc>.yaml` (one file per protocol in `dionaea_service_catalog`) and `/etc/lantana/sensor/dionaea/ihandlers-enabled/` (`lantana_json.yaml` + `store.yaml`), both bind-mounted read-only over `/opt/dionaea/etc/dionaea/{services,ihandlers}-enabled/`.
-- **Health check:** application-layer `/etc/lantana/sensor/dionaea/healthcheck.py` (asserts worker PID, live listening sockets across catalog ports, and writable JSON log FD) with `HealthOnFailure=kill` so silent hangs auto-restart.
+- **Health check:** application-layer `/etc/lantana/sensor/dionaea/healthcheck.py` (opens a real HTTP `GET /` expecting `HTTP/1.`, falling back to FTP `220` or MySQL handshake probes on the first enabled service) with `HealthOnFailure=kill` so silent libev deadlocks auto-restart.
 
 ### Container model and constraints
 
 Four invariants remain load-bearing in `roles/dionaea/`:
 
 1. **Per-service and ihandler directory overlays.** The image bakes `/opt/dionaea/etc/dionaea/dionaea.cfg` (`processors=filter_emu`). Ansible mounts `services-enabled/` and `ihandlers-enabled/` `:ro` over the bundled directories so only our 6 catalog services and `lantana_json` + `store` ihandlers load.
-2. **Five specific capabilities stay added.** The Quadlet starts from `DropCapability=ALL` and adds only:
+2. **Four specific capabilities stay added.** The Quadlet starts from `DropCapability=ALL` + `ReadOnly=true` + `VolatileTmp=true` and adds only:
    - `NET_BIND_SERVICE` — bind privileged ports (`21, 80, 135, 445`) inside the container.
    - `SETUID` + `SETGID` — drop from container-root to `dionaea` (`UID 1000`). Without these, dionaea exits silently with status `133`.
-   - `CHOWN` + `FOWNER` — non-destructive `entrypoint.sh` ensures data/log subdirectories are writable by `dionaea:dionaea` without stripping host POSIX ACLs.
+   - `CHOWN` — non-destructive `entrypoint.sh` keeps `DATA_ROOT` owned by `0:0` (`0755`), rejects symlinks, and uses `chown -h dionaea:dionaea` on writable data/log subdirs without stripping host POSIX ACLs.
 3. **No `,U` and no `UserNS=keep-id`.** Dionaea runs as a two-user container (root entrypoint -> `dionaea` UID `1000` = host subuid `100999`). `,U` races the entrypoint and leaves `dionaea.json` unwritable; host access for Vector and `nectar` flows strictly through POSIX ACLs (`u:vector:rX` on logs, `u:nectar:rwX` via `lantana-grant-read` on `binaries/`, `bistreams/`, `tmp/`).
 4. **7-bit ASCII only in service and ihandler YAMLs.** `templates/services-enabled/*.yaml.j2` and `templates/ihandlers-enabled/*.yaml.j2` must stay pure 7-bit ASCII (enforced at deploy time by Ansible's `validate:` check). Use `--`, `->`, and straight quotes only.
 

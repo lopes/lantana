@@ -1,6 +1,6 @@
 # Lantana — Future work
 
-Tracked items that are intentionally not in v1.0.0 but worth doing later. Each entry is a self-contained brief: what, why, acceptance criteria, and effort estimate. Add new items at the bottom; mark done items struck-through rather than deleting (history is useful).
+Tracked future work and archived milestones. Each entry is a self-contained brief: what, why, acceptance criteria, and effort estimate. Add new items at the bottom; mark done items struck-through rather than deleting (history is useful).
 
 Effort key:
 - **low** — single-PR change, ≤1 day focused work
@@ -24,7 +24,7 @@ Owning the build pipeline removes three classes of risk:
 
 1. **In-container UID/GID becomes a repo constant.** The Quadlet's `UserNS=keep-id:uid=999,gid=999` literal would no longer be coupled to an upstream user's whim — we'd set it in the Containerfile.
 2. **Rebases happen on our schedule, in a PR, with CI tests.** No more silent overnight `podman pull`. The validation playbook can gate the merge.
-3. **We can carry in-house patches.** While on-disk SHA-256 hashing via `lantana-grant-read` + synthetic `dionaea.binary.captured` silver events + VirusTotal hash enrichment (`enrichment/ioc.py`, `models/normalize.py`) is already shipped, upstream gaps listed under [Known limitations](/docs/honeypots.md#known-limitations-v100) — the hardcoded Dionaea MSSQL version string and per-session `src_ip` / download-URL attribution on Dionaea binary captures — could move from "blocked on upstream" to "fixed at build time."
+3. **We can carry in-house patches.** While on-disk SHA-256 hashing via `lantana-grant-read` + synthetic `dionaea.binary.captured` silver events + VirusTotal hash enrichment (`enrichment/ioc.py`, `models/normalize.py`) is already shipped, upstream gaps listed under [Known limitations](/docs/honeypots.md#known-limitations) — the hardcoded Dionaea MSSQL version string and per-session `src_ip` / download-URL attribution on Dionaea binary captures — could move from "blocked on upstream" to "fixed at build time."
 
 **Acceptance criteria.**
 

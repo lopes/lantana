@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -31,14 +32,13 @@ DEFAULT_LAKE_DIR = Path("/var/lib/lantana/datalake")
 DEFAULT_SENSOR_DIR = Path("/var/lib/lantana/sensor")
 BRONZE_RETENTION_DAYS = 14
 SILVER_GOLD_RETENTION_DAYS = 180
-DEFAULT_RETENTION_DAYS = SILVER_GOLD_RETENTION_DAYS
 SENSOR_RETENTION_DAYS = 14
 EMERGENCY_BRONZE_RETENTION_DAYS = 3
 EMERGENCY_SENSOR_RETENTION_DAYS = 3
-EMERGENCY_RETENTION_DAYS = EMERGENCY_SENSOR_RETENTION_DAYS
 ERRORS_RETENTION_DAYS = 180
 DISK_WARNING_THRESHOLD = 70.0
 DISK_CRITICAL_THRESHOLD = 80.0
+MAX_PRUNE_DEPTH = 32
 
 DEFAULT_SENSOR_SUBDIRS: tuple[str, ...] = (
     "cowrie/downloads",
@@ -158,94 +158,159 @@ def _open_dir_nofollow(path: Path) -> int | None:
 
 
 def _prune_dir_fd(
-    dir_fd: int,
+    root_fd: int,
     cutoff_epoch: float,
     *,
     rel_display: str,
     dry_run: bool,
+    max_depth: int = MAX_PRUNE_DEPTH,
 ) -> tuple[int, bool]:
-    """Recursively prune regular files older than cutoff_epoch using dir_fd + O_NOFOLLOW.
+    """Iteratively prune regular files older than cutoff_epoch using dir_fd + O_NOFOLLOW.
 
-    Never follows symlinks on files or subdirectories. Returns (deleted_count, is_empty).
+    Uses an explicit stack capped at ``max_depth`` so deeply nested directories
+    planted by a compromised sensor user can never exhaust recursion depth or
+    file descriptors. Never follows symlinks on files or subdirectories.
+    Returns ``(deleted_count, root_is_empty)``.
     """
     deleted = 0
-    remaining_entries = 0
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
+    # Each frame: [fd, rel_path, parent_fd, entry_name, depth, child_iter, remaining, owns_fd]
+    # Use a typed list of mutable frame objects via a small helper list structure.
+    class _Frame:
+        __slots__ = (
+            "depth",
+            "entries",
+            "entry_name",
+            "fd",
+            "idx",
+            "owns_fd",
+            "parent_fd",
+            "rel_path",
+            "remaining",
+        )
+
+        def __init__(
+            self,
+            fd: int,
+            rel_path: str,
+            parent_fd: int | None,
+            entry_name: str | None,
+            depth: int,
+            entries: list[str],
+            *,
+            owns_fd: bool,
+        ) -> None:
+            self.fd = fd
+            self.rel_path = rel_path
+            self.parent_fd = parent_fd
+            self.entry_name = entry_name
+            self.depth = depth
+            self.entries = entries
+            self.idx = 0
+            self.remaining = 0
+            self.owns_fd = owns_fd
+
     try:
-        entries = list(os.scandir(dir_fd))
+        root_entries = [e.name for e in os.scandir(root_fd)]
     except OSError as exc:
         logger.error("prune_scandir_failed", path=rel_display, error=repr(exc))
         return 0, False
 
-    for entry in entries:
-        try:
-            st = os.stat(entry.name, dir_fd=dir_fd, follow_symlinks=False)
-        except OSError as exc:
-            logger.error(
-                "prune_stat_failed",
-                path=f"{rel_display}/{entry.name}",
-                error=repr(exc),
-            )
-            remaining_entries += 1
-            continue
+    stack: list[_Frame] = [_Frame(root_fd, rel_display, None, None, 0, root_entries, owns_fd=False)]
+    root_empty = False
 
-        mode = st.st_mode
-        if stat.S_ISLNK(mode):
-            # Never follow symlinks inside untrusted sensor trees.
-            logger.warning("prune_symlink_skipped", path=f"{rel_display}/{entry.name}")
-            remaining_entries += 1
-            continue
-
-        if stat.S_ISDIR(mode):
-            try:
-                child_fd = os.open(entry.name, flags, dir_fd=dir_fd)
-            except OSError as exc:
-                logger.error(
-                    "prune_open_subdir_failed",
-                    path=f"{rel_display}/{entry.name}",
-                    error=repr(exc),
-                )
-                remaining_entries += 1
+    try:
+        while stack:
+            frame = stack[-1]
+            if frame.idx >= len(frame.entries):
+                stack.pop()
+                is_empty = frame.remaining == 0
+                if frame.owns_fd:
+                    os.close(frame.fd)
+                if frame.parent_fd is not None and frame.entry_name is not None:
+                    parent = stack[-1]
+                    if is_empty and not dry_run:
+                        try:
+                            os.rmdir(frame.entry_name, dir_fd=frame.parent_fd)
+                        except OSError:
+                            parent.remaining += 1
+                    elif not is_empty:
+                        parent.remaining += 1
+                else:
+                    root_empty = is_empty
                 continue
-            try:
-                child_deleted, child_empty = _prune_dir_fd(
-                    child_fd,
-                    cutoff_epoch,
-                    rel_display=f"{rel_display}/{entry.name}",
-                    dry_run=dry_run,
-                )
-            finally:
-                os.close(child_fd)
 
-            deleted += child_deleted
-            if child_empty and not dry_run:
+            name = frame.entries[frame.idx]
+            frame.idx += 1
+            child_display = f"{frame.rel_path}/{name}"
+            try:
+                st = os.stat(name, dir_fd=frame.fd, follow_symlinks=False)
+            except OSError as exc:
+                logger.error("prune_stat_failed", path=child_display, error=repr(exc))
+                frame.remaining += 1
+                continue
+
+            mode = st.st_mode
+            if stat.S_ISLNK(mode):
+                logger.warning("prune_symlink_skipped", path=child_display)
+                frame.remaining += 1
+                continue
+
+            if stat.S_ISDIR(mode):
+                if frame.depth >= max_depth:
+                    logger.warning(
+                        "prune_max_depth_reached",
+                        path=child_display,
+                        max_depth=max_depth,
+                    )
+                    frame.remaining += 1
+                    continue
                 try:
-                    os.rmdir(entry.name, dir_fd=dir_fd)
-                except OSError:
-                    remaining_entries += 1
-            elif not child_empty:
-                remaining_entries += 1
-            continue
-
-        if stat.S_ISREG(mode) and st.st_mtime < cutoff_epoch:
-            if dry_run:
-                deleted += 1
-                continue
-            try:
-                os.unlink(entry.name, dir_fd=dir_fd)
-                deleted += 1
-            except OSError as exc:
-                logger.error(
-                    "prune_unlink_failed",
-                    path=f"{rel_display}/{entry.name}",
-                    error=repr(exc),
+                    child_fd = os.open(name, flags, dir_fd=frame.fd)
+                except OSError as exc:
+                    logger.error("prune_open_subdir_failed", path=child_display, error=repr(exc))
+                    frame.remaining += 1
+                    continue
+                try:
+                    child_entries = [e.name for e in os.scandir(child_fd)]
+                except OSError as exc:
+                    os.close(child_fd)
+                    logger.error("prune_scandir_failed", path=child_display, error=repr(exc))
+                    frame.remaining += 1
+                    continue
+                stack.append(
+                    _Frame(
+                        child_fd,
+                        child_display,
+                        frame.fd,
+                        name,
+                        frame.depth + 1,
+                        child_entries,
+                        owns_fd=True,
+                    )
                 )
-                remaining_entries += 1
-        else:
-            remaining_entries += 1
+                continue
 
-    return deleted, remaining_entries == 0
+            if stat.S_ISREG(mode) and st.st_mtime < cutoff_epoch:
+                if dry_run:
+                    deleted += 1
+                    continue
+                try:
+                    os.unlink(name, dir_fd=frame.fd)
+                    deleted += 1
+                except OSError as exc:
+                    logger.error("prune_unlink_failed", path=child_display, error=repr(exc))
+                    frame.remaining += 1
+            else:
+                frame.remaining += 1
+    finally:
+        for leftover in stack:
+            if leftover.owns_fd:
+                with contextlib.suppress(OSError):
+                    os.close(leftover.fd)
+
+    return deleted, root_empty
 
 
 def _open_relative_subdir_nofollow(root: Path, rel_subdir: str) -> int | None:
@@ -292,6 +357,8 @@ def _prune_old_files(
                 dry_run=dry_run,
             )
             deleted += sub_deleted
+        except OSError as exc:
+            logger.error("prune_subdir_failed", path=str(root / cleaned), error=repr(exc))
         finally:
             os.close(dir_fd)
 

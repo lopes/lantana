@@ -85,7 +85,7 @@ class TestVirusTotalIP:
             json={"error": {"code": "NotFoundError"}},
             request=httpx.Request(
                 "GET",
-                "https://www.virustotal.com/api/v3/ip_addresses/9.9.9.9",
+                "https://www.virustotal.com/api/v3/ip_addresses/198.51.100.99",
             ),
         )
         with patch.object(
@@ -94,7 +94,7 @@ class TestVirusTotalIP:
             new_callable=AsyncMock,
             return_value=not_found,
         ):
-            result = await provider.enrich_ip("9.9.9.9")
+            result = await provider.enrich_ip("198.51.100.99")
 
         assert result.data["vt_malicious_count"] == 0
         assert result.data["vt_suspicious_count"] == 0
@@ -400,11 +400,13 @@ class TestVtIpRiskScoreInResult:
         not_found = httpx.Response(
             404,
             json={},
-            request=httpx.Request("GET", "https://www.virustotal.com/api/v3/ip_addresses/9.9.9.9"),
+            request=httpx.Request(
+                "GET", "https://www.virustotal.com/api/v3/ip_addresses/198.51.100.99"
+            ),
         )
         mock_get = AsyncMock(return_value=not_found)
         with patch.object(provider._client, "get", mock_get):
-            result = await provider.enrich_ip("9.9.9.9")
+            result = await provider.enrich_ip("198.51.100.99")
         assert result.data["vt_status"] == "not_found"
         assert result.data["virustotal_risk_score"] is None
 
@@ -576,10 +578,12 @@ class TestVirusTotalV15Extensions:
                     },
                 }
             },
-            request=httpx.Request("GET", "https://www.virustotal.com/api/v3/ip_addresses/1.1.1.1"),
+            request=httpx.Request(
+                "GET", "https://www.virustotal.com/api/v3/ip_addresses/198.51.100.1"
+            ),
         )
         with patch.object(gti_provider._client, "get", AsyncMock(return_value=resp)):
-            result = await gti_provider.enrich_ip("1.1.1.1")
+            result = await gti_provider.enrich_ip("198.51.100.1")
         await gti_provider.close()
         assert result.data["gti_verdict"] == "VERDICT_BENIGN"
         assert "gti_threat_actors" not in result.data

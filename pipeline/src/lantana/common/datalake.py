@@ -109,7 +109,15 @@ def read_bronze_ndjson(
         # Normalize IPv4-mapped IPv6 addresses (::ffff:1.2.3.4 -> 1.2.3.4)
         ip_cols = [
             c
-            for c in ("src_ip", "dst_ip", "dest_ip")
+            for c in (
+                "src_ip",
+                "dst_ip",
+                "dest_ip",
+                "local_ip",
+                "dst_host",
+                "src_endpoint_ip",
+                "dst_endpoint_ip",
+            )
             if c in df.columns and df.schema[c] == pl.Utf8
         ]
         if ip_cols:

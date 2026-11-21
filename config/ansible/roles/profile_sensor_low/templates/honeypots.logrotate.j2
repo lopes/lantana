@@ -1,9 +1,34 @@
 # /etc/lantana/logrotate.d/00_00/honeypots
 # Managed by Ansible
+# Explicit per-sensor log paths (avoiding root-owned wildcard globs over
+# container-writable directories). Cowrie rotates under `su stigma stigma`;
+# Dionaea's worker runs as subuid 100999 so only its explicit log filenames are
+# rotated with copytruncate + restart.
 
-# All low-interaction honeypots like Cowrie, Dionaea, Honeyd
-/var/log/lantana/sensor/*/*.log
-/var/log/lantana/sensor/*/*.json
+/var/log/lantana/sensor/cowrie/cowrie.log
+/var/log/lantana/sensor/cowrie/cowrie.json
+{
+    su {{ system.users.sensor.name }} {{ system.users.sensor.name }}
+    # No 'daily': forced with cron for more determinism
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    sharedscripts
+    postrotate
+        if ! runuser -u {{ system.users.sensor.name }} -- \
+            env XDG_RUNTIME_DIR=/run/user/{{ system.users.sensor.uid }} \
+            systemctl --user restart cowrie.service 2>/dev/null; then
+            logger -t lantana-logrotate -p daemon.err "Failed to restart cowrie.service after log rotation"
+        fi
+    endscript
+}
+
+/var/log/lantana/sensor/dionaea/dionaea.log
+/var/log/lantana/sensor/dionaea/dionaea-errors.log
+/var/log/lantana/sensor/dionaea/dionaea.json
 {
     # No 'daily': forced with cron for more determinism
     rotate 7
@@ -13,16 +38,11 @@
     delaycompress
     copytruncate
     sharedscripts
-    # Restart rootless sensor Quadlets after copytruncate so writers reopen
-    # fresh file descriptors at offset 0 (preventing sparse-null holes in both
-    # cowrie.json and dionaea.json). Log failures to syslog rather than hiding them.
     postrotate
-        for svc in {{ (sensor_honeypots | default(['cowrie', 'dionaea'])) | join(' ') }}; do
-            if ! runuser -u {{ system.users.sensor.name }} -- \
-                env XDG_RUNTIME_DIR=/run/user/{{ system.users.sensor.uid }} \
-                systemctl --user restart "${svc}.service" 2>/dev/null; then
-                logger -t lantana-logrotate -p daemon.err "Failed to restart ${svc}.service after log rotation"
-            fi
-        done
+        if ! runuser -u {{ system.users.sensor.name }} -- \
+            env XDG_RUNTIME_DIR=/run/user/{{ system.users.sensor.uid }} \
+            systemctl --user restart dionaea.service 2>/dev/null; then
+            logger -t lantana-logrotate -p daemon.err "Failed to restart dionaea.service after log rotation"
+        fi
     endscript
 }

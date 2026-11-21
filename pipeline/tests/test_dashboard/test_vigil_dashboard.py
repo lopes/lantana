@@ -48,9 +48,25 @@ def _seed_datalake(tmp_path: Path) -> tuple[Path, Path, Path]:
     reporting_path.write_text(
         json.dumps(
             {
-                "operator": {"name": "Test Op", "handle": "test_op"},
-                "sharing": {"tlp": "GREEN", "community": "Test"},
-                "operation": {"name": "Op Vigil", "expected_datasets": ["cowrie", "suricata"]},
+                "operator": {
+                    "name": "Test Op",
+                    "handle": "test_op",
+                    "contact": "test@example.com",
+                    "pgp_fingerprint": "",
+                },
+                "sharing": {
+                    "tlp": "GREEN",
+                    "community": "Test",
+                    "discord_channel": "lantana-test",
+                },
+                "operation": {
+                    "name": "Op Vigil",
+                    "description": "Synthetic test operation",
+                    "sector": "technology",
+                    "region": "EU",
+                    "start_date": "2026-07-01",
+                    "expected_datasets": ["cowrie", "suricata"],
+                },
                 "redact": {
                     "infrastructure_ips": ["192.0.2.10"],
                     "infrastructure_cidrs": ["10.50.99.0/24"],
@@ -416,3 +432,56 @@ class TestAirGappedVigilServer:
         status, _, raw = _fetch(f"{live_dashboard}/nonexistent-route")
         assert status == 404
         assert "404" in raw.decode("utf-8")
+
+
+def test_safe_json_for_script_blocks_html5_double_escape() -> None:
+    """Attacker strings with <!--<script> or </script> must be escaped as unicode escapes."""
+    from lantana.dashboard.html import safe_json_for_script
+
+    encoded = safe_json_for_script({"payload": "<!--<script>alert(1)</script>"})
+    assert "<" not in encoded
+    assert ">" not in encoded
+    assert "\\u003c" in encoded
+    assert "\\u003e" in encoded
+    assert json.loads(encoded)["payload"] == "<!--<script>alert(1)</script>"
+
+
+def test_geography_world_map_is_fully_airgapped_without_scattergeo(live_dashboard: str) -> None:
+    """World map uses local Cartesian landmass polygons (zero scattergeo / cdn.plot.ly XHRs)."""
+    status, _, raw = _fetch(f"{live_dashboard}/geography?window=all")
+    assert status == 200
+    body = raw.decode("utf-8")
+    assert '"scattergeo"' not in body.lower()
+    assert '"world-land"' in body
+    assert "cdn.plot.ly" not in body.lower()
+
+
+def test_stix_export_fails_closed_when_reporting_config_missing(tmp_path: Path) -> None:
+    """OPSEC: missing/corrupt reporting.json disables /stix and returns HTTP 503."""
+    gold_root, silver_root, reporting_path = _seed_datalake(tmp_path)
+    reporting_path.unlink()  # Remove reporting.json so OPSEC redaction rules cannot load
+
+    server = create_server(
+        host="127.0.0.1",
+        port=0,
+        gold_root=gold_root,
+        silver_root=silver_root,
+        reporting_path=reporting_path,
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{port}"
+        st_status, _, st_raw = _fetch(f"{base}/stix?window=all")
+        assert st_status == 200
+        st_html = st_raw.decode("utf-8")
+        assert "OPSEC Guard" in st_html
+        assert "/download/stix" not in st_html
+
+        dl_status, _, _ = _fetch(f"{base}/download/stix?window=all")
+        assert dl_status == 503
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

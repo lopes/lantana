@@ -319,3 +319,29 @@ class TestEmergencyAlertDecoupling:
         kwargs = mock_send.await_args.kwargs
         assert kwargs["level"] == "critical"
         assert "Disk Critical" in kwargs["title"]
+
+
+def test_prune_deeply_nested_sensor_tree_is_depth_capped_and_isolated(tmp_path: Path) -> None:
+    """Deeply nested dirs cannot trigger RecursionError or block sibling subdirs."""
+    from lantana.prune import _prune_old_files
+
+    sensor = tmp_path / "sensor"
+    deep = sensor / "cowrie" / "downloads"
+    for idx in range(45):
+        deep = deep / f"d{idx}"
+    deep.mkdir(parents=True)
+
+    sibling_dir = sensor / "dionaea" / "binaries"
+    sibling_dir.mkdir(parents=True)
+    old_file = sibling_dir / "old.bin"
+    old_file.write_bytes(b"payload")
+    old_ts = datetime(2025, 1, 1, tzinfo=UTC).timestamp()
+    os.utime(old_file, (old_ts, old_ts))
+
+    deleted = _prune_old_files(
+        sensor,
+        cutoff=date(2026, 1, 1),
+        subdirs=("cowrie/downloads", "dionaea/binaries"),
+    )
+    assert deleted == 1
+    assert not old_file.exists()

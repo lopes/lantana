@@ -9,6 +9,7 @@ requests — serves ``/static/vigil.css`` from package data and
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from functools import lru_cache
 from http import HTTPStatus
@@ -100,27 +101,39 @@ def _load_plotly_js_bytes() -> bytes:
     return plotly.offline.get_plotlyjs().encode("utf-8")
 
 
-def _safe_load_reporting(reporting_path: Path | None = None) -> ReportingConfig:
+def _load_reporting_checked(reporting_path: Path | None = None) -> tuple[ReportingConfig, bool]:
+    """Load reporting config and report whether real OPSEC redaction rules loaded.
+
+    Returns ``(config, True)`` when ``reporting.json`` parsed cleanly and
+    ``(fallback_config, False)`` when missing/unreadable/corrupt. Display-only
+    views may render with the fallback title, while export endpoints
+    (``/stix``, ``/download/stix``) MUST fail closed whenever ``loaded`` is
+    ``False`` so STIX bundles are never emitted without OPSEC leak rules.
+    """
     try:
-        return load_reporting(reporting_path) if reporting_path is not None else load_reporting()
+        cfg = load_reporting(reporting_path) if reporting_path is not None else load_reporting()
     except (FileNotFoundError, PermissionError, ValueError):
-        return ReportingConfig(
-            operator=OperatorConfig(
-                name="Lantana Operator",
-                handle="lantana",
-                contact="",
-                pgp_fingerprint="",
+        return (
+            ReportingConfig(
+                operator=OperatorConfig(
+                    name="Lantana Operator",
+                    handle="lantana",
+                    contact="",
+                    pgp_fingerprint="",
+                ),
+                sharing=SharingConfig(tlp="GREEN", community="", discord_channel=""),
+                operation=OperationConfig(
+                    name="Lantana",
+                    description="",
+                    sector="",
+                    region="",
+                    start_date="",
+                ),
+                redact=RedactConfig(),
             ),
-            sharing=SharingConfig(tlp="GREEN", community="", discord_channel=""),
-            operation=OperationConfig(
-                name="Lantana",
-                description="",
-                sector="",
-                region="",
-                start_date="",
-            ),
-            redact=RedactConfig(),
+            False,
         )
+    return cfg, True
 
 
 def _fmt_float(value: object, digits: int = 1) -> str:
@@ -1114,7 +1127,30 @@ def _render_stix_view(
     window: DateWindow,
     gold_root: Path,
     reporting: ReportingConfig,
+    *,
+    reporting_loaded: bool = True,
 ) -> str:
+    if not reporting_loaded:
+        return render_page(
+            title="STIX 2.1 & Raw IOC Export",
+            subtitle=(
+                "Durable threat intelligence bundle for OpenCTI/MISP and "
+                "threshold-free Silver CSV.gz export."
+            ),
+            active_route="/stix",
+            window=window,
+            toc_items=(),
+            body_html=(
+                '<div class="callout callout-important">'
+                '<div class="callout-title">OPSEC Guard — STIX Export Disabled</div>'
+                "Could not load <code>reporting.json</code> (infrastructure IP/hostname "
+                "redaction rules unavailable). Refusing to generate or download STIX "
+                "bundles until <code>reporting.json</code> is valid and readable."
+                "</div>"
+            ),
+            operation_name=reporting.operation.name,
+        )
+
     reputation = aggregate_ip_reputation(window.dates, gold_root=gold_root)
     clusters = aggregate_campaign_clusters(window.dates, gold_root=gold_root)
     extracted = aggregate_extracted_iocs(window.dates, gold_root=gold_root)
@@ -1312,7 +1348,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         window = self._resolve_request_window(query)
-        reporting = _safe_load_reporting(self.server.reporting_path)
+        reporting, reporting_loaded = _load_reporting_checked(self.server.reporting_path)
         op_name = reporting.operation.name
         gold_root = self.server.gold_root
 
@@ -1338,10 +1374,25 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._send_html(_render_findings_view(window, gold_root, op_name))
             return
         if route == "/stix":
-            self._send_html(_render_stix_view(window, gold_root, reporting))
+            self._send_html(
+                _render_stix_view(
+                    window,
+                    gold_root,
+                    reporting,
+                    reporting_loaded=reporting_loaded,
+                )
+            )
             return
 
         if route == "/download/stix":
+            if not reporting_loaded:
+                self._send_bytes(
+                    b'{"error": "reporting config unavailable; refusing STIX export"}',
+                    content_type="application/json",
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    extra_headers={"Cache-Control": "no-store"},
+                )
+                return
             if not window.dates:
                 self._send_bytes(
                     b'{"error": "no gold data for selected window"}',
@@ -1349,7 +1400,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     status=HTTPStatus.NOT_FOUND,
                 )
                 return
-            bundle = build_window_stix_bundle(window, reporting, gold_root=gold_root)
+            try:
+                bundle = build_window_stix_bundle(window, reporting, gold_root=gold_root)
+            except ValueError as exc:
+                self._send_bytes(
+                    json.dumps({"error": str(exc)}).encode("utf-8"),
+                    content_type="application/json",
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    extra_headers={"Cache-Control": "no-store"},
+                )
+                return
             tag = window.end_date.isoformat() if window.end_date else "export"
             payload = bundle.serialize(pretty=True).encode("utf-8")
             self._send_bytes(

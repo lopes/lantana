@@ -122,32 +122,31 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         how="behavioral_progression rows, coloured by is_automated (bot vs manual).",
     ),
     "Progression Velocity": WhatWhyHow(
-        what="distribution of days-to-max-stage across the 7-day window.",
+        what="distribution of days-to-max-stage across the selected date window.",
         why="long-tail to the right = attackers building access over multiple days.",
         how=(
-            "(last_seen_date - first_seen_date) in days, aggregated per IP over the "
-            "trailing 7 daily behavioral_progression gold partitions; only IPs with velocity > 0."
+            "(last_seen_date - first_seen_date) in days, aggregated per IP across the "
+            "selected daily behavioral_progression gold partitions; only IPs with velocity > 0."
         ),
     ),
     "Multi-Day Progression": WhatWhyHow(
-        what="7-day-lookback rollup of every IP's deepest stage reached.",
+        what="selected date window rollup of every IP's deepest stage reached.",
         why="catches attackers who spread reconnaissance across days to evade per-day rate limits.",
         how=(
             "aggregated on demand from daily behavioral_progression gold partitions. "
-            "Multi-day flag is a permissive proxy (active_days > 1) — the silver-derived "
-            "per-stage slow-burn detection was retired with the multiday gold table, "
-            "see README roadmap."
+            "Multi-day flag is a permissive proxy (active_days > 1) — lossless "
+            "per-stage slow-burn detection remains on the README roadmap."
         ),
     ),
     "Multi-Day Attackers": WhatWhyHow(
-        what="IPs observed across 2+ days of the trailing 7-day window.",
+        what="IPs observed across 2+ days of the selected date window.",
         why=(
             "contrasts with same-day burst behaviour — these are the patient ones "
             "worth a deeper look. Proper per-stage slow-burn detection is deferred."
         ),
         how=(
-            "behavioral_progression rows aggregated by src_endpoint_ip across 7 daily "
-            "partitions; flagged where active_days > 1, ranked by velocity_days."
+            "behavioral_progression rows aggregated by src_endpoint_ip across the selected "
+            "daily partitions; flagged where active_days > 1, ranked by velocity_days."
         ),
     ),
     # STIX Export page

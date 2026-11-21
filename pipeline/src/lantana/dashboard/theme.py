@@ -72,6 +72,7 @@ def apply_vigil_layout(
 ) -> go.Figure:
     """Apply Vigil's sharp, paper-white baseline layout (client JS swaps dark tokens)."""
     layout: dict[str, object] = {
+        "template": "none",
         "paper_bgcolor": "rgba(0,0,0,0)",
         "plot_bgcolor": "rgba(0,0,0,0)",
         "font": {"family": FONT_STACK, "color": VIGIL_LIGHT["text"], "size": 12},

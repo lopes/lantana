@@ -46,8 +46,12 @@ class Scatter(BaseTrace):
         marker: Mapping[str, object] | None = ...,
         line: Mapping[str, object] | None = ...,
         customdata: Sequence[object] | None = ...,
+        text: Sequence[str] | None = ...,
         hovertext: Sequence[str] | None = ...,
         hovertemplate: str | None = ...,
+        hoverinfo: str | None = ...,
+        showlegend: bool | None = ...,
+        meta: object = ...,
         fill: str | None = ...,
         fillcolor: str | None = ...,
     ) -> None: ...

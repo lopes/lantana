@@ -82,7 +82,7 @@ and dionaea exits silently with 133. Confirm by checking the Quadlet:
 grep -A2 AddCapability /etc/containers/systemd/users/2001/dionaea.container
 ```
 
-Should show `NET_BIND_SERVICE SETUID SETGID CHOWN FOWNER`. If
+Should show `NET_BIND_SERVICE SETUID SETGID CHOWN`. If
 anything is missing — re-deploy the dionaea role.
 
 ### Symptom: dionaea runs but binds zero ports
@@ -127,7 +127,7 @@ sqlite3.OperationalError: attempt to write a readonly database
 ```
 
 `:memory:` doesn't fix it (other on-disk state in the SIP module hits
-the same race). SIP is intentionally not in the v1.0.0 catalog for
+the same race). SIP is intentionally omitted from the current catalog for
 this reason — see [`honeypots.md`](/docs/honeypots.md#dionaea). If you see
 this error for any *other* service, the same root cause applies and
 the same `:memory:` / drop-from-catalog escape hatches are your
@@ -188,8 +188,9 @@ sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user start dionaea.ser
 ```
 
 The re-deploy re-renders the `wwwroot/index.html` page (otherwise the
-HTTP service has no root to serve) and the entrypoint's `init_lib`
-re-seeds state dirs from the image's `template/lib/`.
+HTTP service has no root to serve) and `entrypoint.sh` recreates the
+writable runtime subdirectories cleanly under `dionaea:dionaea` while
+preserving host POSIX ACLs.
 
 ### Diagnostic recipe: which ports are actually bound
 
@@ -331,7 +332,7 @@ The `outputs[].eve-log.types` block in `roles/suricata/templates/suricata.yaml.j
 **What's kept and why:**
 
 - **`alert`** — the only event type the pipeline consumes today. `models/normalize.py` dispatches `event_type == "alert"` to OCSF Detection Finding (2004) with `alert_signature`, `alert_signature_id`, `alert_severity`, `alert_category`, `alert_action` flattened into silver. `transform/metrics.py` filters silver to `class_uid == CLASS_DETECTION_FINDING` to compute the detection findings gold table.
-- **`flow`** — retained for a planned behavioural-engagement metric. Carries fields nftables logs cannot provide: `app_proto` (Suricata's application-protocol classification — useful for understanding what attackers tried on non-honeypotted ports), `bytes_toserver` / `bytes_toclient` (volume discriminator between casual scanners and active engagement), `state` (clean-close vs. RST vs. timeout), and `community_id` (deterministic 5-tuple hash for cross-tool correlation). No gold consumer wired today; intended for v1.1+.
+- **`flow`** — retained for planned behavioural-engagement analytics. Carries fields nftables logs cannot provide: `app_proto` (Suricata's application-protocol classification — useful for understanding what attackers tried on non-honeypotted ports), `bytes_toserver` / `bytes_toclient` (volume discriminator between casual scanners and active engagement), `state` (clean-close vs. RST vs. timeout), and `community_id` (deterministic 5-tuple hash for cross-tool correlation). No gold consumer wired yet.
 
 **Why everything else is dropped:**
 
@@ -482,7 +483,7 @@ Actual `error_type` values written by the runner (`_classify_http_error` + trans
 | `network_error` | `httpx.RequestError` / transport error (DNS, TLS, reset) | Retried 3× with exponential backoff before recording; verify outbound connectivity from the collector. |
 | `unexpected_error` | Unhandled exception catch-all (records `repr(exc)`) | Read the `message` field in `enrichment_errors.json` — includes the exception class name (e.g. JSON parse error or unexpected payload shape). |
 
-The runner is designed so that **one provider failing never blocks the others**: each provider's enrichment is independent, and a `RetryError` after exhausted retries on provider A still leaves providers B–E with full data for the same IP. Per-IP errors don't block other IPs either.
+The runner is designed so that **one provider failing never blocks the others**: each provider's enrichment is independent, and an exhausted retry exception on provider A still leaves the remaining providers with full data for the same IP. Per-IP errors don't block other IPs either.
 
 ### MaxMind silent failure (`.geo.*` fields empty)
 
@@ -491,7 +492,7 @@ If the dashboard's geographic page is empty or all attackers show "unknown count
 1. **Check the vault has the key.** `ansible-vault view inventories/op_<name>/group_vars/all/vault.yml | grep maxmind`. If `vault_apikey_maxmind` is missing or empty, Ansible silently skipped the MMDB download — that's by design but it's the most common cause.
 2. **Check the MMDBs exist on the collector.** `ls -la /var/lib/lantana/collector/geoip/` should show two ~70 MB and ~10 MB files dated within the last month.
 3. **Verify Vector can read them.** `sudo -u vector cat /var/lib/lantana/collector/geoip/GeoLite2-City.mmdb | head -c 16 | xxd` — first bytes should not be all zeros.
-4. **Run the probe.** `cd pipeline && uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8` should print the City + ASN records and the `.geo.*` block.
+4. **Run the probe.** `cd pipeline && uv run python ../scripts/probe-mmdb.py --ip 203.0.113.7` (or substitute a known public resolver IP to inspect populated records) should print the City + ASN records and the `.geo.*` block.
 
 If step 4 succeeds but bronze NDJSON still has empty `.geo.*` fields, Vector's enrichment-tables block didn't reload after the MMDB refresh. `sudo systemctl restart vector` and check the next day's bronze.
 

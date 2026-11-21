@@ -19,7 +19,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: build-dionaea-${{ github.ref }}
@@ -32,9 +31,12 @@ env:
 
 jobs:
   build-and-verify:
-    name: Build, smoke-test & publish lantana-dionaea
+    name: Build & smoke-test lantana-dionaea
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      epoch: ${{ steps.meta.outputs.epoch }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -92,8 +94,9 @@ jobs:
           EOF
 
           CID=$(docker run -d --rm \
+            --read-only --tmpfs /tmp \
             --cap-drop=ALL \
-            --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID --cap-add=CHOWN --cap-add=FOWNER \
+            --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID --cap-add=CHOWN \
             -v "$PWD/config/ansible/roles/dionaea/files/healthcheck.py:/healthcheck.py:ro" \
             -v "$TMPDIR/services:/opt/dionaea/etc/dionaea/services-enabled:ro" \
             -v "$TMPDIR/ihandlers:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro" \
@@ -155,8 +158,23 @@ jobs:
             exit 1
           fi
 
+  publish:
+    name: Publish verified lantana-dionaea to GHCR
+    needs: build-and-verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: docker/setup-buildx-action@v3
+
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -164,7 +182,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push verified image to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: containers/dionaea
@@ -172,9 +189,9 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE_NAME }}:${{ env.CHANNEL_TAG }}
-            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.short_sha }}
+            ${{ env.IMAGE_NAME }}:${{ needs.build-and-verify.outputs.short_sha }}
           build-args: |
             DIONAEA_REF=${{ env.DIONAEA_REF }}
-            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.epoch }}
+            SOURCE_DATE_EPOCH=${{ needs.build-and-verify.outputs.epoch }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

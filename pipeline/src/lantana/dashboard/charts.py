@@ -1,6 +1,6 @@
 """Pure ``plotly.graph_objects`` chart builders for the Vigil dashboard.
 
-Zero ``plotly.express`` and zero ``.to_pandas()`` calls — every figure takes
+Zero ``plotly.express`` and zero Pandas conversion calls — every figure takes
 plain Python lists extracted from Polars frames.
 """
 
@@ -195,13 +195,192 @@ def risk_histogram_chart(values: list[float], title: str, color: str) -> go.Figu
     )
 
 
+# Simplified Natural Earth ~110m landmass outlines (lon, lat) embedded locally so
+# /geography renders a crisp vector world map with ZERO external CDN/topojson XHRs
+# under ``Content-Security-Policy: connect-src 'none'``.
+_WORLD_LANDMASSES: tuple[tuple[list[float], list[float]], ...] = (
+    # North America
+    (
+        [
+            -168,
+            -162,
+            -140,
+            -130,
+            -124,
+            -117,
+            -105,
+            -97,
+            -87,
+            -83,
+            -80,
+            -82,
+            -80,
+            -75,
+            -70,
+            -60,
+            -55,
+            -64,
+            -78,
+            -94,
+            -112,
+            -135,
+            -156,
+            -168,
+        ],
+        [
+            66,
+            60,
+            60,
+            54,
+            48,
+            33,
+            20,
+            16,
+            12,
+            9,
+            9,
+            25,
+            25,
+            35,
+            42,
+            46,
+            52,
+            60,
+            63,
+            60,
+            68,
+            69,
+            71,
+            66,
+        ],
+    ),
+    # Greenland
+    (
+        [-52, -42, -22, -18, -32, -55, -60, -52],
+        [60, 60, 70, 81, 83, 78, 70, 60],
+    ),
+    # South America
+    (
+        [-78, -72, -62, -50, -35, -38, -48, -55, -65, -68, -73, -76, -81, -78],
+        [9, 11, 10, 1, -6, -14, -26, -35, -45, -55, -52, -38, -5, 9],
+    ),
+    # Europe
+    (
+        [-9, -2, 3, 10, 14, 22, 28, 32, 42, 48, 42, 30, 26, 20, 16, 12, 8, 2, -5, -9],
+        [37, 43, 49, 54, 55, 60, 61, 68, 66, 60, 47, 46, 41, 39, 41, 44, 44, 41, 36, 37],
+    ),
+    # Scandinavia
+    (
+        [5, 8, 15, 25, 30, 28, 21, 18, 12, 5],
+        [59, 63, 68, 71, 70, 65, 63, 59, 56, 59],
+    ),
+    # UK & Ireland
+    (
+        [-10, -5, -2, 2, 0, -5, -10],
+        [51, 50, 51, 52, 58, 58, 51],
+    ),
+    # Africa
+    (
+        [-17, -6, 10, 25, 33, 39, 43, 51, 49, 41, 36, 32, 20, 15, 12, 9, 2, -8, -17],
+        [15, 35, 37, 32, 31, 21, 12, 11, 4, -2, -16, -26, -35, -26, -15, -4, 5, 5, 15],
+    ),
+    # Madagascar
+    (
+        [44, 47, 50, 49, 45, 44],
+        [-25, -25, -15, -12, -18, -25],
+    ),
+    # Asia (mainland)
+    (
+        [
+            27,
+            36,
+            44,
+            56,
+            66,
+            72,
+            77,
+            81,
+            88,
+            97,
+            103,
+            109,
+            121,
+            129,
+            136,
+            142,
+            160,
+            178,
+            160,
+            130,
+            105,
+            80,
+            60,
+            48,
+            40,
+            27,
+        ],
+        [
+            40,
+            36,
+            13,
+            22,
+            25,
+            20,
+            8,
+            16,
+            22,
+            16,
+            2,
+            12,
+            24,
+            35,
+            44,
+            54,
+            62,
+            66,
+            70,
+            72,
+            75,
+            73,
+            70,
+            60,
+            45,
+            40,
+        ],
+    ),
+    # Japan
+    (
+        [130, 136, 141, 145, 142, 137, 130],
+        [31, 34, 38, 44, 43, 37, 31],
+    ),
+    # Indonesia / Maritime SE Asia
+    (
+        [96, 106, 116, 128, 138, 140, 126, 114, 104, 96],
+        [5, -6, -8, -7, -8, -4, 1, 2, -1, 5],
+    ),
+    # Australia
+    (
+        [114, 122, 130, 137, 142, 149, 153, 150, 141, 136, 129, 115, 114],
+        [-22, -18, -12, -15, -11, -21, -28, -37, -38, -35, -32, -34, -22],
+    ),
+    # New Zealand
+    (
+        [167, 172, 178, 174, 167],
+        [-46, -43, -37, -36, -46],
+    ),
+)
+
+
 def world_map_chart(ip_df: pl.DataFrame) -> go.Figure:
-    """Natural Earth scatter_geo plot of attacker IPs sized by log10(events+1)."""
+    """Air-gapped equirectangular world scatter map (zero external topojson/CDN requests)."""
     geo_df = ip_df.filter(
         pl.col("geo_latitude").is_not_null() & pl.col("geo_longitude").is_not_null()
     )
     if geo_df.is_empty():
         return apply_vigil_layout(go.Figure(), height=380)
+
+    if geo_df.height > 800:
+        geo_df = geo_df.sort("risk_score", descending=True).head(800)
 
     lats: list[float] = []
     lons: list[float] = []
@@ -213,7 +392,7 @@ def world_map_chart(ip_df: pl.DataFrame) -> go.Figure:
         lats.append(float(row["geo_latitude"]))
         lons.append(float(row["geo_longitude"]))
         ev = int(row.get("total_events") or 0)
-        sizes.append(max(5.0, min(22.0, 4.5 + math.log10(ev + 1) * 5.0)))
+        sizes.append(max(6.0, min(22.0, 5.0 + math.log10(ev + 1) * 5.0)))
         score = float(row.get("risk_score") or 0.0)
         scores.append(score)
         city = row.get("geo_city") or "Unknown"
@@ -224,45 +403,68 @@ def world_map_chart(ip_df: pl.DataFrame) -> go.Figure:
             f"Risk: {score:.1f} · Events: {ev:,}"
         )
 
-    fig = go.Figure(
-        data=[
-            go.Scattergeo(
-                lat=lats,
-                lon=lons,
-                mode="markers",
-                text=hover,
-                hovertemplate="%{text}<extra></extra>",
-                marker={
-                    "size": sizes,
-                    "color": scores,
-                    "colorscale": "Plasma",
-                    "cmin": 0,
-                    "cmax": 100,
-                    "opacity": 0.82,
-                    "line": {"width": 0.5, "color": VIGIL_LIGHT["bg"]},
-                    "colorbar": {"title": "Risk"},
-                },
-            )
-        ]
+    traces: list[go.Scatter] = [
+        go.Scatter(
+            x=poly_lon,
+            y=poly_lat,
+            mode="lines",
+            fill="toself",
+            fillcolor=VIGIL_LIGHT["geo_land"],
+            line={"color": VIGIL_LIGHT["geo_border"], "width": 0.9},
+            hoverinfo="skip",
+            showlegend=False,
+            meta="world-land",
+        )
+        for poly_lon, poly_lat in _WORLD_LANDMASSES
+    ]
+    traces.append(
+        go.Scatter(
+            x=lons,
+            y=lats,
+            mode="markers",
+            text=hover,
+            hovertemplate="%{text}<extra></extra>",
+            showlegend=False,
+            marker={
+                "size": sizes,
+                "color": scores,
+                "colorscale": "Plasma",
+                "cmin": 0,
+                "cmax": 100,
+                "opacity": 0.85,
+                "line": {"width": 0.6, "color": VIGIL_LIGHT["bg"]},
+                "colorbar": {"title": "Risk"},
+            },
+        )
     )
-    fig.update_geos(
-        projection_type="natural earth",
-        resolution=50,
-        showcountries=True,
-        countrycolor=VIGIL_LIGHT["geo_border"],
-        showland=True,
-        landcolor=VIGIL_LIGHT["geo_land"],
-        showocean=True,
-        oceancolor=VIGIL_LIGHT["geo_ocean"],
-        showcoastlines=True,
-        coastlinecolor=VIGIL_LIGHT["geo_border"],
-        showframe=False,
-        bgcolor="rgba(0,0,0,0)",
-    )
+
+    fig = go.Figure(data=traces)
     return apply_vigil_layout(
         fig,
         height=440,
-        margin={"l": 0, "r": 0, "t": 8, "b": 8},
+        margin={"l": 6, "r": 6, "t": 8, "b": 8},
+        extra={
+            "plot_bgcolor": VIGIL_LIGHT["geo_ocean"],
+            "xaxis": {
+                "range": [-180, 180],
+                "showgrid": True,
+                "gridcolor": VIGIL_LIGHT["grid"],
+                "zeroline": False,
+                "showticklabels": False,
+                "fixedrange": False,
+            },
+            "yaxis": {
+                "range": [-60, 84],
+                "scaleanchor": "x",
+                "scaleratio": 1.0,
+                "showgrid": True,
+                "gridcolor": VIGIL_LIGHT["grid"],
+                "zeroline": False,
+                "showticklabels": False,
+                "fixedrange": False,
+            },
+            "meta": "world-map",
+        },
     )
 
 

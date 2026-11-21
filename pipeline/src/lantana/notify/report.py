@@ -404,7 +404,7 @@ def generate_daily_brief(
         lines.append("")
 
     # Top attackers (by composite risk_score). The "Risk" column shows the
-    # composite + the (enrichment+behavioral)/2 decomposition; "A/V/S/G"
+    # monotonic behavioral-anchored composite + E/B breakdown; "A/V/S/G"
     # surfaces each provider's contribution at a glance so an analyst can
     # see which signal drove the score (or notice when only behavioral
     # signals are firing).
@@ -563,7 +563,7 @@ def generate_daily_brief(
                 "_VT Detections = number of AV engines flagging the file. "
                 "VT Risk = bucketed 0..100 score from `compute_file_risk_score`. "
                 "Family from VT's popular_threat_name (fallback: suggested_threat_label). "
-                "Full SHA256s appear in the IOC inventory below._"
+                "Full SHA256s and vhash clusters appear in the Vigil dashboard (/iocs and /stix)._"
             )
             lines.append("")
 

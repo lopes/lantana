@@ -66,9 +66,24 @@ def esc(value: object) -> str:
 
 
 def safe_json_for_script(payload: object) -> str:
-    """Serialize JSON safely for embedding inside an HTML ``<script>`` tag."""
+    """Serialize JSON safely for embedding inside an HTML ``<script>`` tag.
+
+    Escapes ``<``, ``>``, ``&``, and line separators so attacker-controlled
+    strings (such as ``<!--<script>`` or ``</script>``) can never trigger HTML5
+    script-data double-escaped parser confusion or break out of the block.
+    """
     raw = json.dumps(payload, separators=(",", ":"))
-    return raw.replace("</", "<\\/").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    return _escape_json_for_script(raw)
+
+
+def _escape_json_for_script(raw_json: str) -> str:
+    return (
+        raw_json.replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def window_query_string(window: DateWindow) -> str:
@@ -138,7 +153,7 @@ def render_chart_card(
     help_key: str | None = None,
 ) -> str:
     """Render a Vigil chart card whose Plotly JSON hydrates client-side."""
-    fig_json = pio.to_json(fig).replace("</", "<\\/")
+    fig_json = _escape_json_for_script(pio.to_json(fig))
     help_html = render_help_tip(section_help_text(help_key))
     return (
         '<div class="chart-card">'
@@ -308,28 +323,44 @@ _CONSOLE_JS = """
       "yaxis.zerolinecolor": p.grid,
       "hoverlabel.bgcolor": p.surface,
       "hoverlabel.bordercolor": p.rule,
-      "hoverlabel.font.color": p.text,
-      "geo.landcolor": p.geo_land,
-      "geo.oceancolor": p.geo_ocean,
-      "geo.countrycolor": p.geo_border,
-      "geo.coastlinecolor": p.geo_border
+      "hoverlabel.font.color": p.text
     };
+  }
+
+  function restyleSingleChart(el, theme) {
+    if (!el.data) return;
+    var p = theme === "dark" ? DARK : LIGHT;
+    var update = chartRelayoutPayload(theme);
+    if (el.layout && el.layout.meta === "world-map") {
+      update["plot_bgcolor"] = p.geo_ocean;
+    }
+    try { Plotly.relayout(el, update); } catch (e) {}
+    var landIndices = [];
+    for (var i = 0; i < el.data.length; i++) {
+      if (el.data[i] && el.data[i].meta === "world-land") {
+        landIndices.push(i);
+      }
+    }
+    if (landIndices.length > 0) {
+      try {
+        Plotly.restyle(el, {
+          fillcolor: p.geo_land,
+          "line.color": p.geo_border
+        }, landIndices);
+      } catch (e) {}
+    }
   }
 
   function restyleCharts(theme) {
     if (typeof Plotly === "undefined") return;
-    var update = chartRelayoutPayload(theme);
     document.querySelectorAll('[data-plotly-chart="1"]').forEach(function(el) {
-      if (el.data) {
-        try { Plotly.relayout(el, update); } catch (e) {}
-      }
+      restyleSingleChart(el, theme);
     });
   }
 
   function initCharts() {
     if (typeof Plotly === "undefined") return;
     var theme = getTheme();
-    var relayout = chartRelayoutPayload(theme);
     document.querySelectorAll('[data-plotly-chart="1"]').forEach(function(el) {
       var script = document.querySelector('script[data-for="' + el.id + '"]');
       if (!script) return;
@@ -341,7 +372,7 @@ _CONSOLE_JS = """
           modeBarButtonsToRemove: ["lasso2d", "select2d"]
         }).then(function() {
           if (theme === "dark") {
-            try { Plotly.relayout(el, relayout); } catch (e) {}
+            restyleSingleChart(el, theme);
           }
         });
       } catch (e) {

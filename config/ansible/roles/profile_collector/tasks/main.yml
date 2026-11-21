@@ -174,7 +174,7 @@
   tags: [collector, pipeline]
 
 # --- PIPELINE SYSTEMD TIMERS ---
-# Schedule: prune 00:15, enrich 01:00, transform 04:00, report 06:00 (UTC).
+# Schedule: prune 00:15, enrich 01:00, transform 05:30, report 06:00 (UTC).
 - name: "Deploy pipeline systemd service units"
   become: true
   ansible.builtin.template:
@@ -217,7 +217,7 @@
         calendar: "*-*-* 01:00:00" }
     - { binary: "lantana-transform",
         description: "Lantana transform (silver→gold)",
-        calendar: "*-*-* 04:00:00" }
+        calendar: "*-*-* 05:30:00" }
     - { binary: "lantana-report",
         description: "Lantana daily intel report (Discord, always posts)",
         calendar: "*-*-* 06:00:00" }

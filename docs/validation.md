@@ -304,9 +304,9 @@ smbclient -L //<host> -N
 
 ```bash
 nmap -p 1433 --script=ms-sql-info <host>
-# Returns the version banner. v1.0.0 known issue: the upstream MSSQL
+# Returns the version banner. Known upstream constraint: the MSSQL
 # module hardcodes its version string, so this won't reflect
-# narrative.services.mssql.version. The connection still logs.
+# narrative.services.mssql.version. Connections and SQL queries still log.
 ```
 
 **Sensor verification:** dionaea.json shows `"protocol": "mssqld"`.
@@ -612,7 +612,7 @@ Check your Discord channel for:
   - Key Metrics table
   - Geographic Origin (top countries + ASNs)
   - Mermaid Escalation Funnel + stage-definition legend
-  - Top Attackers table with `(enrichment+behavioral)/2` decomposition and `A/V/S/G` per-provider quadruplet
+  - Top Attackers table with monotonic behavioral-anchored `E`/`B` decomposition and `A/V/S/G` per-provider quadruplet
   - Attacker Persistence (`## Attacker Persistence`)
   - Threat Actor Attribution (GreyNoise-named)
   - Notable Escalations (stage 3+)

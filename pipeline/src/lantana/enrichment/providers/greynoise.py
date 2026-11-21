@@ -16,6 +16,7 @@ API documentation:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from urllib.parse import quote
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -86,7 +87,7 @@ class GreyNoiseProvider:
     async def enrich_ip(self, ip: str) -> EnrichmentResult:
         """Query GreyNoise Community for context on an IP address."""
         response = await self._client.get(
-            f"{self._BASE_URL}/{ip}",
+            f"{self._BASE_URL}/{quote(ip, safe='')}",
             headers=self._headers(),
         )
 

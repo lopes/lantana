@@ -146,7 +146,10 @@ def _assert_no_infra_leaks(serialized_bundle: str, reporting: ReportingConfig) -
     parsed_infra: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     for infra_ip in reporting.redact.infrastructure_ips:
         try:
-            parsed_infra.add(ipaddress.ip_address(infra_ip.strip()))
+            addr = ipaddress.ip_address(infra_ip.strip())
+            if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+                addr = addr.ipv4_mapped
+            parsed_infra.add(addr)
         except ValueError:
             continue
 
@@ -159,6 +162,8 @@ def _assert_no_infra_leaks(serialized_bundle: str, reporting: ReportingConfig) -
                 addr = ipaddress.ip_address(token)
             except ValueError:
                 continue
+            if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+                addr = addr.ipv4_mapped
             if addr in parsed_infra or any(addr in net for net in cidr_nets):
                 digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
                 msg = f"Infrastructure IP leak in STIX bundle (cidr/canonical sha256={digest})"

@@ -464,3 +464,42 @@ def test_redact_dionaea_http_preview_and_host_headers() -> None:
         assert "203.0.113.97" not in out[col]
         assert "203-0-113-97" not in out[col]
         assert "vps-test-01.example.net" not in out[col]
+
+
+def test_redact_uppercase_ipv6_and_ipv4_mapped_ipv6_and_dionaea_columns() -> None:
+    """OPSEC: uppercase IPv6, ::ffff:-mapped IPv4, and Dionaea fields are fully scrubbed."""
+    cfg = RedactionConfig(
+        infrastructure_ips=["203.0.113.97", "2001:db8:abcd::1"],
+        infrastructure_cidrs=["10.50.99.0/24"],
+        pseudonym_map={
+            "203.0.113.97": "honeypot-wan",
+            "2001:db8:abcd::1": "honeypot-wan-v6",
+        },
+        infrastructure_hostnames=["vps-hidden.example.net"],
+    )
+    df = pl.DataFrame(
+        {
+            "src_endpoint_ip": ["::ffff:203.0.113.97", "198.51.100.22"],
+            "dst_endpoint_ip": ["honeypot-wan", "::FFFF:203.0.113.97"],
+            "actor_process_cmd_line": ["ok", "curl http://[2001:DB8:ABCD::1]/x"],
+            "http_content_type": ["text/plain", "application/json; host=203.0.113.97"],
+            "src_hostname": ["a", "vps-hidden.example.net"],
+            "sql_command": ["SELECT 1", "EXEC xp_cmdshell 'ping ::ffff:203.0.113.97'"],
+        }
+    )
+    dropped = drop_infrastructure_source_rows(df, cfg)
+    assert dropped.height == 1
+    redacted = redact_infrastructure_ips(dropped, cfg)
+    assert validate_no_leaks(redacted, cfg) is True
+    row = redacted.row(0, named=True)
+    assert row["dst_endpoint_ip"] == "honeypot-wan"
+    assert "2001:DB8:ABCD::1" not in row["actor_process_cmd_line"]
+    assert "honeypot-wan-v6" in row["actor_process_cmd_line"]
+    assert "203.0.113.97" not in row["http_content_type"]
+    assert "vps-hidden.example.net" not in row["src_hostname"]
+    assert "203.0.113.97" not in row["sql_command"]
+
+    # validate_no_leaks catches unredacted ::ffff: WAN IP in IP columns
+    leak_df = pl.DataFrame({"dst_endpoint_ip": ["::ffff:203.0.113.97"]})
+    with pytest.raises(ValueError, match="Infrastructure IP leak"):
+        validate_no_leaks(leak_df, cfg)

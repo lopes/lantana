@@ -83,18 +83,32 @@ ATTACKER_CONTENT_COLUMNS: list[str] = [
     "http_uri",
     "http_host",
     "http_user_agent",
+    "http_content_type",
+    "src_hostname",
+    "sql_command",
+    "ftp_command",
+    "binary_file_name",
     "download_url",
 ]
+
+
+def _unwrap_ip(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Unwrap IPv4-mapped IPv6 addresses (``::ffff:a.b.c.d``) to their IPv4 address."""
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
 
 
 def _parse_infra_ips(
     ips: list[str],
 ) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
-    """Parse valid IP literals into canonical ipaddress objects."""
+    """Parse valid IP literals into canonical ipaddress objects (unwrapping ::ffff:)."""
     parsed: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     for ip_str in ips:
         try:
-            parsed.add(ipaddress.ip_address(ip_str.strip()))
+            parsed.add(_unwrap_ip(ipaddress.ip_address(ip_str.strip())))
         except ValueError:
             continue
     return parsed
@@ -127,7 +141,7 @@ def derive_ip_variants(ip_str: str) -> list[str]:
         return []
     variants: list[str] = [cleaned]
     try:
-        addr = ipaddress.ip_address(cleaned)
+        addr = _unwrap_ip(ipaddress.ip_address(cleaned))
     except ValueError:
         return variants
 
@@ -135,8 +149,15 @@ def derive_ip_variants(ip_str: str) -> list[str]:
         dotted = str(addr)
         octets = dotted.split(".")
         rev = list(reversed(octets))
+        packed = addr.packed
+        hex_hi = f"{(packed[0] << 8) | packed[1]:x}"
+        hex_lo = f"{(packed[2] << 8) | packed[3]:x}"
+        mapped_v6 = ipaddress.IPv6Address(f"::ffff:{dotted}")
         candidates = [
             dotted,
+            f"::ffff:{dotted}",
+            f"::ffff:{hex_hi}:{hex_lo}",
+            mapped_v6.exploded,
             "_".join(octets),
             "-".join(octets),
             ".".join(rev),
@@ -191,8 +212,8 @@ def scrub_infra_strings(text: str, config: RedactionConfig) -> str:
     result = text
     replacements = build_content_replacement_map(config)
     for variant, pseudonym in sorted(replacements.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if variant in result:
-            result = result.replace(variant, pseudonym)
+        safe_replacement = pseudonym.replace("\\", "\\\\")
+        result = re.sub(re.escape(variant), safe_replacement, result, flags=re.IGNORECASE)
     for hostname in sorted(
         {h.strip() for h in config.infrastructure_hostnames if h and h.strip()},
         key=len,
@@ -229,7 +250,7 @@ def drop_infrastructure_source_rows(
         if val in infra_set:
             return True
         try:
-            addr = ipaddress.ip_address(val)
+            addr = _unwrap_ip(ipaddress.ip_address(val.strip()))
         except ValueError:
             return False
         return addr in parsed_infra or any(addr in net for net in cidr_nets)
@@ -265,7 +286,10 @@ def _substring_redact_expr(
     """
     expr = pl.col(col_name)
     for variant, pseudonym in sorted(replacements.items(), key=lambda kv: len(kv[0]), reverse=True):
-        expr = expr.str.replace_all(variant, pseudonym, literal=True)
+        if any(c.isalpha() for c in variant):
+            expr = expr.str.replace_all(f"(?i){re.escape(variant)}", pseudonym)
+        else:
+            expr = expr.str.replace_all(variant, pseudonym, literal=True)
     for hostname in sorted(
         {h.strip() for h in hostnames if h and h.strip()},
         key=len,
@@ -294,7 +318,7 @@ def _build_dst_replacement_map(
         if not isinstance(val, str) or val in effective_map:
             continue
         try:
-            addr = ipaddress.ip_address(val)
+            addr = _unwrap_ip(ipaddress.ip_address(val.strip()))
         except ValueError:
             continue
         if addr in parsed_pseudonyms:
@@ -334,7 +358,7 @@ def redact_infrastructure_ips(
     parsed_pseudonyms: dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str] = {}
     for real_ip, pseudonym in config.pseudonym_map.items():
         try:
-            parsed_pseudonyms[ipaddress.ip_address(real_ip)] = pseudonym
+            parsed_pseudonyms[_unwrap_ip(ipaddress.ip_address(real_ip.strip()))] = pseudonym
         except ValueError:
             continue
 
@@ -399,7 +423,7 @@ def validate_no_leaks(df: pl.DataFrame, config: RedactionConfig) -> bool:
             leaked = val in ip_set
             if not leaked:
                 try:
-                    addr = ipaddress.ip_address(val)
+                    addr = _unwrap_ip(ipaddress.ip_address(val.strip()))
                 except ValueError:
                     continue  # Not an IP literal — pseudonym or junk, skip.
                 leaked = addr in parsed_infra or any(addr in net for net in cidr_nets)

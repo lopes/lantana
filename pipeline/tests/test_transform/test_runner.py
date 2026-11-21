@@ -167,7 +167,7 @@ def test_run_transform_raises_on_partial_table_failure(
     tmp_datalake: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If even 1 of 6 gold tables fails, remaining tables still write AND run_transform raises."""
+    """If even 1 of 7 gold tables fails, remaining tables still write AND run_transform raises."""
     from lantana.transform import runner as transform_runner
 
     target_date = date(2026, 4, 25)
@@ -193,3 +193,28 @@ def test_run_transform_raises_on_partial_table_failure(
         / f"date={target_date.isoformat()}"
         / "summary.parquet"
     ).exists()
+
+
+def test_append_transform_failed_row_sanitizes_secrets_and_wan_ip(tmp_path: Path) -> None:
+    """transform_failed error log scrubs raw API keys and infrastructure WAN IPs."""
+    import json
+
+    from lantana.common.redact import RedactionConfig
+    from lantana.transform.runner import _append_transform_failed_row
+
+    errors_path = tmp_path / "enrichment_errors.json"
+    cfg = RedactionConfig(
+        infrastructure_ips=["203.0.113.77"],
+        pseudonym_map={"203.0.113.77": "honeypot-wan"},
+        infrastructure_hostnames=["vps-secret.example.net"],
+    )
+    exc = RuntimeError(
+        "failed at 203.0.113.77 on vps-secret.example.net?key=SYNTHETIC_TEST_KEY_000000"
+    )
+    _append_transform_failed_row(date(2026, 7, 10), exc, errors_path, redact_config=cfg)
+
+    row = json.loads(errors_path.read_text(encoding="utf-8").strip())
+    assert "203.0.113.77" not in row["message"]
+    assert "vps-secret.example.net" not in row["message"]
+    assert "SYNTHETIC_TEST_KEY_000000" not in row["message"]
+    assert "honeypot-wan" in row["message"]

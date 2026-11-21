@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -318,7 +319,9 @@ class VirusTotalProvider:
         params = self._params()
         if params:
             kwargs["params"] = params
-        response = await self._client.get(f"{self._BASE_URL}/ip_addresses/{ip}", **kwargs)
+        response = await self._client.get(
+            f"{self._BASE_URL}/ip_addresses/{quote(ip, safe='')}", **kwargs
+        )
 
         if response.status_code == 404:
             return _empty_ip_result(ip)
@@ -358,7 +361,9 @@ class VirusTotalProvider:
         params = self._params()
         if params:
             kwargs["params"] = params
-        response = await self._client.get(f"{self._BASE_URL}/files/{sha256}", **kwargs)
+        response = await self._client.get(
+            f"{self._BASE_URL}/files/{quote(sha256, safe='')}", **kwargs
+        )
 
         if response.status_code == 404:
             return _empty_hash_result(sha256)
@@ -440,7 +445,9 @@ class VirusTotalProvider:
         params = self._params()
         if params:
             kwargs["params"] = params
-        response = await self._client.get(f"{self._BASE_URL}/domains/{domain}", **kwargs)
+        response = await self._client.get(
+            f"{self._BASE_URL}/domains/{quote(domain, safe='')}", **kwargs
+        )
 
         if response.status_code == 404:
             return _empty_domain_result(domain)
