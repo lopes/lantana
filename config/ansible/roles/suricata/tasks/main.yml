@@ -54,7 +54,7 @@
   become: true
   ansible.builtin.shell: |
     set -eu
-    setfacl -R -m u:vector:rX /var/log/lantana/honeywall/suricata
+    setfacl -R -P -m u:vector:rX /var/log/lantana/honeywall/suricata
     setfacl -d -m u:vector:rX /var/log/lantana/honeywall/suricata
   changed_when: false
   tags: [suricata, vector]

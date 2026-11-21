@@ -82,6 +82,10 @@ PodmanArgs=--cpus=1.0 --memory=512m
 #   copy seed dirs (binaries, bistreams, ftp, http, ...) into these mounts
 #   on first boot via cp -van (no-clobber). See docs/troubleshooting.md
 #   "Dionaea Sensor — log_json silent fail" for the failure mode + recovery.
+# Mount our dionaea.cfg (processors=filter_emu) over the image's template
+# source so DIONAEA_FORCE_INIT_CONF=1 seeds it into /opt/dionaea/etc/dionaea/
+# cleanly without hitting EROFS on the destination path.
+Volume=/etc/lantana/sensor/dionaea/dionaea.cfg:/opt/dionaea/template/etc/dionaea/dionaea.cfg:ro
 Volume=/etc/lantana/sensor/dionaea/services-enabled:/opt/dionaea/etc/dionaea/services-enabled:ro
 Volume=/etc/lantana/sensor/dionaea/ihandlers-enabled:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro
 Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw

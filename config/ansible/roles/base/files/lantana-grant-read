@@ -1,8 +1,8 @@
 #!/bin/sh
-# Recursively grant group-read/traverse permission to nectar on directory trees
-# while stripping world permissions. Used by per-honeypot crons to expose
-# rootless-container files (which default to 0600) to the lantana pipeline user
-# (nectar) without exposing them world-readable. Deployed by ansible role base.
+# Grant collector user (nectar) read/write/traverse POSIX ACLs on sensor scratch
+# directories without altering owner, group, or rootless subuid permissions
+# (e.g. Dionaea worker UID 100999). Uses -P (--physical) so symlinks inside
+# sensor trees are never followed. Deployed by ansible role base.
 set -eu
 
 if [ $# -eq 0 ]; then
@@ -15,5 +15,6 @@ for path in "$@"; do
     echo "Not a directory: $path" >&2
     exit 1
   fi
-  chgrp -R nectar -- "$path" && chmod -R g+rX,o-rwx -- "$path"
+  setfacl -R -P -m u:nectar:rwX -- "$path"
+  setfacl -d -m u:nectar:rwX -- "$path"
 done

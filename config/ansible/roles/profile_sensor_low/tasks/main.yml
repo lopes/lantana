@@ -79,6 +79,23 @@
     name: podman
   tags: [honeypots]
 
+- name: "Configure 14-day sensor scratch cleanup via systemd-tmpfiles (multi-node)"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/lantana-sensor.conf
+    content: |
+      # Managed by Ansible (multi-node sensor hosts without local collector/nectar)
+      e /var/lib/lantana/sensor/cowrie/downloads - - - 14d
+      e /var/lib/lantana/sensor/cowrie/tty - - - 14d
+      e /var/lib/lantana/sensor/dionaea/binaries - - - 14d
+      e /var/lib/lantana/sensor/dionaea/bistreams - - - 14d
+      e /var/lib/lantana/sensor/dionaea/tmp - - - 14d
+    owner: root
+    group: root
+    mode: "0644"
+  when: lantana.mode == "multi"
+  tags: [honeypots]
+
 # --- LOG FORWARDING ---
 - name: "Deploy Vector forwarder configuration"
   become: true

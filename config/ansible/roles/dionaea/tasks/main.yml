@@ -10,17 +10,33 @@
     mode: "0755"
   tags: [dionaea]
 
-- name: "Create Dionaea data directories"
+- name: "Create Dionaea log directory"
   become: true
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: /var/log/lantana/sensor/dionaea
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0750"
+  tags: [dionaea]
+
+- name: "Grant Vector read-only POSIX ACL on Dionaea log directory"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    setfacl -R -P -m u:vector:rX /var/log/lantana/sensor/dionaea
+    setfacl -d -m u:vector:rX /var/log/lantana/sensor/dionaea
+  changed_when: false
+  tags: [dionaea, vector]
+
+- name: "Create Dionaea state directory"
+  become: true
+  ansible.builtin.file:
+    path: /var/lib/lantana/sensor/dionaea
     state: directory
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
     mode: "0755"
-  loop:
-    - /var/log/lantana/sensor/dionaea
-    - /var/lib/lantana/sensor/dionaea
   tags: [dionaea]
 
 - name: "Create Dionaea artifact directories"
@@ -33,8 +49,21 @@
     mode: "0775"
   loop:
     - /var/lib/lantana/sensor/dionaea/binaries
+    - /var/lib/lantana/sensor/dionaea/bistreams
     - /var/lib/lantana/sensor/dionaea/wwwroot
     - /var/lib/lantana/sensor/dionaea/tmp
+  tags: [dionaea]
+
+- name: "Grant collector POSIX ACL on Dionaea scratch directories (single-node)"
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/sbin/lantana-grant-read
+      /var/lib/lantana/sensor/dionaea/binaries
+      /var/lib/lantana/sensor/dionaea/bistreams
+      /var/lib/lantana/sensor/dionaea/tmp
+  when: lantana.mode != "multi"
+  changed_when: false
   tags: [dionaea]
 
 - name: "Enable linger for sensor-user"
@@ -59,6 +88,18 @@
 # so the entrypoint's init runs on every start — without that, the
 # `test ! -d` checks would see our bind-mounted parent directories and
 # skip the seeding, leaving dionaea with no dionaea.cfg.
+
+- name: "Render Dionaea main configuration (disables streamdumper/bistreams)"
+  become: true
+  ansible.builtin.template:
+    src: dionaea.cfg.j2
+    dest: /etc/lantana/sensor/dionaea/dionaea.cfg
+    owner: "root"
+    group: "root"
+    mode: "0644"
+    validate: python3 -c "import sys; open(sys.argv[1], encoding='ascii').read()" %s
+  notify: "Restart Dionaea container"
+  tags: [dionaea]
 
 - name: "Create Dionaea per-service config directories on host"
   become: true
@@ -223,28 +264,21 @@
   tags: [dionaea, nftables]
 
 # --- PIPELINE BRIDGE ---
-# Dionaea's store ihandler writes captured binaries at mode 0600 (owned by
-# stigma). The lantana pipeline (running as nectar) needs to read them for
-# SHA256 hashing and VirusTotal enrichment via extract_hashes_from_disk().
-# This cron relaxes permissions once a day, just before the 01:00 UTC
-# enrichment run — same pattern as roles/cowrie/tasks/main.yml.
-#
-# Note: the store ihandler logs no JSON event when a binary is captured, so
-# these hashes are enriched and cached but cannot be linked to a source IP.
-# They do NOT appear in top_download_hashes, downloads_captured, or STIX
-# indicators (all of which require a silver file_hash_sha256 row). VT
-# enrichment is the extent of the coverage for Dionaea binaries.
-- name: "Schedule daily read-permission fix for Dionaea binaries"
+# Dionaea's worker runs as subuid 100999 inside rootless Podman. Using POSIX
+# ACLs (u:nectar:rwX via lantana-grant-read) at 00:10 UTC grants nectar read
+# and prune rights before 00:15 prune and 01:00 enrich without altering owner
+# or group bits (preserving UID 100999 writes).
+- name: "Schedule daily ACL refresh for Dionaea scratch directories (single-node)"
   become: true
   ansible.builtin.copy:
     dest: /etc/cron.d/lantana-dionaea-binaries
     content: |
-      # Grant nectar read access to Dionaea binaries (0600 from store ihandler) before
-      # the daily enrichment run. Managed by Ansible.
-      30 0 * * * root /usr/local/sbin/lantana-grant-read /var/lib/lantana/sensor/dionaea/binaries
+      # Grant nectar rwX ACL on Dionaea scratch dirs before 00:15 prune and 01:00 enrich.
+      10 0 * * * root /usr/local/sbin/lantana-grant-read /var/lib/lantana/sensor/dionaea/binaries /var/lib/lantana/sensor/dionaea/bistreams /var/lib/lantana/sensor/dionaea/tmp
     owner: root
     group: root
     mode: "0644"
+  when: lantana.mode != "multi"
   tags: [dionaea]
 
 # --- LOGGING ---
