@@ -28,3 +28,29 @@
     mode: "0644"
   notify: "Restart systemd-networkd"
   tags: [network]
+
+- name: "[Single] Check whether ltn0 virtual interface is up"
+  become: true
+  ansible.builtin.command: "ip link show ltn0"
+  register: ltn0_check
+  changed_when: false
+  failed_when: false
+  tags: [network]
+
+- name: "[Single] Restart systemd-networkd when ltn0 is missing"
+  become: true
+  ansible.builtin.systemd:
+    name: systemd-networkd
+    state: restarted
+  when: ltn0_check.rc != 0
+  tags: [network]
+
+- name: "[Single] Wait for ltn0 to carry the sensor IPv4 address"
+  become: true
+  ansible.builtin.command: "ip -4 addr show dev ltn0"
+  register: ltn0_addr
+  until: "network.sensors.sensor_01.ipv4.split('/')[0] in ltn0_addr.stdout"
+  retries: 10
+  delay: 2
+  changed_when: false
+  tags: [network]

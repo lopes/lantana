@@ -191,10 +191,34 @@
   notify: "Restart Suricata"
   tags: [suricata]
 
+- name: "Create Suricata systemd override directory"
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/system/suricata.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [suricata]
+
+- name: "Configure Suricata systemd non-root override"
+  become: true
+  ansible.builtin.copy:
+    src: suricata-override.conf
+    dest: /etc/systemd/system/suricata.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - "Reload systemd"
+    - "Restart Suricata"
+  tags: [suricata]
+
 - name: "Ensure Suricata is enabled and started"
   become: true
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: suricata
     state: started
     enabled: true
+    daemon_reload: true
   tags: [suricata]

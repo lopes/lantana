@@ -84,7 +84,7 @@
           cowrie.container is missing UserNS=keep-id:uid=<N>,gid=<N>.
           Without it the worker cannot write its TTY transcripts and
           command sessions abort silently before logging.
-          See CLAUDE.md "Honeypot deployment discipline" + the 2026-06-08 incident.
+          See AGENTS.md "Honeypot deployment discipline" + the 2026-06-08 incident.
       when: "'cowrie' in active_honeypots"
 
     - name: "Assert cowrie Quadlet has no ,U flag on rw volumes"
@@ -167,16 +167,16 @@
       ansible.builtin.assert:
         that: "result.stdout | int == 0"
         fail_msg: >-
-          sensor-{{ result.item.honeypot }} journal carries
+          sensor-{{ result.result.honeypot }} journal carries
           {{ result.stdout }} plugin-load failure line(s) since
           container start. Investigate with:
-          sudo journalctl _SYSTEMD_USER_UNIT={{ result.item.honeypot }}.service
+          sudo journalctl _SYSTEMD_USER_UNIT={{ result.result.honeypot }}.service
           | grep -E "Failed to load|PermissionError|Could not open|Unable to open"
           Recovery in docs/troubleshooting.md.
       loop: "{{ plugin_failures.results }}"
       loop_control:
         loop_var: result
-        label: "{{ result.item.honeypot }}"
+        label: "{{ result.result.honeypot }}"
 
     # === 5. Worker holds a write FD on the structured JSON log ===
     - name: "Probe worker FDs for each sensor's JSON log"

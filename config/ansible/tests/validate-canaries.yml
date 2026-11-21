@@ -22,7 +22,6 @@
   gather_facts: false
   vars:
     target_date: "{{ lookup('pipe', 'date -u +%Y-%m-%d') }}"
-    canary_id: "lantana-canary-{{ lookup('pipe', 'date -u +%s') }}"
     datalake_root: /var/lib/lantana/datalake
     wan_ipv4: "{{ network.honeywall.wan.ipv4.split('/')[0] }}"
     cowrie_bronze: "{{ datalake_root }}/bronze/dataset=cowrie/date={{ target_date }}/server={{ inventory_hostname }}/events.json"
@@ -33,6 +32,10 @@
     - name: "Load network variables from inventory"
       ansible.builtin.include_vars:
         file: "{{ inventory_dir }}/group_vars/all/network.yml"
+
+    - name: "Freeze deterministic canary ID for this play"
+      ansible.builtin.set_fact:
+        canary_id: "lantana-canary-{{ lookup('pipe', 'date -u +%s') }}"
 
   tasks:
     # === 1. Vector 1-in-1-out & Layer-1 Edge Filter Canary ===

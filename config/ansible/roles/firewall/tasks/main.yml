@@ -15,6 +15,20 @@
   notify: "Reload sysctl"
   tags: [nftables]
 
+- name: "Check live kernel.printk console loglevel"
+  become: true
+  ansible.builtin.slurp:
+    src: /proc/sys/kernel/printk
+  register: live_kernel_printk
+  tags: [nftables]
+
+- name: "Apply KVM console printk sysctl immediately when drifted"
+  become: true
+  ansible.builtin.command: "sysctl -p /etc/sysctl.d/99-lantana-console.conf"
+  when: "not (live_kernel_printk.content | b64decode).startswith('4')"
+  changed_when: true
+  tags: [nftables]
+
 - name: "Setup firewall connections logging"
   become: true
   ansible.builtin.copy:

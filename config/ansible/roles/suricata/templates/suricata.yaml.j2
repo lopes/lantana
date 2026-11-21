@@ -3,9 +3,11 @@
 suricata-version: "7.0"
 sensor-name: "{{ inventory_hostname }}"
 
-run-as:
-  user: suricata
-  group: suricata
+# Privilege separation is enforced at the systemd unit layer via
+# /etc/systemd/system/suricata.service.d/override.conf (User=suricata,
+# AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_NICE) rather than
+# YAML run-as so the daemon never starts as root and `suricata-update`
+# test runs (`suricata -T`) work without temp-dir permission conflicts.
 
 # --- STEP 1 ---
 vars:

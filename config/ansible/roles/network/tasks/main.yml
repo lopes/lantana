@@ -16,6 +16,20 @@
   notify: "Reload sysctl"
   tags: [network]
 
+- name: "Check live IPv4 forwarding state"
+  become: true
+  ansible.builtin.slurp:
+    src: /proc/sys/net/ipv4/ip_forward
+  register: live_ipv4_forward
+  tags: [network]
+
+- name: "Apply packet forwarding sysctl immediately when drifted"
+  become: true
+  ansible.builtin.command: "sysctl -p /etc/sysctl.d/99-ip-forwarding.conf"
+  when: "(live_ipv4_forward.content | b64decode).strip() != '1'"
+  changed_when: true
+  tags: [network]
+
 # --- FIREWALL DEFINITIONS ---
 - name: "Deploy network variables for nftables"
   become: true

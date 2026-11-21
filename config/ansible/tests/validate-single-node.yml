@@ -132,20 +132,22 @@
       loop: "{{ forwarder_check.results }}"
 
     - name: "Verify Suricata runs as non-root suricata user"
-      ansible.builtin.command: ps -C suricata -o user=
+      ansible.builtin.shell: |
+        set -eu
+        pid="$(systemctl show suricata.service --property=MainPID --value)"
+        [ -n "$pid" ] && [ "$pid" != "0" ]
+        ps -p "$pid" -o user=
       register: suricata_user_check
       changed_when: false
 
     - name: "Assert Suricata process owner is suricata"
       ansible.builtin.assert:
         that:
-          - "suricata_user_check.stdout.strip() != ''"
-          - "'root' not in suricata_user_check.stdout.split()"
-          - "'suricata' in suricata_user_check.stdout.split()"
+          - "suricata_user_check.stdout.strip() == 'suricata'"
         fail_msg: "Suricata is not running as user 'suricata': {{ suricata_user_check.stdout }}"
 
     - name: "Check WAN NIC offload state via ethtool"
-      ansible.builtin.command: "ethtool -k {{ network.honeywall.wan.interface }}"
+      ansible.builtin.command: "/usr/sbin/ethtool -k {{ network.honeywall.wan.interface }}"
       register: wan_ethtool_check
       changed_when: false
 

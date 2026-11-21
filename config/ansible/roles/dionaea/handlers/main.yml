@@ -1,3 +1,4 @@
+---
 - name: "Restart Dionaea container"
   become: true
   become_user: "{{ system.users.sensor.name }}"
@@ -7,3 +8,18 @@
     scope: user
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+  notify: "Refresh Dionaea ACLs"
+
+- name: "Refresh Dionaea ACLs"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    setfacl -R -P -m u:vector:rX /var/log/lantana/sensor/dionaea
+    setfacl -d -m u:vector:rX /var/log/lantana/sensor/dionaea
+    if [ "{{ lantana.mode }}" != "multi" ]; then
+      /usr/local/sbin/lantana-grant-read \
+        /var/lib/lantana/sensor/dionaea/binaries \
+        /var/lib/lantana/sensor/dionaea/bistreams \
+        /var/lib/lantana/sensor/dionaea/tmp
+    fi
+  changed_when: false

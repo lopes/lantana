@@ -246,6 +246,31 @@
     XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
   tags: [dionaea]
 
+# Upstream Dionaea's entrypoint copies template dirs with `cp -a` on start,
+# which clears pre-existing POSIX ACLs on the bind-mounted log and scratch
+# paths. Re-apply ACLs after container start so nectar and vector have
+# immediate access without waiting for the 00:10 UTC cron.
+- name: "Re-apply Vector read-only POSIX ACL on Dionaea log directory after start"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    setfacl -R -P -m u:vector:rX /var/log/lantana/sensor/dionaea
+    setfacl -d -m u:vector:rX /var/log/lantana/sensor/dionaea
+  changed_when: false
+  tags: [dionaea, vector]
+
+- name: "Re-apply collector POSIX ACL on Dionaea scratch directories after start (single-node)"
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/sbin/lantana-grant-read
+      /var/lib/lantana/sensor/dionaea/binaries
+      /var/lib/lantana/sensor/dionaea/bistreams
+      /var/lib/lantana/sensor/dionaea/tmp
+  when: lantana.mode != "multi"
+  changed_when: false
+  tags: [dionaea]
+
 - name: "Publish the Dionaea ports (single-node)"
   become: true
   ansible.builtin.template:

@@ -57,6 +57,15 @@
     - /var/lib/lantana/datalake/gold
   tags: [collector]
 
+- name: "Ensure collector can prune Vector-created Bronze partitions via POSIX ACL"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    setfacl -R -P -m u:{{ system.users.collector.name }}:rwX,u:vector:rwX /var/lib/lantana/datalake/bronze
+    setfacl -d -m u:{{ system.users.collector.name }}:rwX,u:vector:rwX /var/lib/lantana/datalake/bronze
+  changed_when: false
+  tags: [collector, vector]
+
 # --- SECRETS FILE ---
 - name: "Deploy API credentials template"
   become: true
