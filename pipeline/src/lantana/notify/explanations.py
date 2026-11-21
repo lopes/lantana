@@ -51,9 +51,9 @@ class WhatWhyHow:
 
 BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
     "Pipeline Health": WhatWhyHow(
-        what="previous run's enrichment errors classified into severity tiers.",
-        why="surfaces pipeline degradation before silent data loss accrues.",
-        how="rows from enrichment_errors.json grouped by (provider, error_type).",
+        what="errors, dead-man's-switch liveness, step exit codes, and usable disk %.",
+        why="catches silent sensor freezes, starvation, and disk exhaustion early.",
+        how="enrichment_errors.json + D-1/D-2 silver presence + statvfs + systemd status.",
     ),
     "Pipeline Timing": WhatWhyHow(
         what="wall-clock duration of each scheduled pipeline step.",

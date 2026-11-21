@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path  # noqa: TC003 — used in function signatures
 
 import polars as pl
-import pytest  # noqa: TC002 — used in function signatures
+import pytest
 
 from lantana.common.datalake import write_silver_partition
 from lantana.models.ocsf import (
@@ -161,3 +161,35 @@ def test_main_appends_transform_failed_on_crash(
     assert rows[0]["provider"] == "transform"
     assert rows[0]["date"] == "2026-05-20"
     assert "simulated transform crash" in rows[0]["message"]
+
+
+def test_run_transform_raises_on_partial_table_failure(
+    tmp_datalake: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If even 1 of 6 gold tables fails, remaining tables still write AND run_transform raises."""
+    from lantana.transform import runner as transform_runner
+
+    target_date = date(2026, 4, 25)
+    _write_test_silver(tmp_datalake, target_date)
+
+    def _bad_summary(_silver: pl.DataFrame) -> pl.DataFrame:
+        raise ValueError("simulated daily_summary failure")
+
+    monkeypatch.setattr(transform_runner, "compute_daily_summary", _bad_summary)
+
+    with pytest.raises(RuntimeError, match="daily_summary"):
+        run_transform(
+            target_date,
+            silver_root=tmp_datalake / "silver",
+            gold_root=tmp_datalake / "gold",
+        )
+
+    # Other gold tables still succeeded (fail-safe Principle #1)
+    assert (
+        tmp_datalake
+        / "gold"
+        / "ip_reputation"
+        / f"date={target_date.isoformat()}"
+        / "summary.parquet"
+    ).exists()

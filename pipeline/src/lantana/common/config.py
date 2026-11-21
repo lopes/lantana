@@ -99,6 +99,9 @@ class OperationConfig(BaseModel):
     sector: str
     region: str
     start_date: str
+    expected_datasets: list[str] = Field(
+        default_factory=lambda: ["cowrie", "dionaea", "suricata", "nftables"]
+    )
 
 
 class RedactConfig(BaseModel):
@@ -107,6 +110,7 @@ class RedactConfig(BaseModel):
     infrastructure_ips: list[str]
     infrastructure_cidrs: list[str]
     pseudonym_map: dict[str, str]
+    infrastructure_hostnames: list[str] = Field(default_factory=list)
 
 
 class ReportingConfig(BaseModel):

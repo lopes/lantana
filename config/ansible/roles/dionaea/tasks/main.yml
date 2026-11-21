@@ -192,6 +192,17 @@
   when: "'http' in dionaea_service_catalog"
   tags: [dionaea]
 
+- name: "Deploy Dionaea application-layer health check script"
+  become: true
+  ansible.builtin.copy:
+    src: healthcheck.py
+    dest: /etc/lantana/sensor/dionaea/healthcheck.py
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  notify: "Restart Dionaea container"
+  tags: [dionaea]
+
 - name: "Create Quadlet directory for sensor user"
   become: true
   ansible.builtin.file:

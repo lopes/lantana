@@ -4,6 +4,7 @@
 [Unit]
 Description=Cowrie Honeypot Sensor
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Container]
 Image=docker.io/cowrie/cowrie:latest
@@ -31,6 +32,7 @@ HealthCmd=CMD python3 /healthcheck.py
 HealthInterval=30s
 HealthTimeout=5s
 HealthRetries=3
+HealthOnFailure=kill
 
 # Resource limits
 PodmanArgs=--cpus=0.5 --memory=256m
@@ -43,6 +45,7 @@ Volume=/var/lib/lantana/sensor/cowrie:/cowrie/cowrie-git/var/lib/cowrie:rw
 
 [Service]
 Restart=always
+RestartSec=10s
 
 [Install]
 WantedBy=default.target

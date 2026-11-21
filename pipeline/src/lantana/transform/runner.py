@@ -122,16 +122,19 @@ def run_transform(
                 exc_repr=repr(exc),
             )
 
-    if len(failed_tables) == len(tables):
-        raise failed_tables[0][1]
-
     logger.info(
         "run_summary",
         date=target_date.isoformat(),
         silver_rows=len(silver),
         silver_columns=len(silver.columns),
         gold_rows=gold_rows,
+        failed_tables=[name for name, _ in failed_tables],
     )
+
+    if failed_tables:
+        summary_msg = ", ".join(f"{name}: {exc!r}" for name, exc in failed_tables)
+        raise RuntimeError(f"Gold table failure(s): {summary_msg}")
+
     logger.info("transform_done", date=target_date.isoformat())
 
 

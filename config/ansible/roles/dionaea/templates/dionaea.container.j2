@@ -8,6 +8,7 @@
 [Unit]
 Description=Dionaea Malware Honeypot Sensor
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Container]
 # :latest is frozen at the Nov-2020 0.11.0 release; :nightly is the
@@ -56,12 +57,14 @@ NoNewPrivileges=true
 VolatileTmp=true
 
 # Health check (Podman 5.x Quadlet key names)
-# Process-level: resilient to dionaea_services toggles (port-level checks
-# would break if SMB or whichever port we probed got disabled).
-HealthCmd=CMD-SHELL pgrep -f dionaea >/dev/null || exit 1
-HealthInterval=30s
+# Application-layer handshake probe (HTTP GET -> HTTP/1., fallback FTP 220):
+# catches deadlocked libev loops behind rootless pasta where pgrep and bare TCP
+# connect stay green. HealthOnFailure=kill forces systemd auto-recovery.
+HealthCmd=CMD python3 /healthcheck.py
+HealthInterval=60s
 HealthTimeout=5s
 HealthRetries=3
+HealthOnFailure=kill
 
 # Resource limits (higher than Cowrie: handles more protocols + stores malware)
 PodmanArgs=--cpus=1.0 --memory=512m
@@ -86,6 +89,7 @@ PodmanArgs=--cpus=1.0 --memory=512m
 # source so DIONAEA_FORCE_INIT_CONF=1 seeds it into /opt/dionaea/etc/dionaea/
 # cleanly without hitting EROFS on the destination path.
 Volume=/etc/lantana/sensor/dionaea/dionaea.cfg:/opt/dionaea/template/etc/dionaea/dionaea.cfg:ro
+Volume=/etc/lantana/sensor/dionaea/healthcheck.py:/healthcheck.py:ro
 Volume=/etc/lantana/sensor/dionaea/services-enabled:/opt/dionaea/etc/dionaea/services-enabled:ro
 Volume=/etc/lantana/sensor/dionaea/ihandlers-enabled:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro
 Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw
@@ -93,6 +97,7 @@ Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw
 
 [Service]
 Restart=always
+RestartSec=10s
 
 [Install]
 WantedBy=default.target

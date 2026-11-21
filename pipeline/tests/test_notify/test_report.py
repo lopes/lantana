@@ -217,6 +217,51 @@ class TestGenerateDailyBrief:
         )
         assert "No data" in report
 
+    def test_empty_data_still_renders_health_disk_and_timing(self) -> None:
+        """An empty summary (e.g. ENOSPC starvation) must still surface health, disk, and timing."""
+        from lantana.notify.alerts import ErrorBuckets
+
+        buckets = ErrorBuckets(
+            critical=[
+                {
+                    "provider": "pipeline",
+                    "error_type": "pipeline_starved",
+                    "count": 1,
+                    "message": "0 events across all datasets",
+                }
+            ],
+            warning=[],
+        )
+        timings = [_st("lantana-prune", 1.2, result="exit-code")]
+        report = generate_daily_brief(
+            date(2026, 11, 7),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            "Test Op",
+            buckets=buckets,
+            timing=timings,
+            disk_usage_pct=99.4,
+        )
+        assert "## Pipeline Health" in report
+        assert "pipeline_starved" in report
+        assert "99.4%" in report
+        assert "## Pipeline Timing" in report
+        assert "No data available" in report
+
+        embed = generate_embed_summary(
+            date(2026, 11, 7),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            buckets=buckets,
+            timing=timings,
+            disk_usage_pct=99.4,
+        )
+        assert "No data available" in embed
+        assert "99.4%" in embed
+        assert "critical" in embed.lower()
+
     def test_returns_string(self) -> None:
         report = generate_daily_brief(
             date(2026, 4, 25),
