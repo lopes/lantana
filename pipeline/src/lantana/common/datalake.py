@@ -223,6 +223,54 @@ def read_gold_table(
         return pl.DataFrame()
 
 
+def _normalize_legacy_list_nulls(frames: list[pl.DataFrame]) -> list[pl.DataFrame]:
+    """Cast legacy ``List(Null)`` columns to concrete list types before diagonal concat.
+
+    Pre-v1.5 gold partitions sometimes wrote empty list columns with dtype
+    ``List(Null)`` (e.g. ``top_asns``, ``ips``, ``top_download_hashes``). Polars
+    ``diagonal_relaxed`` raises when concatenating ``List(Null)`` with
+    ``List(Struct(...))`` or ``List(Utf8)`` unless normalized first.
+    """
+    target_dtypes: dict[str, pl.DataType] = {}
+    for frame in frames:
+        for col, dtype in frame.schema.items():
+            if isinstance(dtype, pl.List) and dtype.inner != pl.Null:
+                target_dtypes.setdefault(col, dtype)
+
+    normalized: list[pl.DataFrame] = []
+    for frame in frames:
+        casts: list[pl.Expr] = []
+        for col, dtype in frame.schema.items():
+            if isinstance(dtype, pl.List) and dtype.inner == pl.Null:
+                target = target_dtypes.get(col, pl.List(pl.Utf8))
+                casts.append(pl.col(col).cast(target).alias(col))
+        normalized.append(frame.with_columns(casts) if casts else frame)
+    return normalized
+
+
+def read_gold_range(
+    table_name: str,
+    dates: list[date],
+    gold_root: Path = GOLD_ROOT,
+) -> pl.DataFrame:
+    """Read and concatenate a gold table across multiple dates with ``report_date``.
+
+    Missing or unreadable dates are skipped cleanly. Legacy ``List(Null)``
+    columns are normalized before ``pl.concat(..., how="diagonal_relaxed")`` so
+    multi-day and all-time dashboard windows never fail on schema drift.
+    """
+    frames: list[pl.DataFrame] = []
+    for d in sorted(set(dates)):
+        df = read_gold_table(table_name, d, gold_root=gold_root)
+        if not df.is_empty():
+            frames.append(df.with_columns(pl.lit(d).alias("report_date")))
+    if not frames:
+        return pl.DataFrame()
+    if len(frames) == 1:
+        return frames[0]
+    return pl.concat(_normalize_legacy_list_nulls(frames), how="diagonal_relaxed")
+
+
 def list_gold_dates(
     table_name: str,
     gold_root: Path = GOLD_ROOT,

@@ -18,7 +18,7 @@ Effort key:
 
 **What.** Replace the upstream rolling tags `docker.io/cowrie/cowrie:latest` and `docker.io/dinotools/dionaea:nightly` with images built by our own CI from a pinned upstream git ref. Push to `ghcr.io/lopes/lantana-cowrie` and `ghcr.io/lopes/lantana-dionaea`. Quadlets point at the new registry + tag.
 
-**Why.** Two incidents on 2026-06-08 → 2026-06-10 traced to upstream image rebases silently flowing into production: cowrie's in-image UID shifted 998 → 999, and dionaea's two-user runtime started racing the Quadlet's `,U` flag at every restart. Both surfaced through the runner-kill-blind-spot path — zero events looks identical to a quiet attack day from the pipeline's perspective, so detection took 4 and 7 days respectively. Full context in [CLAUDE.md](/CLAUDE.md) "Honeypot deployment discipline" and [docs/honeypots.md](/docs/honeypots.md) "Image sourcing strategy."
+**Why.** Two incidents on 2026-06-08 → 2026-06-10 traced to upstream image rebases silently flowing into production: cowrie's in-image UID shifted 998 → 999, and dionaea's two-user runtime started racing the Quadlet's `,U` flag at every restart. Both surfaced through the runner-kill-blind-spot path — zero events looks identical to a quiet attack day from the pipeline's perspective, so detection took 4 and 7 days respectively. Full context in [AGENTS.md](/AGENTS.md) and [docs/honeypots.md](/docs/honeypots.md) "Image sourcing strategy."
 
 Owning the build pipeline removes three classes of risk:
 
@@ -35,7 +35,7 @@ Owning the build pipeline removes three classes of risk:
   - Runs on a monthly schedule (`cron: '0 0 1 * *'`) AND on changes to `roles/cowrie/**` / `roles/dionaea/**` / the workflow file itself
 - A rebuild produces a new image tag; bumping the tag in `roles/<honeypot>/templates/<honeypot>.container.j2` is the one-line PR that promotes it. Next deploy picks it up via Quadlet recreation.
 - A post-build test job runs the validate-single-node playbook against the new image in a transient environment (a single-node deploy on a throwaway VM, GitHub-hosted runner with Podman, or `act`).
-- The "image-UID coupling" bullets in CLAUDE.md change from "review on upstream rebase" to "controlled by `.github/workflows/build-<honeypot>.yml`."
+- The "image-UID coupling" bullets in `AGENTS.md` change from "review on upstream rebase" to "controlled by `.github/workflows/build-<honeypot>.yml`."
 
 **Why medium, not low.** The cowrie and dionaea Containerfiles are both upstream-public and ~50 lines each — translating to our own builds is mechanical. What pushes this to medium is the surrounding CI/CD: image registry setup, signed tag promotion, the test harness that catches "image builds but breaks the deploy", and the ongoing maintenance discipline (someone has to look at the monthly rebuild PR). Estimate 1–2 weeks focused.
 

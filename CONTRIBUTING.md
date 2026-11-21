@@ -12,9 +12,9 @@ Thanks for considering a contribution. Lantana is an open, single-maintainer pro
 Lantana is documentation-first. The docs are the spec; the code follows them. Skim the relevant ones before opening an issue or PR — most "is this a bug?" and "how do I…" questions are already answered there.
 
 - **All contributors** — read [docs/architecture.md](/docs/architecture.md) for the zoned model (honeywall / sensor / collector) and the deployment-mode distinction (single-node vs. multi-node).
-- **Touching the pipeline (`pipeline/`)** — read [docs/pipeline.md](/docs/pipeline.md), [docs/risk-scoring.md](/docs/risk-scoring.md), and the **Pipeline fail-safe principles** + **Pipeline verification discipline** sections in [AGENTS.md](/AGENTS.md). The six fail-safe principles are load-bearing — every defect that surfaced during op_alpha's first production run violated one of them.
-- **Touching honeypot roles (`config/ansible/roles/cowrie/`, `config/ansible/roles/dionaea/`)** — read [docs/honeypots.md](/docs/honeypots.md) and the **Honeypot deployment discipline** section in [AGENTS.md](/AGENTS.md). Several Dionaea decisions are load-bearing; reverting them produces silent failures.
-- **Touching Vector configs (`*.vector.yaml.j2`)** — read the **Vector deployment discipline** section in [AGENTS.md](/AGENTS.md). A broken VRL fragment renders fine but crashloops Vector at runtime.
+- **Touching the pipeline (`pipeline/`)** — read [docs/pipeline.md](/docs/pipeline.md), [docs/risk-scoring.md](/docs/risk-scoring.md), [AGENTS.md](/AGENTS.md#3-golden-rules), and [`.agents/skills/verify-pipeline/SKILL.md`](/.agents/skills/verify-pipeline/SKILL.md).
+- **Touching honeypot roles (`config/ansible/roles/cowrie/`, `config/ansible/roles/dionaea/`) or `containers/`** — read [docs/honeypots.md](/docs/honeypots.md) and [`.agents/skills/deploy-sensors/SKILL.md`](/.agents/skills/deploy-sensors/SKILL.md). Several Dionaea and Vector decisions are load-bearing; reverting them produces silent failures.
+- **Touching Vector configs (`*.vector.yaml.j2`)** — follow the merged-tree `vector validate` discipline in [`.agents/skills/deploy-sensors/SKILL.md`](/.agents/skills/deploy-sensors/SKILL.md). A broken VRL fragment renders fine but crashloops Vector at runtime.
 - **Touching deployment (`config/ansible/`)** — read [docs/setup.md](/docs/setup.md) and [docs/validation.md](/docs/validation.md).
 - **Troubleshooting an existing problem** — check [docs/troubleshooting.md](/docs/troubleshooting.md) first.
 - **Unfamiliar terminology** — see [docs/glossary.md](/docs/glossary.md).
@@ -72,9 +72,10 @@ The CI workflow (`.github/workflows/ci.yml`) gates every PR with four jobs. If y
 
 ```bash
 cd pipeline
-uv run pytest -m "not integration"
-uv run ruff check .
-uv run mypy --strict src tests
+uv run ruff format --check . ../scripts/*.py
+uv run ruff check . ../scripts/*.py
+uv run mypy --strict src tests ../scripts/*.py
+uv run pytest
 ```
 
 Code requirements:
@@ -83,8 +84,8 @@ Code requirements:
 - **Pylance strict mode** — full type annotations on every function signature and return type. No `Any` escape hatches.
 - **TDD** — write the test first, then the implementation. Every module has a corresponding test file mirroring the `src/` structure.
 - **Functional style** — pure functions for data transforms, Pydantic models for structured data, push IO to the edges. Prefer Polars expression chains over imperative loops. Minimize side effects.
-- **Boring, reliable tooling only** — Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly, maxminddb. No exotic or trendy dependencies — propose them in an issue first.
-- **Fail-safe principles** — if you touch enrichment, normalisation, or transform code, the six principles in [AGENTS.md](/AGENTS.md#pipeline-fail-safe-principles) are not optional. Skipping them is what produced 8 distinct defects in op_alpha's first production run.
+- **Boring, reliable tooling only** — Polars, httpx, Pydantic, tenacity, structlog, stix2, Plotly (`graph_objects` + stdlib HTTP Vigil console — zero Streamlit/Pandas), maxminddb. No exotic or trendy dependencies — propose them in an issue first.
+- **Fail-safe principles** — if you touch enrichment, normalisation, or transform code, follow the invariants in [AGENTS.md](/AGENTS.md#3-golden-rules).
 
 ### Ansible (config/ansible/)
 
@@ -96,10 +97,10 @@ ansible-lint playbooks roles tests
 - Target OS is Debian 13 exclusively — no portability concessions.
 - Jinja2 templates (`.j2`) generate nftables rules, Vector pipelines, Cowrie configs, SSH settings. Mind the **Vector deployment discipline** rule: every role that renders a Vector config must add a merged-tree `vector validate` task before restarting Vector.
 
-### Shell (scripts/)
+### Shell (`scripts/`, helpers, container entrypoints)
 
 ```bash
-shellcheck scripts/*.sh
+shellcheck scripts/*.sh config/ansible/roles/base/files/lantana-grant-read containers/dionaea/entrypoint.sh
 ```
 
 - Plain POSIX-compatible patterns, standard coreutils only. No exotic tools or fancy constructs. Readable and auditable.
@@ -120,7 +121,7 @@ terraform validate
 
 1. Fork the repo, branch off `main`.
 2. **One logical change per PR.** Bundle a related refactor with the feature when splitting would just be churn — but don't sneak unrelated cleanups into a feature PR.
-3. **Commit messages**: short, imperative, lowercase. One line is usually enough; add a body only when the *why* isn't obvious. Conventional prefixes are encouraged but not required: `feat:`, `fix:`, `docs:`, `ci:`, `refactor:`, `test:`, `chore:`.
+3. **Commit messages**: follow [Scoped Commits](https://scopedcommits.com/) (`<scope>: <description>` — lowercase scope first, imperative, no trailing period, avoid generic `feat:`/`fix:`/`chore:`/`update:` prefixes). Add a body only when the *why* isn't obvious. Sign commits with GPG/SSH.
 4. **Run the full CI command set locally** before pushing. CI must be green; failing CI = needs-work, maintainer review only after green.
 5. **Update the docs** when you change behavior. If you touch a role's defaults, update the corresponding doc page. If you change a pipeline contract, update [docs/pipeline.md](/docs/pipeline.md) and the relevant section in [AGENTS.md](/AGENTS.md).
 6. **Open the PR** against `main`. Fill out the PR template — what changed, why, how tested, OPSEC check.

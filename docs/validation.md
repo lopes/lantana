@@ -6,13 +6,14 @@ A post-deploy verification walkthrough — from "the playbook said `failed=0`" t
 
 ## Executable validation (the fast path)
 
-Most of the checks below are encoded in three Ansible playbooks. Run those first; drop into the manual day-by-day walkthrough only when you need to debug a failure or want to learn the architecture.
+Most of the checks below are encoded in four Ansible playbooks. Run those first; drop into the manual day-by-day walkthrough only when you need to debug a failure or want to learn the architecture.
 
 | When | Playbook | What it checks |
 |---|---|---|
-| Immediately after `deploy_single.yml` | `tests/validate-single-node.yml` | Users, SSH port, ltn0 interface, nftables ruleset, log directories + rotation, systemd timers for the four pipeline jobs (enabled and present), GeoIP cron entry |
-| Immediately after `deploy_honeypots.yml` (or `deploy_single.yml`), with a ~30 s settle | `tests/validate-sensor-runtime.yml` | Cowrie + dionaea Quadlet ownership invariants (`UserNS=keep-id` for cowrie, no `,U` for either); each container's Status / Health / RestartCount; zero log-plugin failure tracebacks since each container's `StartedAt`; worker holds a write FD on `cowrie.json` / `dionaea.json`; today's bronze NDJSON fresh within the freshness window (default 120 s); zero orphan-UID files under sensor state trees |
-| After the first 06:00 UTC cycle (day 2+) | `tests/validate-pipeline-cycle.yml` | Each pipeline unit's last `Result=success`, `run_summary` events in journal, silver written for `cowrie`/`dionaea`/`suricata`/`nftables`, all 6 gold tables present, `.provider_state.json` exists, no API-key leak in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, gold composite + sub-scores + GreyNoise RIOT invariant |
+| Immediately after `deploy_single.yml` | `tests/validate-single-node.yml` | Users, SSH port, `ltn0` interface, nftables meters + ruleset, NIC offloads (`ethtool`), non-root Suricata, log directories + rotation, systemd timers for the four pipeline jobs (enabled and present), GeoIP cron entry |
+| Immediately after `deploy_honeypots.yml` (or `deploy_single.yml`), with a ~30 s settle | `tests/validate-sensor-runtime.yml` | Cowrie + Dionaea Quadlet ownership invariants (`UserNS=keep-id` for Cowrie, no `,U` for either), app-layer health (`healthy`), zero log-plugin failure tracebacks since each container's `StartedAt`, worker write FDs on `cowrie.json` / `dionaea.json`, fresh bronze NDJSON, zero orphan-UID files under sensor state trees |
+| Immediately after `validate-sensor-runtime.yml` | `tests/validate-canaries.yml` | Active synthetic probes proving Vector 1-in-1-out delivery, Layer-1 OPSEC edge filtering (`::1`, RFC 1918, host WAN dropped), and Suricata `sid:9000004` detection with zero TCPv4 invalid-checksum alerts |
+| After the first 06:00 UTC cycle (day 2+) | `tests/validate-pipeline-cycle.yml` | Each pipeline unit's last `Result=success`, `run_summary` events in journal, silver written for `cowrie`/`dionaea`/`suricata`/`nftables`, all 7 gold tables present (including `extracted_iocs`), `.provider_state.json` exists, no API-key leak in `enrichment_errors.json`, per-provider `<provider>_risk_score` columns in silver, monotonic composite + scanner cap (`<= 35`) + GreyNoise RIOT invariant |
 
 Run them via:
 
@@ -21,6 +22,7 @@ cd config/ansible
 ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml --ask-vault-pass
 sleep 30  # let sensors bind and Vector discover their JSON logs
 ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-sensor-runtime.yml --ask-vault-pass
+ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-canaries.yml --ask-vault-pass
 # Tune the bronze freshness window when running long after a deploy:
 #   -e sensor_freshness_window_seconds=900
 ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass
@@ -28,7 +30,7 @@ ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-
 #   -e target_date=2026-05-23
 ```
 
-If all three pass, the deployment is healthy. The one thing the playbooks can't automate is the **live attacker-side probes** (§0.2 below) — they require a runner outside the operation's prefix so the Vector `filter_<honeypot>` transform doesn't drop the traffic — and the **visual checks** for Discord report rendering, dashboard pages, and STIX bundle generation (§7.2 / §7.3). Walk those manually after a green automated run.
+If all four pass, the deployment is healthy. The remaining manual checks are full per-protocol banner probes (§0.2 below) and visual verification of Discord report rendering, Vigil dashboard views, and STIX bundle downloads (§7.2 / §7.3).
 
 ---
 
@@ -121,8 +123,8 @@ ls /var/lib/lantana/honeywall/suricata/rules/
 ```bash
 sudo systemctl status vector
 ls /etc/vector/conf.d/
-# cowrie.yaml, dionaea.yaml, suricata.yaml, firewall.yaml,
-# forward-honeywall.yaml, forward-sensor.yaml, receive.yaml
+# Single-node: cowrie.yaml, dionaea.yaml, suricata.yaml, firewall.yaml, receive.yaml
+# (Multi-node additionally adds forward-honeywall.yaml / forward-sensor.yaml.)
 ```
 
 **Pipeline installed and scheduled:**
@@ -156,7 +158,7 @@ below close that loop manually. For each protocol:
 
 Replace `<host>` with `network.honeywall.wan.ipv4` from your
 inventory. Run probes from a workstation outside the operation's
-internal prefixes (see CLAUDE.md "OPSEC Layer 1"). Note your
+internal prefixes (see [AGENTS.md §3 — OPSEC](/AGENTS.md#1-opsec-is-non-negotiable-layers-03)). Note your
 workstation's egress IP first — you'll match against it in the logs:
 
 ```bash
@@ -172,8 +174,7 @@ nmap -sV -Pn -p 21,22,23,80,135,445,1433,3306 <host>
 Cross-check each banner against `narrative.services.<svc>` in your
 operation's `narrative.yml`. Mismatches mean a stale render, a template
 not consuming the narrative, or — for MSSQL — the upstream module
-hard-coding the version (known v1.0.0 drift, see CLAUDE.md
-"Honeypot deployment discipline").
+hard-coding the version (documented in [docs/honeypots.md](/docs/honeypots.md#known-limitations)).
 
 #### SSH 22 — Cowrie
 
@@ -422,7 +423,7 @@ sudo journalctl -u vector --since "1 hour ago" | tail -20
 
 ## Day 1: First Pipeline Run
 
-The pipeline runs via systemd timers: 00:15 UTC prune, 01:00 UTC enrich, 05:30 UTC transform, 06:00 UTC report (plus `00:30 UTC` `lantana-grant-read` cron jobs for Cowrie `downloads/` and Dionaea `binaries/`). After the first night:
+The pipeline runs via systemd timers: 00:15 UTC prune, 01:00 UTC enrich, 05:30 UTC transform, 06:00 UTC report (plus `00:10 UTC` `lantana-grant-read` POSIX ACL cron jobs for Cowrie `downloads/`/`tty/` and Dionaea `binaries/`/`bistreams/`/`tmp/`). After the first night:
 
 ### 1.1 Verify enrichment ran (bronze -> silver)
 
@@ -490,10 +491,10 @@ sqlite3 /var/lib/lantana/datalake/.enrichment_cache.db "SELECT COUNT(*) FROM cac
 sudo systemctl status lantana-transform.service --no-pager | head
 sudo journalctl -u lantana-transform.service --since '05:30 UTC' | grep run_summary
 
-# Gold tables should exist — six directories, one per table
+# Gold tables should exist — seven directories, one per table
 ls /var/lib/lantana/datalake/gold/
 # daily_summary/, ip_reputation/, behavioral_progression/,
-# campaign_clusters/, geographic_summary/, detection_findings/
+# campaign_clusters/, geographic_summary/, detection_findings/, extracted_iocs/
 ```
 
 **Inspect gold tables:**
@@ -510,6 +511,7 @@ tables = [
     'campaign_clusters',
     'geographic_summary',
     'detection_findings',
+    'extracted_iocs',
 ]
 for table in tables:
     df = read_gold_table(table, yesterday)
@@ -622,7 +624,7 @@ Check your Discord channel for:
 
 ### 7.2 STIX bundles
 
-**Primary path — via the dashboard.** STIX bundles aren't stored server-side. They're generated on-demand from gold tables and streamed to the operator's browser. Open the dashboard (§7.3), navigate to the **STIX Export** page, pick the target date in the sidebar, click **Generate STIX 2.1 Bundle**, then **Download STIX Bundle (.json)** — the file saves to your workstation as `lantana-stix-<YYYY-MM-DD>.json`.
+**Primary path — via the dashboard.** STIX bundles aren't stored server-side. They're generated on-demand from gold tables and streamed to the operator's browser. Open the Vigil dashboard (§7.3), navigate to **STIX Export** (`/stix`), pick the target date or window, and click **Download STIX 2.1 Bundle (.json)** (`/download/stix`) — the file saves to your workstation as `lantana-stix-<YYYY-MM-DD>.json`.
 
 Inspect the downloaded bundle on your workstation:
 
@@ -648,7 +650,11 @@ reputation = read_gold_table('ip_reputation', yesterday)
 progression = read_gold_table('behavioral_progression', yesterday)
 clusters = read_gold_table('campaign_clusters', yesterday)
 summary = read_gold_table('daily_summary', yesterday)
-bundle = generate_bundle(yesterday, reporting, reputation, progression, clusters, summary=summary)
+extracted_iocs = read_gold_table('extracted_iocs', yesterday)
+bundle = generate_bundle(
+    yesterday, reporting, reputation, progression, clusters,
+    summary=summary, extracted_iocs=extracted_iocs,
+)
 print(json.dumps(json.loads(bundle.serialize()), indent=2)[:2000])
 print('...')
 print(f'Total STIX objects: {len(bundle.objects)}')
@@ -658,17 +664,15 @@ print(f'Total STIX objects: {len(bundle.objects)}')
 **Verify the bundle contains:**
 
 - `identity` object (your operator)
-- `indicator` objects for high-risk IPs (risk >= 40) with `[ipv4-addr:value = '...']` patterns
-- `indicator` objects for file hashes with `[file:hashes.'SHA-256' = '...']` patterns (if downloads captured)
-- `malware` objects for captured samples
-- `campaign` objects for shared credential clusters
-- `relationship` objects linking indicators to campaigns
+- Durable `indicator` objects from `extracted_iocs`: outbound C2 IPs (30d), post-auth stager URLs & domains (30d), malware SHA-256 hashes (with `vhash` cluster tags & `malware` SDOs), and persistent OpenSSH public-key fingerprints (90d)
+- Transient inbound IP `indicator` objects strictly gated on `behavioral_risk_score > 0` AND `risk_score >= 40` (non-RIOT, non-`benign`) with explicit 7-day `valid_until`
+- `campaign` objects for shared credential clusters and `relationship` objects linking indicators to campaigns/malware
 - `report` wrapping all objects with TLP marking
-- No infrastructure IPs in any object
+- Zero bogus HTTP-pattern rules, zero benign-scanner Threat Actors, and zero infrastructure IPs or hostnames
 
-### 7.3 Streamlit dashboard
+### 7.3 Vigil dashboard
 
-The dashboard is the operator's personal console — **never exposed externally** (OPSEC Layer 3). It binds to `localhost:8501` on the sensor. Reach it from your workstation via SSH local-port-forwarding.
+The Vigil dashboard is the operator's personal console — **air-gapped and never exposed externally** (OPSEC Layer 3; strict `connect-src 'none'` CSP, zero external CDNs or fonts). It binds strictly to `127.0.0.1:8501` on the collector. Reach it from your workstation via SSH local-port-forwarding.
 
 **Workstation terminal:** open an SSH tunnel and leave it running.
 
@@ -677,64 +681,28 @@ The dashboard is the operator's personal console — **never exposed externally*
 ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>
 ```
 
-**Sensor (inside that SSH session, or a separate one):** launch streamlit.
+**Collector (inside that SSH session, or a separate one):** launch the Vigil console.
 
 ```bash
-sudo -u nectar XDG_CACHE_HOME=/tmp /opt/lantana/pipeline/venv/bin/lantana-dashboard
-# Or for local dev:
+sudo -u nectar /opt/lantana/pipeline/venv/bin/lantana-dashboard
+# Or for local dev against synthetic/copied Gold data:
 cd pipeline && uv run python ../scripts/run-dashboard-local.py
 ```
 
-Then on your workstation, open <http://localhost:8501> and verify each page:
+Then on your workstation, open <http://localhost:8501> and verify the window picker (`Day` / `7d` / `30d` / `Custom` / `All`), the dark/light theme toggle, and all 8 views:
 
-**Overview page:**
-
-- Metric cards (events, IPs, auth, commands, findings) — each with a `WhatWhyHow` tooltip from `METRICS`.
-- **Authentication donut** — two-slice Plotly donut (Success green / Failure red) with the success rate written in the centre.
-- **Events by Type stacked bar** — horizontal Plotly stacked bar across Auth / Commands / Findings / Network with hover proportions.
-- Top-N tables aligned in two-column rows (Usernames + Passwords; Commands + Source Countries); each row's shared caption sits above the column pair so the tables top-align.
-
-**Geography page:**
-
-- World map — bubble size = log10 events, colour = composite `risk_score`. Hover reveals country, event count, top ASN.
-- Top countries / top cities / top ASNs — three Plotly horizontal bars, each with its own section caption.
-- All values driven by `geographic_summary` gold table; empty on day-1 if no traffic yet hit the geographic aggregator.
-
-**IP Reputation page:**
-
-- `st.expander("How risk_score is calculated")` below the page caption — formula, bucket thresholds (sourced from `intel/stix.py:RISK_THRESHOLD` and `RISK_HIGH_THRESHOLD`), RIOT short-circuit note, link to [`docs/risk-scoring.md`](/docs/risk-scoring.md).
-- High / Medium / Low / Total IPs metric cards with registry-sourced tooltips.
-- Risk Score Distribution — three side-by-side histograms (composite, enrichment, behavioral).
-- Filterable IP table; slider help= notes that `min_risk=40` mirrors the STIX gate.
-
-**Detection Findings page:**
-
-- Three metric cards (Total Rules / Total Events / Total Unique IPs).
-- **Top Rules by Event Count** — Plotly horizontal bar with `yaxis.automargin` (full Suricata titles visible), colour-encoded by `unique_ips`.
-- **Rule Concentration (Pareto)** — bars + cumulative-% line with a dashed 80% reference. Answers "is today's IDS noise dominated by a few rules?".
-
-**Behavioral Progression page:**
-
-- Escalation funnel cards (Scan / Credential / Authenticated / Interactive) — each with a stage-definition tooltip.
-- **Stage vs Time** — Plotly scatter with categorical stage labels on y, Automated (red) vs Manual (blue) colour split, rich hover (IP / stage label / event count).
-- Automated vs Manual metric cards.
-- IP Progression Details table with a `Minimum stage` selectbox + stage-number decoder.
-- **Multi-day progression section**: Multi-Day IPs + Total IPs (7-day) cards; Plotly histogram of progression_velocity_days; Multi-Day Attackers details table (aggregated on demand from a trailing 7-day window of `behavioral_progression` partitions — see README roadmap for the deferred per-stage slow-burn detection).
-
-**Credentials page:**
-
-- Three columns (Top Usernames, Top Passwords, Top Credential Pairs) with a shared `Top Credentials` caption.
-- Active Clusters metric card + Campaign Clusters table (shared username:password pairs, IP count, IPs).
-
-**STIX Export page:**
-
-- Bundle Composition tiles — typed indicator breakdown (IP / Hash / Network-rule Indicators + Campaigns), each tile's count mirrors the filter in `intel/stix.py`. Footnote about Domain indicators being deferred.
-- **Generate STIX 2.1 Bundle** button → JSON download + preview.
-- **Raw IOC Export** section — gzipped CSV of every IP / hash / URL observed on the date with `risk_score` joined for IPs; covers the long tail STIX threshold drops.
+- **Overview (`/overview`):** Metric cards (events, IPs, auth, commands, findings, downloads) with `<details>` help drawers from `notify/explanations.py`, authentication donut, events-by-type stacked bar, and top-N tables.
+- **Durable IOCs (`/iocs`):** Outbound C2 IPs, post-auth stager URLs & domains, malware SHA-256 hashes (grouped by `vhash` cluster), and persistent SSH key fingerprints from `extracted_iocs`.
+- **IP Reputation (`/ips`):** Monotonic formula drawer linking [`docs/risk-scoring.md`](/docs/risk-scoring.md), High / Medium / Low / Total IP buckets (`RISK_HIGH_THRESHOLD = 70`, `RISK_THRESHOLD = 40`), composite/enrichment/behavioral histograms, and filterable IP table.
+- **Geography (`/geography`):** World map (bubble size = log10 events, color = `risk_score`) + top countries, cities, and ASNs from `geographic_summary`.
+- **Credentials (`/credentials`):** Top usernames, passwords, credential pairs, and shared-credential `campaign_clusters`.
+- **Behavioral Progression (`/progression`):** Escalation funnel (Scan / Credential / Authenticated / Interactive), Stage vs Time scatter, and multi-day progression summary across the selected date window.
+- **Detection Findings (`/findings`):** Real Suricata detection rules (excluding decoder SIDs `2200000-2260999`) — top rules bar chart and Pareto concentration chart.
+- **STIX Export (`/stix`):** Live bundle composition tiles mirroring `intel/stix.py`, one-click `/download/stix` (`.json`), and `/download/iocs.csv.gz` raw IOC export.
 
 ### 7.4 Multi-day progression
 
-After 7 days of `behavioral_progression` gold accumulating, the Streamlit dashboard's **Multi-Day Progression** section on the Behavioral Progression page aggregates IPs across the trailing 7-day window and flags those active across 2+ days. There is no `behavioral_progression_multiday` gold table — the previous version was retired (OOM at 7-day silver lookback) and the per-stage slow-burn detection is deferred to a future release. See the README roadmap for the proper fix.
+With `read_gold_range()`, the Vigil dashboard aggregates `behavioral_progression` across any selected window (`7d`, `30d`, `custom`, or `all`) and flags IPs active across 2+ days. There is no `behavioral_progression_multiday` gold table — per-stage lossless slow-burn detection remains tracked on the [README Roadmap](/README.md#roadmap).
 
 ---
 
@@ -752,10 +720,8 @@ After 7 days of `behavioral_progression` gold accumulating, the Streamlit dashbo
 
 ---
 
-## Future: Post-v1.0.0 Analytical Follow-Ups
+## Post-v1.5 Analytical Follow-Ups
 
-The v1.0.0 release already ships the severity-tiered daily Discord brief (with shared `WhatWhyHow` explanations via `notify/explanations.py`), the 7-page Streamlit dashboard (including `geography.py` and `stix_export.py`), on-demand STIX 2.1 bundle generation, and gzipped raw IOC CSV exports. Post-v1.0.0 analytical follow-ups tracked on the [README Roadmap](/README.md#roadmap) focus on:
+The v1.5 release ships self-owned pinned GHCR honeypot images, Dionaea `lantana_json` (attributed binaries, download URLs, MSSQL/MySQL `sql_command`, structured HTTP POST bodies), monotonic behavioral-anchored risk scoring, durable STIX 2.1 IOCs (`extracted_iocs`), stateless D-1/D-2 dead-man's-switch alerting, decoupled 14d/180d retention, and the 8-view air-gapped Vigil dashboard with 5 date windows. Remaining roadmap items tracked on the [README Roadmap](/README.md#roadmap):
 
-- **Dashboard date-range selector**: replacing the fixed gold window with configurable `start` + `end` date pickers (defaulting to the last 7 days) across all dashboard pages
-- **Lossless multi-day slow-burn detection**: streaming or per-day stage-timestamp persistence to replace the trailing 7-day proxy without risking collector OOMs
-- **STIX & enrichment tuning**: calibrating `RISK_THRESHOLD` against multi-week production score distributions, per-object TLP granularity, and per-session `src_ip` / download-URL attribution for Dionaea binary captures
+- **Lossless multi-day slow-burn detection**: streaming or per-day stage-timestamp persistence to replace the window-rollup proxy without risking collector OOMs.

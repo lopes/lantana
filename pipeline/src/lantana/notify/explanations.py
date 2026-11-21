@@ -1,20 +1,18 @@
-"""Shared What / Why / How text for brief sections and dashboard widgets.
+"""Shared What / Why / How text for brief sections and Vigil dashboard widgets.
 
-The daily brief and the Streamlit dashboard surface the same data through
-different rendering paths. To keep the explanations in sync — so the
-analyst learns one mental model and finds it in both places — the text
-lives here as plain constants. Brief sections render the triplet as an
-italic one-liner under the ``##`` heading; dashboard metric cards use it
-verbatim in Streamlit's ``help=`` tooltip; dashboard chart sections render
-it via ``st.caption()``.
+The daily brief and the air-gapped Vigil dashboard surface the same data
+through different rendering paths. To keep the explanations in sync — so the
+analyst learns one mental model and finds it in both places — the text lives
+here as plain constants. Brief sections render the triplet as an italic
+one-liner under the ``##`` heading; dashboard cards and sections render it
+inside collapsible ``<details>`` help blocks.
 
 Each entry is a ``WhatWhyHow`` dataclass — keep the three clauses short
-(target ~120 chars total) so the italic line under a heading stays on one
-visual row and the metric tooltip doesn't overflow Streamlit's hover popup.
+(target ~120 chars total) so the italic line under a heading stays concise.
 
 Risk-threshold numbers embedded in any triplet (40, 70, ...) are
 f-string interpolated from ``intel/stix.py`` so the registry can't drift
-from ``_risk_label`` / the bucket filters / the dashboard explainer.
+from ``risk_level_label`` / the bucket filters / the dashboard explainer.
 """
 
 from __future__ import annotations
@@ -41,7 +39,7 @@ class WhatWhyHow:
         return f"_What: {self.what} Why: {self.why} How: {self.how}_"
 
     def tooltip(self) -> str:
-        """For the dashboard: plain text suitable for Streamlit's ``help=``."""
+        """For the Vigil dashboard: plain text for metric/section help drawers."""
         return f"What: {self.what} Why: {self.why} How: {self.how}"
 
 
@@ -76,14 +74,14 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         how="max_stage on behavioral_progression: scan → cred → auth → interactive.",
     ),
     "Top Attackers": WhatWhyHow(
-        what="source IPs ranked by composite risk_score.",
-        why="prioritises analyst attention on the highest-value targets.",
-        how="risk_score = (enrichment + behavioral)/2, clipped 0..100.",
+        what="source IPs ranked by monotonic behavioral-anchored composite risk_score.",
+        why="prioritises interactive attackers over pure scanners and unindexed IPs.",
+        how="pure scans <= 35; interactive = max(behavioral, (enrichment + behavioral)/2).",
     ),
     "Threat Actor Attribution": WhatWhyHow(
-        what="IPs that GreyNoise tags with a known actor/scanner name.",
-        why="cuts triage time on known benign-but-noisy or known-bad actors.",
-        how="non-empty, non-'unknown' greynoise_name from ip_reputation.",
+        what="IPs and malware samples tied to malicious actors (GreyNoise malicious or GTI).",
+        why="cuts triage time without falsely attributing benign internet scanners.",
+        how="greynoise_classification == 'malicious' or confidence-gated GTI associations.",
     ),
     "Notable Escalations": WhatWhyHow(
         what="IPs that reached authenticated or interactive stages.",
@@ -101,9 +99,9 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         how="silver suricata events grouped by finding_title, ordered by count.",
     ),
     "Top Rules by Event Count": WhatWhyHow(
-        what="horizontal bar of the top-20 firing Suricata rules with full titles.",
-        why="long rule names need automargin; the native Streamlit chart truncates them.",
-        how="px.bar over detection_findings, colour-encoded by unique_ips.",
+        what="horizontal bar of the top-20 firing Suricata rules with full titles and SIDs.",
+        why="surfaces the highest-volume IDS signatures after excluding decoder noise.",
+        how="go.Bar over detection_findings, colour-encoded by unique_ips / IP-days.",
     ),
     "Rule Concentration": WhatWhyHow(
         what="Pareto chart over the top-50 rules: bars + cumulative-% line.",
@@ -111,9 +109,9 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         how="bars sorted by event_count, cumulative % computed against the capped total.",
     ),
     "Risk Score Distribution": WhatWhyHow(
-        what="three side-by-side histograms — composite risk and its two halves.",
-        why="reveals whether today's risk is enrichment-driven, behavioral-driven, or both.",
-        how="bar_chart over risk_score / enrichment_risk_score / behavioral_risk_score.",
+        what="three side-by-side binned histograms — composite risk and its two halves.",
+        why="reveals whether risk is enrichment-driven, behavioral-driven, or both.",
+        how="go.Histogram (bin width 5) over risk_score / behavioral / enrichment.",
     ),
     "Stage vs Time": WhatWhyHow(
         what="scatter of per-IP max_stage (y) versus first_seen timestamp (x).",
@@ -159,11 +157,11 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         how="generate_bundle() in intel/stix.py + build_raw_ioc_export() in intel/iocs.py.",
     ),
     "Bundle Composition": WhatWhyHow(
-        what="counts of each indicator/object type the STIX bundle will contain.",
-        why="mirrors the filters in intel/stix.py so the analyst can preview what ships.",
+        what="counts of durable IOC and interactive inbound IP objects in the STIX 2.1 bundle.",
+        why="mirrors the gates in intel/stix.py so the analyst can preview what ships.",
         how=(
-            f"IP indicators apply risk_score >= {_MED}; network-rule "
-            "indicators apply unique_ips >= 5."
+            f"extracted_iocs (hashes, C2 IPs, URLs, domains, SSH keys) plus interactive "
+            f"inbound IPs with behavioral > 0 and risk_score >= {_MED} (7d valid_until)."
         ),
     ),
     "Raw IOC Export": WhatWhyHow(
@@ -232,7 +230,7 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
 
 
 # ---------------------------------------------------------------------------
-# Dashboard metric cards (Streamlit ``st.metric`` help= tooltips)
+# Dashboard metric cards (Vigil dashboard help drawers)
 # ---------------------------------------------------------------------------
 
 METRICS: Final[dict[str, WhatWhyHow]] = {
@@ -399,8 +397,23 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         ),
     ),
     "Events by Type": WhatWhyHow(
-        what="event count split across Auth, Commands, Findings, and Network classes.",
-        why="reveals where today's activity sits — credential stuffing vs hands-on vs L3/L4 scans.",
-        how="horizontal stacked bar over the four OCSF class counts from daily_summary.",
+        what="event count split across Auth, Commands, Findings, Network, and Downloads.",
+        why="reveals where today's activity sits — credential stuffing vs hands-on vs scans.",
+        how="horizontal stacked bar over OCSF class counts from daily_summary.",
+    ),
+    "Malware Uploaded": WhatWhyHow(
+        what="non-probe, non-persistence malware captures across Cowrie and Dionaea.",
+        why="tracks payload delivery volume and distinct SHA-256 samples.",
+        how="downloads_captured on daily_summary + malware_hash rows in extracted_iocs.",
+    ),
+    "Outbound C2 & Stagers": WhatWhyHow(
+        what="outbound C2 IPs, stager URLs, and staging domains extracted post-auth.",
+        why="durable attacker infrastructure that outlives rotating botnet source IPs.",
+        how="extracted_iocs rows with ioc_type in {c2_ip, stager_url, stager_domain}.",
+    ),
+    "Durable IOCs": WhatWhyHow(
+        what="all durable daily observables: malware hashes, C2 IPs, URLs, domains, SSH keys.",
+        why="high-shelf-life threat intelligence ready for OpenCTI, MISP, and retro-hunting.",
+        how="row count of the extracted_iocs Gold table across the active window.",
     ),
 }

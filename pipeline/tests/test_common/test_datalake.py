@@ -243,3 +243,35 @@ def test_write_silver_partition_sanitizes_empty_server_and_writes_atomically(
     assert "server=unknown" in str(path)
     assert path.exists()
     assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_read_gold_range_normalizes_legacy_list_null_and_skips_missing(tmp_path: Path) -> None:
+    """read_gold_range concatenates multi-day gold even when older days have List(Null)."""
+    from lantana.common.datalake import read_gold_range
+
+    d1 = date(2026, 7, 1)
+    d2 = date(2026, 7, 2)
+    d_missing = date(2026, 7, 3)
+
+    legacy_df = pl.DataFrame(
+        {
+            "total_events": [10],
+            "top_asns": pl.Series([[]], dtype=pl.List(pl.Null)),
+            "top_download_hashes": pl.Series([[]], dtype=pl.List(pl.Null)),
+        }
+    )
+    modern_df = pl.DataFrame(
+        {
+            "total_events": [25],
+            "top_asns": [["64500|Example ISP:5"]],
+            "top_download_hashes": [[{"value": "a" * 64, "count": 2}]],
+        }
+    )
+    write_gold_table(legacy_df, "daily_summary", d1, gold_root=tmp_path)
+    write_gold_table(modern_df, "daily_summary", d2, gold_root=tmp_path)
+
+    combined = read_gold_range("daily_summary", [d2, d_missing, d1], gold_root=tmp_path)
+    assert combined.height == 2
+    assert combined.get_column("report_date").to_list() == [d1, d2]
+    assert combined.get_column("total_events").to_list() == [10, 25]
+    assert read_gold_range("daily_summary", [d_missing], gold_root=tmp_path).is_empty()

@@ -10,7 +10,7 @@
 #   * lantana-enrich + lantana-transform emitted a run_summary line in
 #     the journal.
 #   * Silver parquet was written for each expected dataset.
-#   * Gold parquet exists for all six expected tables.
+#   * Gold parquet exists for all seven expected tables.
 #   * .provider_state.json file is present (its contents may be empty
 #     {} on day 1 — that's fine).
 #   * enrichment_errors.json contains no API-key residue (Phase B

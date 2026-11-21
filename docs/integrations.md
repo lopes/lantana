@@ -21,14 +21,16 @@ For where enrichment fits in the pipeline (bronze → silver, OCSF normalization
 
 ### Daily-batch enrichment (Python pipeline, HTTP APIs)
 
+All HTTP enrichment providers are **optional** — omitting a vault key (or leaving it blank for key-required providers) cleanly skips that provider with `provider_disabled` rather than firing 401 errors.
+
 | Provider | Endpoint | Auth | Free-tier limit | Docs |
 |---|---|---|---|---|
-| [AbuseIPDB](#abuseipdb)  | `https://api.abuseipdb.com/api/v2/check`                              | `Key:` header, required        | 1000 checks/day                          | [docs.abuseipdb.com](https://docs.abuseipdb.com/) |
-| [Shodan](#shodan)        | `https://api.shodan.io/shodan/host/{ip}`                              | `key=` query param, required   | ~100 queries/month (Membership)          | [developer.shodan.io/api](https://developer.shodan.io/api) |
-| [VirusTotal](#virustotal)| `https://www.virustotal.com/api/v3/ip_addresses/{ip}` · `/files/{sha256}` | `x-apikey:` header, required   | 4 req/min, 500 req/day                   | [docs.virustotal.com](https://docs.virustotal.com/reference/overview) |
-| [GreyNoise](#greynoise)  | `https://api.greynoise.io/v3/community/{ip}`                          | `key:` header, **optional**    | 50 searches per 7 days (unauthenticated) | [Community API](https://docs.greynoise.io/docs/using-the-greynoise-community-api) · [Full v3 API](https://docs.greynoise.io/docs/using-the-greynoise-api) |
+| [AbuseIPDB](#abuseipdb)  | `https://api.abuseipdb.com/api/v2/check` | `Key:` header, optional (skips if unset) | 1000 checks/day | [docs.abuseipdb.com](https://docs.abuseipdb.com/) |
+| [Shodan](#shodan)        | `https://api.shodan.io/shodan/host/{ip}` | `key=` query param, optional (skips if unset) | ~100 queries/month (Membership) | [developer.shodan.io/api](https://developer.shodan.io/api) |
+| [VirusTotal / GTI](#virustotal) | `https://www.virustotal.com/api/v3/{ip_addresses,files,urls,domains}/{id}` | `x-apikey:` header (`x-tool: Lantana`), optional (skips if unset); opt-in commercial GTI via `gti_enabled: true` + `vault_apikey_gti` | 4 req/min, 500 req/day (`VT_FREE_DAILY_REQUEST_BUDGET = 480`) | [docs.virustotal.com](https://docs.virustotal.com/reference/overview) |
+| [GreyNoise](#greynoise)  | `https://api.greynoise.io/v3/community/{ip}` | `key:` header, **optional** (`""` = anonymous community, omitted = skipped) | 50 searches per 7 days (unauthenticated) | [Community API](https://docs.greynoise.io/docs/using-the-greynoise-community-api) · [Full v3 API](https://docs.greynoise.io/docs/using-the-greynoise-api) |
 
-All four HTTP providers accept an IPv4 / IPv6 address. Only VirusTotal also accepts a SHA-256 file hash (used for cowrie downloads). MaxMind accepts only IPs.
+All four HTTP providers accept an IPv4 / IPv6 address. VirusTotal / GTI additionally enriches SHA-256 file hashes (Cowrie + Dionaea captures), post-auth stager URLs, and stager domains via a single behavioral-priority queue (`hashes -> outbound C2 IPs -> stager URLs/domains -> inbound IPs`) paced by `_AsyncRateLimiter`. MaxMind accepts only IPs.
 
 ---
 
@@ -107,29 +109,34 @@ Internet-wide scanner. We use it for open-port + service + ASN attribution on at
 
 ### VirusTotal
 
-Multi-vendor aggregator (90+ AV/blocklist engines). We query both IPs and file hashes (cowrie/dionaea downloads).
+Multi-vendor aggregator (90+ AV/blocklist engines) with optional commercial **Google Threat Intelligence (GTI)** enrichment (`gti_enabled: true` + `vault_apikey_gti`). Every request sends `x-tool: Lantana` alongside `x-apikey`.
 
 - **Endpoints:**
-  - IP:   `GET https://www.virustotal.com/api/v3/ip_addresses/{ip}`
-  - Hash: `GET https://www.virustotal.com/api/v3/files/{sha256}`
-- **Auth:** `x-apikey: <api_key>` header
+  - IP:     `GET https://www.virustotal.com/api/v3/ip_addresses/{ip}`
+  - Hash:   `GET https://www.virustotal.com/api/v3/files/{sha256}`
+  - URL:    `GET https://www.virustotal.com/api/v3/urls/{base64url_no_pad}`
+  - Domain: `GET https://www.virustotal.com/api/v3/domains/{domain}`
+- **Auth:** `x-apikey: <api_key>` header (`vault_apikey_virustotal`, or `vault_apikey_gti` when `gti_enabled: true`) + `x-tool: Lantana`.
 - **Provider file:** [`virustotal.py`](/pipeline/src/lantana/enrichment/providers/virustotal.py)
-- **Free-tier limit:** 4 requests per minute, 500 per day, 15.5k per month
+- **Free-tier limit:** 4 requests per minute, 500 per day (`VT_FREE_DAILY_REQUEST_BUDGET = 480`), paced by `_AsyncRateLimiter` across one unified priority queue: malware hashes → outbound C2 IPs → post-auth stager URLs & domains → behaviorally-ranked inbound IPs.
+- **Commercial GTI mode (opt-in):** Off by default (`gti_enabled: false`). When enabled with `vault_apikey_gti`, adds GTI relationship queries (`associations,threat_actors,malware_families,vulnerabilities`) and surfaces Mandiant verdicts/associations gated at confidence `>= 75` (`GTI_ASSOCIATION_MIN_CONFIDENCE`). Free-tier deployments never hit commercial-only endpoints.
+- **HTTP 404 behaviour:** Returns `"vt_status": "not_found"` with zero counts and `*_risk_score: None` (never `0.0`), preventing dilution of other providers' verdicts.
 - **Docs:** https://docs.virustotal.com/reference/overview
 
 **Fields we extract into silver (IP):**
 
 | Silver column | Source field |
 |---|---|
+| `vt_status`              | `"ok"` / `"not_found"` |
 | `vt_malicious_count`     | `data.attributes.last_analysis_stats.malicious` |
 | `vt_suspicious_count`    | `data.attributes.last_analysis_stats.suspicious` |
 | `vt_ip_reputation`       | `data.attributes.reputation` |
 | `vt_as_owner`            | `data.attributes.as_owner` |
-| `virustotal_risk_score`  | computed — bucketed from `vt_malicious_count` (see below) |
+| `virustotal_risk_score`  | computed — bucketed from `vt_malicious_count` (`None` on 404) |
 
-**Risk-score derivation:** see [risk-scoring.md § VirusTotal](/docs/risk-scoring.md#virustotal-ip).
+**Risk-score derivation:** see [risk-scoring.md § VirusTotal](/docs/risk-scoring.md#virustotal-ip--domain).
 
-**Fields we extract into silver (hash — 6 columns):**
+**Fields we extract into silver (hash — 7 columns, plus optional GTI fields):**
 
 | Silver column | Source field | Notes |
 |---|---|---|
@@ -138,7 +145,10 @@ Multi-vendor aggregator (90+ AV/blocklist engines). We query both IPs and file h
 | `vt_file_name`             | `data.attributes.meaningful_name` | Canonical sample name |
 | `vt_file_type`             | `data.attributes.type_tag` | File type tag (e.g. `elf`, `peexe`) |
 | `vt_file_family`           | `data.attributes.popular_threat_classification` | Top `popular_threat_name` or `suggested_threat_label` |
-| `vt_file_risk_score`       | computed | Bucketed from `vt_file_malicious_count` (0 / 50 / 75 / 100; drives cache TTL) |
+| `vt_file_vhash`            | `data.attributes.vhash` | Structural similarity hash (free tier; drives `vhash` clustering in Gold & STIX) |
+| `vt_file_risk_score`       | computed | Bucketed from `vt_file_malicious_count` (0 / 50 / 75 / 100; `None` on 404; drives 180d cache TTL) |
+
+Post-auth stager URLs and domains populate `vt_url_*` (`vt_url_malicious_count`, `vt_url_suspicious_count`, `vt_url_downloaded_sha256`, `vt_url_risk_score`) and `vt_domain_*` (`vt_domain_malicious_count`, `vt_domain_suspicious_count`, `vt_domain_risk_score`) in the `extracted_iocs` Gold table.
 
 ### GreyNoise
 
@@ -164,23 +174,23 @@ Internet background-noise classifier — identifies IPs that scan the entire int
 | `greynoise_link`           | `link`               | Visualizer URL |
 | `greynoise_risk_score`     | computed             | Classification matrix with RIOT short-circuit to 0 |
 
-**HTTP 404 behaviour.** A 404 from this endpoint means "IP not in dataset," not an error. The provider returns a normalized result with `greynoise_classification: "unknown"` and all booleans false. Don't treat 404 as a pipeline failure.
+**HTTP 404 behaviour.** A 404 from this endpoint means "IP not in dataset," not an error. The provider returns a normalized result with `greynoise_classification: "unknown"`, false booleans, and **`greynoise_risk_score: None`** (so unindexed IPs never dilute other providers' scores). Don't treat 404 as a pipeline failure.
 
-**Risk-score derivation:** see [risk-scoring.md § GreyNoise](/docs/risk-scoring.md#greynoise-the-only-provider-with-a-negative-override). Note: RIOT is the *benign* signal — when set, `greynoise_risk_score=0` overrides everything else, pulling the gold enrichment mean down.
+**Risk-score derivation:** see [risk-scoring.md § GreyNoise](/docs/risk-scoring.md#greynoise-false-positive-brake). Note: RIOT and `benign` act as the false-positive brake — pure scanners drop to `risk_score=0`, and interactive hits drop to `behavioral/2` and stay out of STIX inbound IP indicators.
 
 ---
 
 ## 3. Enablement and Vault Layout
 
-The vault key `vault_apikey_<service>` controls per-provider behaviour. The rendered `secrets.json` on the collector uses the same keys verbatim, including `vault_apikey_maxmind` — see [Vault ↔ secrets.json nomenclature](/docs/pipeline.md#vault--secretsjson-nomenclature). The HTTP daily-batch providers consume their fields from `SecretsConfig` at runtime; MaxMind's field is consumed only by the probe script (`probe-mmdb.py`) and ignored by the Python pipeline. Ansible reads `vault_apikey_maxmind` straight from the vault at deploy time to download the MMDBs.
+The vault key `vault_apikey_<service>` controls per-provider behaviour. The rendered `secrets.json` on the collector uses the same keys verbatim, including `vault_apikey_maxmind`, `vault_apikey_gti`, and `gti_enabled` — see [Vault ↔ secrets.json nomenclature](/docs/pipeline.md#73-vault--secretsjson-nomenclature). Every enrichment provider is **optional**:
 
-| Vault line state | AbuseIPDB / Shodan / VirusTotal | GreyNoise | MaxMind |
-|---|---|---|---|
-| Line omitted          | provider runs with empty key → 401 (misconfiguration) | **provider skipped** (`provider_disabled` log) | **MMDB download skipped at deploy** — Vector starts without `.geo.*` enrichment |
-| Line `""` (empty)     | same as above                                          | community endpoint, anonymous (50/week)        | same as missing (Ansible `when:` guard fails the truthiness check) |
-| Line `"<key>"`        | authenticated                                          | community endpoint, key sent in header (higher rate limit) | MMDBs downloaded + refreshed monthly |
+| Vault line state | AbuseIPDB / Shodan / VirusTotal | Commercial GTI | GreyNoise | MaxMind |
+|---|---|---|---|---|
+| Line omitted | **provider skipped** (`provider_disabled` log, zero 401s) | disabled (`gti_enabled: false`) | **provider skipped** (`provider_disabled` log) | **MMDB download skipped at deploy** — Vector starts without `.geo.*` enrichment |
+| Line `""` (empty) | **provider skipped** (`provider_disabled` log) | disabled | community endpoint, anonymous (50/week) | same as missing |
+| Line `"<key>"` | authenticated | enabled only when `gti_enabled: true` is also set in inventory | community endpoint, key sent in header (higher rate limit) | MMDBs downloaded + refreshed monthly |
 
-The only way to disable GreyNoise is to **omit the vault line entirely** — its unauthenticated community mode takes over when the key is empty. MaxMind has no unauthenticated mode for download, so omitting the key disables it.
+The only way to disable GreyNoise is to **omit the vault line entirely** — its unauthenticated community mode takes over when the key is `""`. MaxMind has no unauthenticated download mode, so omitting or blanking the key disables it.
 
 ---
 
@@ -337,9 +347,9 @@ PhishStats was an unauthenticated phishing-URL feed. Its public endpoint moved o
 
 Homebrew Python builds on macOS sometimes can't chain-validate certs even with `certifi.where()` configured (`curl` works, `httpx` fails with `unable to get local issuer certificate`). Symptom: every provider returns `ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED]`. Workaround: pass `--insecure` to the probe. The production collector on Debian 13 has a working system trust store and is unaffected.
 
-### GreyNoise 404 → "unknown"
+### GreyNoise 404 → "unknown" (`null` risk score)
 
-GreyNoise returns HTTP 404 for IPs not in its dataset rather than an empty 200. The provider treats this as "no info" and emits a normalized result with `greynoise_classification: "unknown"` and false booleans — not an error. This is the most common GreyNoise response for honeypot attacker IPs that aren't part of mass-scanning campaigns.
+GreyNoise returns HTTP 404 for IPs not in its dataset rather than an empty 200. The provider treats this as "no info" and emits a normalized result with `greynoise_classification: "unknown"`, false booleans, and `greynoise_risk_score: None` — not an error, and never diluting scores from other providers. This is the most common GreyNoise response for honeypot attacker IPs that aren't part of mass-scanning campaigns.
 
 ### MaxMind silent skip on missing license key
 

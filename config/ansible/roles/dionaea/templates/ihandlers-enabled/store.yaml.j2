@@ -9,7 +9,7 @@
 # ASCII-only -- the dinotools image runs Python 3.6 + PyYAML, which
 # falls back to the ASCII codec without a BOM. One non-ASCII byte in
 # any ihandler/service yaml aborts the entire service-registration loop
-# (see CLAUDE.md "Honeypot deployment discipline").
+# (see AGENTS.md and .agents/skills/deploy-sensors/SKILL.md).
 - name: store
   config:
     path: "/opt/dionaea/var/lib/dionaea/binaries"

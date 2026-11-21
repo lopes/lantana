@@ -1,0 +1,3 @@
+from plotly.graph_objects import Figure
+
+def to_json(fig: Figure, *, validate: bool = ...) -> str: ...

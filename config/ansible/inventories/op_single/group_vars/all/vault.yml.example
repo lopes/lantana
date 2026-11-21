@@ -16,14 +16,19 @@
 # — secrets.json is the decrypted view of this file, not a different schema.
 
 
-# --- Enrichment provider keys ---------------------------------------------
-# These three providers have no free public endpoint — you need a key for
-# each. Free-tier accounts (Shodan Membership, AbuseIPDB free, VirusTotal
-# Public API) are sufficient for a research honeypot.
+# --- Enrichment provider keys (all optional) ------------------------------
+# Free-tier accounts (Shodan Membership, AbuseIPDB free, VirusTotal Public API)
+# are sufficient for a research honeypot. Omitting a key or leaving it empty
+# cleanly disables that provider (logged as `provider_disabled`, zero 401s).
 
 vault_apikey_virustotal: "REPLACE_ME"
 vault_apikey_shodan:     "REPLACE_ME"
 vault_apikey_abuseipdb:  "REPLACE_ME"
+
+# Opt-in commercial Google Threat Intelligence (GTI) mode.
+# Disabled by default; only active when BOTH `gti_enabled: true` (in main.yml)
+# and `vault_apikey_gti` are configured. Free-tier deploys leave this commented.
+# vault_apikey_gti:      "REPLACE_ME"
 
 # GreyNoise has a public unauthenticated Community endpoint. Three modes:
 #

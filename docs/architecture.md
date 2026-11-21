@@ -49,7 +49,7 @@ Ansible is specifically responsible for:
 
 - Shifting the SSH daemon to a custom, non-standard administrative port.
 - Applying strict cryptographic policies and further `sshd_config` lockdowns (e.g., SSH certificates).
-- Installing the required platform packages (`podman`, `vector`, `suricata`).
+- Installing the required platform packages (`podman`, `vector`, `suricata`, `acl`, `ethtool`).
 - Configuring OS-level networking (dummy interfaces, `nftables` routing, and DNAT).
 - Deploying the specific honeypot containers and telemetry pipelines.
 
@@ -79,9 +79,10 @@ With the hosts provisioned, Lantana is structured around a **zoned architecture*
 
 To enforce strict boundary isolation across these zones, Lantana relies on dedicated, non-interactive service accounts. These users own the processes and data for their respective roles:
 
-- **`stigma` (Sensor User):** Operates entirely within the Sensor Zone. This user is responsible for launching and managing the rootless Podman containers housing the decoys.
-- **`nectar` (Collector User):** Operates within the Collector Zone. This user executes the Python enrichment scripts and owns the processed data lake storage.
-- **`vector` (Telemetry User):** The default Datadog Vector account, utilized across all zones to read logs and transport telemetry over the internal network.
+- **`stigma` (Sensor User):** Operates entirely within the Sensor Zone. Launches and manages rootless Podman containers housing the decoys. Strictly isolated (`EACCES`) from collector secrets and the datalake.
+- **`nectar` (Collector User):** Operates within the Collector Zone. Executes the Python enrichment/transform/report/dashboard pipeline and owns unified symlink-safe (`O_NOFOLLOW` + `dir_fd`) cleanup across both the datalake and sensor scratch directories via one-way `u:nectar:rwX` POSIX ACLs.
+- **`vector` (Telemetry User):** Runs Datadog Vector across zones with read-only `u:vector:rX` POSIX ACLs on sensor logs. In Single-Node mode, `filter_*` transforms feed `enrich_geo` directly in memory (eliminating local TCP forwarder duplication); in Multi-Node mode, sensors forward over the private network to the Collector.
+- **`suricata` (IDS User):** Runs Suricata non-root (`CAP_NET_RAW`, `CAP_NET_ADMIN`, `CAP_SYS_NICE`) on the Honeywall with WAN NIC offloads disabled (`ethtool`).
 
 ### Modes of Operation
 
@@ -125,7 +126,7 @@ In Single-Node mode, the hypervisor (or base OS) provides a NAT network. Since a
 1. An attacker hits the public IP (`eth0`) on port 22.
 2. The Honeywall applies strict IDS inspection (`Suricata`) to identify threats, while `nftables` (PREROUTING) intercepts the packet, performing DNAT to rewrite the destination to the dummy interface (`10.50.99.100:2222`).
 3. Podman's rootless proxy listens on `.100` and forwards the traffic into the isolated honeypot container.
-4. Telemetry is written locally, picked up by Vector (listening on `.10`), and pushed to the data lake.
+4. Telemetry is written locally, picked up by Vector, and routed directly in memory from each `filter_*` transform to `enrich_geo` and Bronze NDJSON (no local TCP loopback forwarders).
 
 ```mermaid
 graph TD
@@ -262,5 +263,5 @@ Lantana favors modern, native Linux tooling over heavy abstractions. This reduce
 - **Podman:** The container engine for Low-Interaction sensors. Chosen over Docker for its daemonless architecture and native rootless capabilities, providing stronger out-of-the-box isolation.
 - **Datadog Vector:** A high-performance, lightweight pipeline tool used across all zones for log ingestion, initial parsing, and fast routing.
 - **Suricata:** The Intrusion Detection System (IDS) deployed in the Honeywall to capture network-level threat signatures.
-- **Python:** Powers the Collector zone. Handles complex log enrichment, OCSF normalization, data lake formatting (Parquet), risk scoring, and the data-exploration tools. See [`pipeline.md`](/docs/pipeline.md) for the bronze → silver → gold flow, [`integrations.md`](/docs/integrations.md) for each third-party enrichment provider, and [`risk-scoring.md`](/docs/risk-scoring.md) for how per-IP risk is composed from per-provider sub-scores plus honeypot-observed behavior.
+- **Python:** Powers the Collector zone. Handles optional API enrichment, OCSF normalization, Parquet datalake transforms (7 Gold tables), monotonic risk scoring, durable STIX 2.1 generation, Discord reporting with dead-man's-switch liveness, and the air-gapped Vigil operator console (`127.0.0.1:8501`, stdlib HTTP + local Plotly JS — zero Streamlit/Pandas). See [`pipeline.md`](/docs/pipeline.md), [`integrations.md`](/docs/integrations.md), and [`risk-scoring.md`](/docs/risk-scoring.md).
 - **Terraform & Ansible:** The infrastructure-as-code backbone. Terraform provisions Debian 13 VMs on Proxmox via template cloning and cloud-init, while Ansible applies the "Narrative".

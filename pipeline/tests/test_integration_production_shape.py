@@ -745,7 +745,7 @@ async def test_pipeline_and_brief_survive_missing_cowrie(
       Top Attackers, Findings, Pipeline Health).
 
     This is the load-bearing regression test for the data-presence rule
-    documented in CLAUDE.md ``Pipeline fail-safe principles §3``.
+    documented in AGENTS.md ``Pipeline Fail-Safe Principles``.
     """
     from lantana.notify.alerts import ErrorBuckets
     from lantana.notify.report import generate_daily_brief
