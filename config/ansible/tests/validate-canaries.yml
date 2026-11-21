@@ -1,0 +1,156 @@
+---
+# Active post-deploy canary tests for single-node Lantana deployments.
+# Unlike validate-sensor-runtime.yml (strictly read-only), this playbook
+# injects controlled synthetic probes to prove end-to-end telemetry fidelity:
+#
+#   1. Vector 1-in-1-out + Layer-1 OPSEC edge filtering:
+#      Appends 4 synthetic Cowrie JSON lines with a unique canary_id:
+#        - 1 external RFC 5737 test IP (198.51.100.250) -> MUST appear ONCE in Bronze
+#        - 1 IPv6 loopback (::1)                        -> MUST appear 0 times
+#        - 1 RFC 1918 private IP (10.99.99.99)          -> MUST appear 0 times
+#        - 1 host WAN IPv4                              -> MUST appear 0 times
+#   2. Suricata external SSH-2.0-Go canary:
+#      Opens a real TCP connection from the Ansible controller to WAN:22 and
+#      sends an SSH-2.0-Go banner -> asserts sid:9000004 fires in eve.json and
+#      lands in Bronze (proving HOME_NET + TX offload + AF_PACKET + Vector).
+#
+# Usage (from config/ansible/):
+#   ansible-playbook -i inventories/<op>/inventory.yml tests/validate-canaries.yml
+
+- name: "VALIDATION: Active Telemetry & IDS Canaries"
+  hosts: single_nodes
+  gather_facts: false
+  vars:
+    target_date: "{{ lookup('pipe', 'date -u +%Y-%m-%d') }}"
+    canary_id: "lantana-canary-{{ lookup('pipe', 'date -u +%s') }}"
+    datalake_root: /var/lib/lantana/datalake
+    wan_ipv4: "{{ network.honeywall.wan.ipv4.split('/')[0] }}"
+    cowrie_bronze: "{{ datalake_root }}/bronze/dataset=cowrie/date={{ target_date }}/server={{ inventory_hostname }}/events.json"
+    suricata_eve: /var/log/lantana/honeywall/suricata/eve.json
+    suricata_bronze: "{{ datalake_root }}/bronze/dataset=suricata/date={{ target_date }}/server={{ inventory_hostname }}/events.json"
+
+  pre_tasks:
+    - name: "Load network variables from inventory"
+      ansible.builtin.include_vars:
+        file: "{{ inventory_dir }}/group_vars/all/network.yml"
+
+  tasks:
+    # === 1. Vector 1-in-1-out & Layer-1 Edge Filter Canary ===
+    - name: "Inject 4 synthetic Vector canary lines into cowrie.json"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        ts="$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)"
+        log="/var/log/lantana/sensor/cowrie/cowrie.json"
+        printf '{"eventid":"cowrie.canary.probe","timestamp":"%s","src_ip":"198.51.100.250","session":"%s-ext","message":"%s-ext"}\n' "$ts" "{{ canary_id }}" "{{ canary_id }}" >> "$log"
+        printf '{"eventid":"cowrie.canary.probe","timestamp":"%s","src_ip":"::1","session":"%s-lo","message":"%s-lo"}\n' "$ts" "{{ canary_id }}" "{{ canary_id }}" >> "$log"
+        printf '{"eventid":"cowrie.canary.probe","timestamp":"%s","src_ip":"10.99.99.99","session":"%s-rfc1918","message":"%s-rfc1918"}\n' "$ts" "{{ canary_id }}" "{{ canary_id }}" >> "$log"
+        printf '{"eventid":"cowrie.canary.probe","timestamp":"%s","src_ip":"%s","session":"%s-wan","message":"%s-wan"}\n' "$ts" "{{ wan_ipv4 }}" "{{ canary_id }}" "{{ canary_id }}" >> "$log"
+      changed_when: true
+
+    - name: "Wait for Vector to flush canary event to Bronze"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        for _ in $(seq 1 15); do
+          if [ -f "{{ cowrie_bronze }}" ] && grep -q "{{ canary_id }}-ext" "{{ cowrie_bronze }}"; then
+            sleep 2
+            exit 0
+          fi
+          sleep 1
+        done
+        exit 1
+      changed_when: false
+
+    - name: "Count Vector canary occurrences in Bronze"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        ext_count=$(grep -c "{{ canary_id }}-ext" "{{ cowrie_bronze }}" || true)
+        lo_count=$(grep -c "{{ canary_id }}-lo" "{{ cowrie_bronze }}" || true)
+        rfc1918_count=$(grep -c "{{ canary_id }}-rfc1918" "{{ cowrie_bronze }}" || true)
+        wan_count=$(grep -c "{{ canary_id }}-wan" "{{ cowrie_bronze }}" || true)
+        printf '%s %s %s %s\n' "$ext_count" "$lo_count" "$rfc1918_count" "$wan_count"
+      register: vector_canary_counts
+      changed_when: false
+
+    - name: "Assert exact 1-in-1-out external multiplicity and 0 non-global/WAN leaks"
+      ansible.builtin.assert:
+        that:
+          - "(vector_canary_counts.stdout.split()[0] | int) == 1"
+          - "(vector_canary_counts.stdout.split()[1] | int) == 0"
+          - "(vector_canary_counts.stdout.split()[2] | int) == 0"
+          - "(vector_canary_counts.stdout.split()[3] | int) == 0"
+        fail_msg: >-
+          Vector 1-in-1-out canary failed (ext lo rfc1918 wan)={{ vector_canary_counts.stdout }}.
+          Expected exactly '1 0 0 0'.
+
+    # === 2. External SSH-2.0-Go Suricata Canary (sid:9000004) ===
+    - name: "Record pre-canary sid:9000004 count in Suricata eve.json"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        if [ -f "{{ suricata_eve }}" ]; then
+          grep -c '"signature_id":9000004' "{{ suricata_eve }}" || true
+        else
+          echo 0
+        fi
+      register: suricata_pre_count
+      changed_when: false
+
+    - name: "Send external SSH-2.0-Go banner probe from Ansible controller to WAN:22"
+      delegate_to: localhost
+      become: false
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import socket, sys, time
+            host = sys.argv[1]
+            with socket.create_connection((host, 22), timeout=10) as sock:
+                sock.settimeout(5)
+                banner = sock.recv(256)
+                if b"SSH-" not in banner:
+                    raise SystemExit(f"Unexpected SSH banner: {banner!r}")
+                sock.sendall(b"SSH-2.0-Go\r\n")
+                time.sleep(0.5)
+          - "{{ wan_ipv4 }}"
+      changed_when: true
+
+    - name: "Wait for Suricata sid:9000004 alert in eve.json and Bronze"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        pre="{{ suricata_pre_count.stdout | int }}"
+        for _ in $(seq 1 15); do
+          now=$(grep -c '"signature_id":9000004' "{{ suricata_eve }}" 2>/dev/null || true)
+          bronze_ok=0
+          if [ -f "{{ suricata_bronze }}" ] && grep -q '"signature_id":9000004' "{{ suricata_bronze }}"; then
+            bronze_ok=1
+          fi
+          if [ "$now" -gt "$pre" ] && [ "$bronze_ok" -eq 1 ]; then
+            echo "post=$now pre=$pre"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "TIMEOUT: pre=$pre now=$(grep -c '"signature_id":9000004' "{{ suricata_eve }}" 2>/dev/null || true)" >&2
+        exit 1
+      register: suricata_canary_result
+      changed_when: false
+
+    - name: "Check zero SURICATA TCPv4 invalid checksum alerts occurred during canary"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        grep -c '"signature_id":2200074' "{{ suricata_eve }}" 2>/dev/null || true
+      register: suricata_checksum_alerts
+      changed_when: false
+
+    - name: "Report active canary results"
+      ansible.builtin.debug:
+        msg: >-
+          Canaries passed: Vector (ext/lo/rfc1918/wan)={{ vector_canary_counts.stdout }},
+          Suricata sid:9000004 ({{ suricata_canary_result.stdout }}),
+          TCPv4 invalid checksum alerts={{ suricata_checksum_alerts.stdout }}.

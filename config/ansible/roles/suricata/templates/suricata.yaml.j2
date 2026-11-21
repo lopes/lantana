@@ -3,10 +3,14 @@
 suricata-version: "7.0"
 sensor-name: "{{ inventory_hostname }}"
 
+run-as:
+  user: suricata
+  group: suricata
+
 # --- STEP 1 ---
 vars:
   address-groups:
-    HOME_NET: "[{{ network.honeywall.lan.ipv4 }}, {{ network.honeywall.lan.ipv6 }}, {{ network.honeywall.wan.ipv4.split('/')[0] }}, {{ network.honeywall.wan.ipv6.split('/')[0] }}]"
+    HOME_NET: "[{{ network.prefixes.ipv4 }}, {{ network.prefixes.ipv6 }}, {{ network.honeywall.wan.ipv4.split('/')[0] }}/32, {{ network.honeywall.wan.ipv6.split('/')[0] }}/128]"
     EXTERNAL_NET: "!$HOME_NET"
     HTTP_SERVERS: "$HOME_NET"
     SMTP_SERVERS: "$HOME_NET"
@@ -66,10 +70,14 @@ outputs:
             metadata: true
             tagged-packets: true
         - flow
+{% if suricata_filestore_enabled | default(false) | bool %}
+        - fileinfo:
+            force-hash: [sha256]
+{% endif %}
   - fast:
       enabled: false
   - pcap-log:
-      enabled: true
+      enabled: false
       filename: log.pcap
       limit: 1000mb
       max-files: 10
@@ -78,19 +86,21 @@ outputs:
       honor-pass-rules: false
   - file-store:
       version: 2
-      enabled: true
+      enabled: {{ suricata_filestore_enabled | default(false) | bool | lower }}
       dir: /var/lib/lantana/honeywall/suricata/files
-      force-filestore: true
+      force-filestore: {{ suricata_filestore_enabled | default(false) | bool | lower }}
       force-hash: [sha256]
 
 # --- STEP 3 ---
 af-packet:
+{% if lantana.mode != "single" %}
   - interface: "{{ network.honeywall.lan.interface }}"
     cluster-id: 99
     cluster-type: cluster_flow
     defrag: true
     use-mmap: true
     tpacket-v3: true
+{% endif %}
   - interface: "{{ network.honeywall.wan.interface }}"
     cluster-id: 88
     cluster-type: cluster_flow
@@ -160,11 +170,11 @@ app-layer:
       enabled: false
 asn1-max-frames: 256
 stream:
-  memcap: 1gb
-  checksum-validation: true
+  memcap: 256mb
+  checksum-validation: {{ suricata_checksum_validation | default(true) | bool | lower }}
   inline: false
   reassembly:
-    memcap: 2gb
+    memcap: 512mb
     depth: 1mb
     toserver-chunk-size: 2560
     toclient-chunk-size: 2560
@@ -172,7 +182,7 @@ stream:
 host-os-policy:
   linux: []
 defrag:
-  memcap: 512mb
+  memcap: 128mb
   hash-size: 65536
   trackers: 65535
   max-frags: 65535

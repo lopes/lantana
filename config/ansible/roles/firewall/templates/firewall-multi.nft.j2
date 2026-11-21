@@ -38,6 +38,20 @@ table inet lantana_filter {
         elements = { 53, 67, 123, 547 }
     }
 
+    set drop_log_v4 {
+        type ipv4_addr
+        size 65535
+        flags dynamic,timeout
+        timeout 5m
+    }
+
+    set drop_log_v6 {
+        type ipv6_addr
+        size 65535
+        flags dynamic,timeout
+        timeout 5m
+    }
+
     # 1. INPUT: Traffic destined for the honeywall itself
     chain input {
         type filter hook input priority 0; policy drop;
@@ -72,7 +86,7 @@ table inet lantana_filter {
         iifname $LAN_IF ip6 saddr $SENSOR_IP6 ip6 daddr $COLLECTOR_IP6 tcp dport {{ network.collectors.collector_01.port }} accept
 
         # Strict egress containment: block new outbound from sensors
-        iifname $LAN_IF oifname $WAN_IF ct state new limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP_EGRESS] " drop
+        iifname $LAN_IF oifname $WAN_IF ct state new limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP_EGRESS] " level info drop
     }
 
     # 3. OUTPUT: Traffic initiated by the honeywall itself
@@ -95,7 +109,7 @@ table inet lantana_filter {
         meta l4proto icmpv6 accept
 
         # Log drops
-        limit rate 5/minute log prefix "[LANTANA_OUTPUT_DROP] "
+        limit rate 5/minute log prefix "[LANTANA_OUTPUT_DROP] " level info
     }
 }
 
@@ -105,9 +119,11 @@ include "/etc/lantana/honeywall/nftables/sensors/*.nft"
 # --- TRAILING RULES: TSHOOT LOGGING & DROP ---
 table inet lantana_filter {
     chain input {
-        limit rate 10/minute burst 5 packets log prefix "[LANTANA_INPUT_DROP] "
+        # Per-source rate limit (2/min burst 3) + global safety cap (5/sec burst 10)
+        meta nfproto ipv4 add @drop_log_v4 { ip saddr limit rate 2/minute burst 3 packets } limit rate 5/second burst 10 packets log prefix "[LANTANA_INPUT_DROP] " level info
+        meta nfproto ipv6 add @drop_log_v6 { ip6 saddr limit rate 2/minute burst 3 packets } limit rate 5/second burst 10 packets log prefix "[LANTANA_INPUT_DROP] " level info
     }
     chain forward {
-        limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP] "
+        limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP] " level info
     }
 }

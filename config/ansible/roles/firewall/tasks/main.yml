@@ -1,5 +1,20 @@
 ---
 # --- FIREWALL LOGGING ---
+- name: "Suppress kernel info/notice firewall logs on KVM console"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-lantana-console.conf
+    content: |
+      # Managed by Ansible
+      # Keep real kernel warnings/errors (<= 4) on console while preventing
+      # level-info (6) nftables drop logs from flooding KVM /dev/tty0.
+      kernel.printk = 4 4 1 4
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Reload sysctl"
+  tags: [nftables]
+
 - name: "Setup firewall connections logging"
   become: true
   ansible.builtin.copy:
