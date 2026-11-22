@@ -653,6 +653,9 @@ def test_health_dashboard_surfaces_integrations_errors_storage_and_never_leaks_s
         assert "Discord Webhook" in body
         assert "Not Configured" in body
         assert "Rate Limit" in body
+        assert "1 provider error" in body
+        assert "1 rate-limited" in body
+        assert METRICS["Overall Status"].what in body
         assert "auth_failed" in body
         assert "HTTP 401 Unauthorized" in body
 

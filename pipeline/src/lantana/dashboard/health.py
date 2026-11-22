@@ -132,6 +132,7 @@ class HealthSnapshot:
 
     overall_status: str  # "Healthy", "Degraded", "Critical"
     overall_tone: str  # "low", "med", "high"
+    status_reasons: list[str]
     target_date: date | None
     secrets_loaded: bool
     disk: DiskHealth | None
@@ -746,21 +747,39 @@ def collect_health_snapshot(
             }
         )
 
-    # Overall status roll-up
-    has_provider_error = any(i.status == "Error" for i in integrations)
-    has_provider_warn = any(i.status == "Warning (Rate Limit)" for i in integrations)
+    # Overall status roll-up & human-readable reason summary
+    provider_errors = sum(1 for i in integrations if i.status == "Error")
+    provider_warns = sum(1 for i in integrations if i.status == "Warning (Rate Limit)")
     disk_crit = disk is not None and disk.status == "Critical"
     disk_warn = disk is not None and disk.status == "Warning"
+    reasons: list[str] = []
+    if buckets.has_critical:
+        crit_cnt = sum(int(r.get("count", 1)) for r in buckets.critical)
+        reasons.append(f"{crit_cnt} critical alert{'s' if crit_cnt != 1 else ''}")
+    if disk_crit and disk is not None:
+        reasons.append(f"disk critical ({disk.usage_pct:.1f}%)")
+    elif disk_warn and disk is not None:
+        reasons.append(f"disk warning ({disk.usage_pct:.1f}%)")
+    if provider_errors > 0:
+        reasons.append(f"{provider_errors} provider error{'s' if provider_errors != 1 else ''}")
+    if provider_warns > 0:
+        reasons.append(f"{provider_warns} rate-limited")
+    if buckets.has_warning and not provider_errors:
+        warn_cnt = sum(int(r.get("count", 1)) for r in buckets.warning)
+        reasons.append(f"{warn_cnt} warning{'s' if warn_cnt != 1 else ''}")
+
     if buckets.has_critical or disk_crit:
         overall_status, overall_tone = "Critical", "high"
-    elif buckets.has_warning or has_provider_error or has_provider_warn or disk_warn:
+    elif buckets.has_warning or provider_errors > 0 or provider_warns > 0 or disk_warn:
         overall_status, overall_tone = "Degraded", "med"
     else:
         overall_status, overall_tone = "Healthy", "low"
+        reasons.append("All checks clean")
 
     return HealthSnapshot(
         overall_status=overall_status,
         overall_tone=overall_tone,
+        status_reasons=reasons,
         target_date=target_date,
         secrets_loaded=secrets_loaded,
         disk=disk,

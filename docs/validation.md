@@ -678,7 +678,8 @@ The Vigil dashboard is the operator's personal console — **air-gapped and neve
 
 ```bash
 # Replace <PORT> + <SN01> with the values from inventories/op_<name>/group_vars/all/main.yml.
-ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>
+# You can map any free local port (e.g. -L 1313:127.0.0.1:8501 -> http://127.0.0.1:1313).
+ssh -p <PORT> -L 8501:127.0.0.1:8501 lantana@<SN01>
 ```
 
 **Collector (inside that SSH session, or a separate one):** launch the Vigil console.
@@ -699,7 +700,9 @@ Then on your workstation, open <http://localhost:8501> and verify the window pic
 - **Behavioral Progression (`/progression`):** Escalation funnel (Scan / Credential / Authenticated / Interactive), Stage vs Time scatter, and multi-day progression summary across the selected date window.
 - **Detection Findings (`/findings`):** Real Suricata detection rules (excluding decoder SIDs `2200000-2260999`) — top rules bar chart and Pareto concentration chart.
 - **STIX Export (`/stix`):** Live bundle composition tiles mirroring `intel/stix.py`, one-click `/download/stix` (`.json`), and `/download/iocs.csv.gz` raw IOC export.
-- **System Health (`/health`):** 3rd-party API integration config and last-run status (`OK`, `Warning (Rate Limit)`, `Error`, `Not Configured`), scheduled pipeline unit timings, Bronze/Silver dataset liveness, live non-root `statvfs` disk headroom, per-tier datalake storage footprint, and recent sanitized error messages (zero secret values exposed).
+- **System Health (`/health`):** 3rd-party API integration config and last-run status, scheduled pipeline unit timings, Bronze/Silver dataset liveness, live non-root `statvfs` disk headroom, per-tier datalake storage footprint, and recent sanitized error messages (zero secret values exposed).
+  - **Overall Status meanings:** **`Healthy`** = zero criticals, warnings, rate-limits, and usable disk `<= 70%`; **`Degraded`** = pipeline still wrote data, but at least one non-critical issue is listed below (e.g., provider `auth_failed`, `Warning (Rate Limit)` / cooldown, `Silent (1d)`, or disk `70–80%`); **`Critical`** = data capture or retention is endangered (`pipeline_starved`, `Silent (2+d)`, `transform_failed`, failed systemd unit, or disk `> 80%`).
+  - **Integration & alert labels:** **`Not Configured`** means an optional key is intentionally omitted and never degrades Overall Status; **`C · W · I`** on the alerts card counts **Critical**, **Warning**, and routine **Info** (e.g. free-tier `rate_limit`) events for the latest partition.
 
 ### 7.4 Multi-day progression
 
@@ -723,6 +726,6 @@ With `read_gold_range()`, the Vigil dashboard aggregates `behavioral_progression
 
 ## Post-v1.5 Analytical Follow-Ups
 
-The v1.5 release ships self-owned pinned GHCR honeypot images, Dionaea `lantana_json` (attributed binaries, download URLs, MSSQL/MySQL `sql_command`, structured HTTP POST bodies), monotonic behavioral-anchored risk scoring, durable STIX 2.1 IOCs (`extracted_iocs`), stateless D-1/D-2 dead-man's-switch alerting, decoupled 14d/180d retention, and the 8-view air-gapped Vigil dashboard with 5 date windows. Remaining roadmap items tracked on the [README Roadmap](/README.md#roadmap):
+The v1.5 release ships self-owned pinned GHCR honeypot images, Dionaea `lantana_json` (attributed binaries, download URLs, MSSQL/MySQL `sql_command`, structured HTTP POST bodies), monotonic behavioral-anchored risk scoring, durable STIX 2.1 IOCs (`extracted_iocs`), stateless D-1/D-2 dead-man's-switch alerting, decoupled 14d/180d retention, and the 9-view air-gapped Vigil dashboard (including `/health`) with 5 date windows. Remaining roadmap items tracked on the [README Roadmap](/README.md#roadmap):
 
 - **Lossless multi-day slow-burn detection**: streaming or per-day stage-timestamp persistence to replace the window-rollup proxy without risking collector OOMs.

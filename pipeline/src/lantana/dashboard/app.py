@@ -1325,16 +1325,17 @@ def _render_health_view(
     info_n = sum(int(r.get("count", 1)) for r in snap.buckets.info)
     alert_tone = "high" if crit_n > 0 else ("med" if warn_n > 0 else "low")
 
+    status_sub = " · ".join(snap.status_reasons)
+    if snap.target_date is not None:
+        status_sub = f"{status_sub} ({snap.target_date.isoformat()})"
+
     kpis = [
         KpiCard(
             "Overall Status",
             snap.overall_status,
-            sub=(
-                f"Latest partition: {snap.target_date.isoformat()}"
-                if snap.target_date
-                else "No Gold partitions yet"
-            ),
+            sub=status_sub,
             tone=snap.overall_tone,
+            metric_key="Overall Status",
         ),
         KpiCard(
             "Usable Disk",
@@ -1353,12 +1354,14 @@ def _render_health_view(
                 + ("…" if len(unconfigured_names) > 2 else "")
             ),
             tone="low" if not unconfigured_names else "info",
+            metric_key="Integrations Active",
         ),
         KpiCard(
             "Latest Run Alerts",
             f"{crit_n}C · {warn_n}W · {info_n}I",
             sub="Critical · Warning · Info",
             tone=alert_tone,
+            metric_key="Latest Run Alerts",
         ),
         KpiCard(
             "Enrichment Cache",

@@ -55,9 +55,9 @@ sudo -u $CONTAINER_USER $CONTAINER_ENV journalctl --user -u cowrie.service -f
 
 When debugging volume mounts in the `.container` files, verify the correct flags are applied based on the use case:
 
-- `UserNS=keep-id`: Maps the user running the container to the exact same UID inside the container. Essential for honeypots that write logs directly to host-mounted directories.
+- `UserNS=keep-id:uid=<N>,gid=<N>`: Maps the host sensor user (`stigma`) to the container's worker UID (`999` for Cowrie) so host-mounted logs and artifacts stay cleanly owned by `stigma`.
 - `:Z`: SELinux/AppArmor private container security label. Prevents cross-container data leakage.
-- `:U`: Podman automatically `chown`s the source directory on the host to match the container's internal UID/GID.
+- **Avoid `,U` on Lantana sensor bind mounts:** `,U` recursively `chown`s the host directory at container start, which races Dionaea's entrypoint and wipes host POSIX ACLs (`u:vector:rX`, `u:nectar:rwX`). Both Cowrie and Dionaea omit `,U` intentionally — see [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints).
 
 ---
 
@@ -302,11 +302,14 @@ Suricata monitors the honeypot interfaces to provide out-of-band detection and t
 
 ### Validating Configuration Syntax
 
-Before restarting Suricata, always test the YAML configuration and rule syntax:
+Before restarting Suricata, always test the YAML configuration and rule syntax with **`-l /tmp`**:
 
 ```sh
-sudo suricata -T -c /etc/suricata/suricata.yaml
+sudo suricata -T -c /etc/suricata/suricata.yaml -l /tmp
 ```
+
+> [!WARNING]
+> Never omit `-l /tmp` when running `suricata -T` as `root`. Without `-l /tmp`, Suricata creates `/var/log/lantana/honeywall/suricata/eve.json` owned by `root:root`, causing the non-root `suricata.service` (`User=suricata`) to fail with `Permission denied` on `eve-log` and emit zero alerts. If that happens, fix ownership with `sudo chown -R suricata:suricata /var/log/lantana/honeywall/suricata && sudo systemctl restart suricata`.
 
 ### Live Reloading Rules
 
@@ -435,7 +438,7 @@ ssh -o PubkeyAuthentication=no -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
 
 ## Third-Party Integrations
 
-Lantana's enrichment depends on four HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](/docs/integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](/docs/pipeline.md#31-bronze-to-silver-daily-enrichment).
+Lantana's enrichment depends on four optional HTTP APIs (AbuseIPDB, Shodan, VirusTotal / GTI, GreyNoise) and one local MMDB dataset (MaxMind GeoLite2). Start with Vigil's **System Health (`/health`)** view for an at-a-glance summary of configured vs unconfigured keys, last-run errors, cooldown skip-windows, and on-disk GeoLite2 MMDB checks before dropping to CLI probes or `jq`. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](/docs/integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](/docs/pipeline.md#31-bronze-to-silver-daily-enrichment).
 
 ### Probe scripts
 
@@ -477,7 +480,7 @@ Actual `error_type` values written by the runner (`_classify_http_error` + trans
 | `rate_limit` | HTTP `429` — provider quota window exhausted | Not retried (`is_retryable_http_error` excludes 429 so `consecutive = 5` / `cumulative = 30` circuit breakers trip immediately). Retry after the provider window resets (cache covers 7d benign / 60–180d malicious — see [`docs/pipeline.md`](/docs/pipeline.md#31-bronze-to-silver-daily-enrichment)). |
 | `auth_failed` | HTTP `401` / `403` — bad or revoked API key | Re-check `vault_apikey_<service>` and re-run `deploy_single.yml` with the `collector` tag. Fails fast on first hit (`CIRCUIT_BREAKER_AUTH_FAILED_THRESHOLD = 1`). |
 | `not_found` | HTTP `404` uncaught at provider layer | Logged at debug level (routine "IOC not in upstream dataset"). |
-| `http_error` | Other HTTP `4xx` (e.g. `400` bad request / missing param) | Fails fast without retry. Check the upstream API docs linked in `integrations.md` for contract changes. |
+| `http_4xx` | Other HTTP `4xx` (e.g. `400` bad request / missing param) | Fails fast without retry. Check the upstream API docs linked in `integrations.md` for contract changes. |
 | `server_error` | HTTP `5xx` — provider-side outage | Retried 3× with exponential backoff before recording. Confirm with `probe-enrichment.py --provider <name>` and wait out upstream recovery. |
 | `timeout` | `httpx.TimeoutException` — request or connect timeout | Transient. Retried 3× with exponential backoff before recording; if sustained, check collector egress rules. |
 | `network_error` | `httpx.RequestError` / transport error (DNS, TLS, reset) | Retried 3× with exponential backoff before recording; verify outbound connectivity from the collector. |
@@ -487,7 +490,7 @@ The runner is designed so that **one provider failing never blocks the others**:
 
 ### MaxMind silent failure (`.geo.*` fields empty)
 
-If the dashboard's geographic page is empty or all attackers show "unknown country":
+If Vigil's `/geography` view shows the **MaxMind GeoLite2 Not Populated** warning banner (or `/health` shows MaxMind as `Not Configured` / `Error`):
 
 1. **Check the vault has the key.** `ansible-vault view inventories/op_<name>/group_vars/all/vault.yml | grep maxmind`. If `vault_apikey_maxmind` is missing or empty, Ansible silently skipped the MMDB download — that's by design but it's the most common cause.
 2. **Check the MMDBs exist on the collector.** `ls -la /var/lib/lantana/collector/geoip/` should show two ~70 MB and ~10 MB files dated within the last month.

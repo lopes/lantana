@@ -59,7 +59,7 @@ Free IP→geography and IP→ASN database from MaxMind. Used by **Vector** (not 
 | `geo.asn`          | `autonomous_system_number`   | From ASN MMDB |
 | `geo.isp`          | `autonomous_system_organization` | From ASN MMDB |
 
-**If the vault key is missing.** Ansible's `when:` guards skip the download silently. Vector starts cleanly but every event is missing `.geo.*` fields. Symptom: dashboard shows all attacks as "unknown country," gold geographic_summary table is empty. Fix: add `vault_apikey_maxmind` to the vault and re-run the collector role.
+**If the vault key is missing.** Ansible's `when:` guards skip the download silently. Vector starts cleanly, but every event omits `.geo.*` fields. Symptom: Vigil's `/geography` view displays a **MaxMind GeoLite2 Not Populated** warning callout, `/health` marks MaxMind as `Not Configured`, and the gold `geographic_summary` table stays empty. Fix: add `vault_apikey_maxmind` to the vault and re-run the collector role.
 
 ### AbuseIPDB
 
@@ -191,6 +191,8 @@ The vault key `vault_apikey_<service>` controls per-provider behaviour. The rend
 | Line `"<key>"` | authenticated | enabled only when `gti_enabled: true` is also set in inventory | community endpoint, key sent in header (higher rate limit) | MMDBs downloaded + refreshed monthly |
 
 The only way to disable GreyNoise is to **omit the vault line entirely** — its unauthenticated community mode takes over when the key is `""`. MaxMind has no unauthenticated download mode, so omitting or blanking the key disables it.
+
+You can inspect every integration's active mode (`Configured`, `Configured (GTI)`, `Anonymous (Free)`, `Not Configured`) and latest run status (`OK`, `Warning (Rate Limit)`, `Error`) without opening `secrets.json` via Vigil's **System Health (`/health`)** view. Unset optional integrations show `Not Configured` and do not degrade Overall Status.
 
 ---
 
@@ -354,4 +356,4 @@ GreyNoise returns HTTP 404 for IPs not in its dataset rather than an empty 200. 
 
 ### MaxMind silent skip on missing license key
 
-If `vault_apikey_maxmind` is omitted or empty, Ansible's `when:` guards silently skip the MMDB download, extraction, ownership, and cron-update tasks. Vector starts fine — it just emits empty `.geo.*` fields for every event. Symptom: dashboard's geographic page shows "unknown" for every attacker, gold's `geographic_summary` is empty, STIX bundles lack geo context. Fix: add the vault key and re-run `deploy_single.yml` with the `vector` or `collector` tag.
+If `vault_apikey_maxmind` is omitted or empty, Ansible's `when:` guards silently skip the MMDB download, extraction, ownership, and cron-update tasks. Vector starts fine — it just emits empty `.geo.*` fields for every event. Symptom: Vigil's `/geography` view shows the **MaxMind GeoLite2 Not Populated** warning callout, `/health` reports MaxMind as `Not Configured`, gold's `geographic_summary` is empty, and STIX bundles lack geo context. Fix: add `vault_apikey_maxmind` to the vault and re-run `deploy_single.yml` with the `vector` or `collector` tag.

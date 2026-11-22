@@ -446,4 +446,19 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         why="avoids burning scarce free-tier API quota on repeat scanners and known hashes.",
         how="read-only SQLite count where expires_at > now() across ip/hash/url/domain.",
     ),
+    "Overall Status": WhatWhyHow(
+        what="Healthy (all clear), Degraded (non-critical issues below), or Critical (data loss).",
+        why="distinguishes routine rate-limits/warnings from outages that stop telemetry capture.",
+        how="Critical on starvation/2+d silence/unit fail/disk>80%; Degraded on warn/429/disk>70%.",
+    ),
+    "Integrations Active": WhatWhyHow(
+        what="count of 3rd-party APIs configured in secrets.json out of 6 optional services.",
+        why="unset optional keys show Not Configured and never degrade Overall Status.",
+        how="boolean presence check on secrets.json + on-disk MaxMind MMDB verification.",
+    ),
+    "Latest Run Alerts": WhatWhyHow(
+        what="latest-partition alert totals split into C (Critical), W (Warning), and I (Info).",
+        why="separates urgent failures (C) and key/network errors (W) from routine 429s (I).",
+        how="enrichment_errors.json + evaluate_liveness_alerts() classified via notify/alerts.py.",
+    ),
 }
