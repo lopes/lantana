@@ -52,7 +52,7 @@ jobs:
           echo "epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Build local candidate image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: containers/cowrie
           file: containers/cowrie/Containerfile
@@ -138,7 +138,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push verified image to GHCR
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: containers/cowrie
           file: containers/cowrie/Containerfile
