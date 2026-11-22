@@ -27,12 +27,12 @@ The platform covers the full lifecycle: controlled exposure → structured inges
   <table>
     <tr>
       <td align="center">
-        <img src="assets/lantana-screenshot-dashboard-overview.png" alt="Vigil dashboard — overview page" width="480">
-        <br><sub>Vigil dashboard — overview</sub>
+        <img src="assets/lantana-screenshot-dashboard-overview.png" alt="Vigil console — Overview view" width="480">
+        <br><sub>Vigil console — Overview</sub>
       </td>
       <td align="center">
-        <img src="assets/lantana-screenshot-dashboard-geography.png" alt="Dashboard — geography page" width="480">
-        <br><sub>Dashboard — geography</sub>
+        <img src="assets/lantana-screenshot-dashboard-attackers.png" alt="Vigil console — Attackers and Geographic Origins view" width="480">
+        <br><sub>Vigil console — Attackers &amp; Geographic Origins</sub>
       </td>
     </tr>
   </table>
@@ -45,28 +45,18 @@ The platform covers the full lifecycle: controlled exposure → structured inges
   <table>
     <tr>
       <td align="center">
-        <img src="assets/lantana-screenshot-dashboard-ipreputation.png" alt="Dashboard — IP reputation page" width="380">
-        <br><sub>Dashboard — IP reputation</sub>
+        <img src="assets/lantana-screenshot-dashboard-behavior.png" alt="Vigil console — Behavior, Campaigns, and IDS Findings view" width="380">
+        <br><sub>Vigil console — Behavior &amp; IDS Findings</sub>
       </td>
       <td align="center">
-        <img src="assets/lantana-screenshot-dashboard-progression.png" alt="Dashboard — behavioral progression page" width="380">
-        <br><sub>Dashboard — behavioral progression</sub>
-      </td>
-    </tr>
-    <tr>
-      <td align="center">
-        <img src="assets/lantana-screenshot-dashboard-findings.png" alt="Dashboard — findings page" width="380">
-        <br><sub>Dashboard — findings</sub>
-      </td>
-      <td align="center">
-        <img src="assets/lantana-screenshot-dashboard-credentials.png" alt="Dashboard — credentials page" width="380">
-        <br><sub>Dashboard — credentials</sub>
+        <img src="assets/lantana-screenshot-dashboard-intel.png" alt="Vigil console — Intel and STIX 2.1 Export view" width="380">
+        <br><sub>Vigil console — Intel &amp; STIX Export</sub>
       </td>
     </tr>
     <tr>
       <td align="center">
-        <img src="assets/lantana-screenshot-dashboard-stix.png" alt="Dashboard — STIX export page" width="380">
-        <br><sub>Dashboard — STIX export</sub>
+        <img src="assets/lantana-screenshot-dashboard-health.png" alt="Vigil console — System Health view" width="380">
+        <br><sub>Vigil console — System Health</sub>
       </td>
       <td align="center">
         <img src="assets/lantana-screenshot-report-header.png" alt="Discord report — embed header" width="380">
@@ -166,7 +156,7 @@ lantana/
 | [Integrations](/docs/integrations.md) | Third-party threat-intel providers: endpoints, auth, rate limits, field extraction, live-probe workflow |
 | [Validation](/docs/validation.md) | Post-deploy verification: protocol smoke tests + day-by-day pipeline/report/dashboard checks |
 | [Risk Scoring](/docs/risk-scoring.md) | Composite + per-provider risk score formula, RIOT short-circuit, decomposition |
-| [Honeypots](/docs/honeypots.md) | Cowrie + Dionaea: per-honeypot config model, capability allowlist, persona drift notes |
+| [Honeypots](/docs/honeypots.md) | Cowrie + Dionaea: self-owned GHCR images, non-root Quadlet model, per-service catalog, persona drift notes |
 | [Troubleshooting](/docs/troubleshooting.md) | Common issues and fixes (Dionaea startup, nftables, Vector pipeline) |
 | [Glossary](/docs/glossary.md) | Terminology and definitions |
 
@@ -182,13 +172,8 @@ For the full rationale, see [docs/architecture.md](/docs/architecture.md).
 
 ## Roadmap
 
-Tracked work across v1.5 and future cuts. Boxes get checked as items land.
+Planned future work beyond v1.5:
 
-- [x] **Dionaea download URL + per-session `src_ip` attribution → pipeline.** Shipped in v1.5 via the custom `lantana_json` ihandler in `ghcr.io/lopes/lantana-dionaea:v1.5`, subscribing to `dionaea.download.complete.{unique,again}` and emitting `dionaea.binary.captured` events with `src_ip`, SHA-256 `shasum`, and `download_url` directly into `dionaea.json` (with the `00:10 UTC` POSIX ACL + date-scoped disk hash scan kept as a deduplicated fallback).
-- [x] **Dionaea MSSQL/MySQL command bodies & HTTP POST capture → pipeline.** Shipped in v1.5 via `lantana_json` (`sql_command` on MSSQL/MySQL) and `patch_http.py` (structured HTTP POST/JSON payload capture without leaking `http-*.tmp` files).
-- [x] **SHA-256 hash integration for dionaea binaries.** Implemented via `lantana_json` attributed bronze events plus the `00:10 UTC` `lantana-grant-read` POSIX ACL fallback, VirusTotal hash enrichment (`vt_file_*` + `vhash` clustering), gold `extracted_iocs`, the daily brief, and STIX 2.1 file indicators.
-- [x] **Self-built pinned honeypot images.** Shipped in v1.5: `containers/{cowrie,dionaea}/` built by GitHub Actions from pinned upstream git commits and published to `ghcr.io/lopes/lantana-{cowrie,dionaea}:v1.5`, locking in-container UIDs (`999`/`1000`), baking `dionaea.cfg` (`processors=filter_emu`, zero `bistreams`), and preserving host POSIX ACLs across restarts.
-- [x] **Dashboard date-range selector & air-gapped Vigil console.** Shipped in v1.5: replaced Streamlit with a self-contained, zero-CDN `vigil`-themed stdlib HTTP console (`127.0.0.1:8501`) supporting 5 date windows (Day, 7d, 30d, Custom range, All) across 5 CTI-grouped views (`Overview`, `Attackers`, `Behavior`, `Intel & Export`, `Health`), dropping 25 runtime packages.
 - [ ] **Multi-day slow-burn detection — proper version.** The v1.0.0 multi-day progression gold table was retired (it OOM'd the 7.6 GB collector at a 7-day silver lookback). The dashboard's Multi-Day Progression section now derives a multi-day flag from daily `behavioral_progression` gold across the selected window — cheap, but lossy: it can't see the silver-only per-stage timestamps the old logic used (e.g. day of first credential attempt vs day of first interactive command), so "Multi-Day IPs" is a permissive proxy for slow-burn behaviour rather than a stage-progression signal. A proper rewrite would either (a) compute per-day per-stage timestamps at silver→gold time and store them in the daily `behavioral_progression` partition, then aggregate at the dashboard, or (b) stream the multiday computation per-day to avoid the silver concat. Either approach keeps the slow-burn detection lossless without the OOM risk.
 
 ---
