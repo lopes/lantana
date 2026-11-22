@@ -301,3 +301,237 @@ class TestGenerateBundle:
                 _make_progression(),
                 _make_clusters(),
             )
+
+
+class TestStixV15DurablePivot:
+    """v1.5 STIX 2.1 pivot: durable extracted_iocs, 7d inbound valid_until, behavioral gating,
+    zero bogus HTTP patterns, zero benign-scanner Threat Actors, and CIDR/hostname leak checks."""
+
+    def test_durable_extracted_iocs_emit_all_five_types_and_vhash_gti_actors(self) -> None:
+        from lantana.transform.metrics import EXTRACTED_IOCS_SCHEMA
+
+        extracted = pl.DataFrame(
+            [
+                {
+                    "ioc_type": "malware_hash",
+                    "ioc_value": "a" * 64,
+                    "vhash": "014056655d155515",
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 3,
+                    "unique_src_ips": 2,
+                    "vt_status": "found",
+                    "vt_malicious": 35,
+                    "gti_verdict": "VERDICT_MALICIOUS",
+                    "gti_score": 90,
+                    "malware_family": "mirai",
+                    "actor_associations": "UNC9999",
+                },
+                {
+                    "ioc_type": "c2_ip",
+                    "ioc_value": "198.51.100.88",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 1,
+                    "unique_src_ips": 1,
+                    "vt_status": "found",
+                    "vt_malicious": 5,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                },
+                {
+                    "ioc_type": "stager_url",
+                    "ioc_value": "http://drop.example.org/stage.sh",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 2,
+                    "unique_src_ips": 1,
+                    "vt_status": "not_found",
+                    "vt_malicious": None,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                },
+                {
+                    "ioc_type": "stager_domain",
+                    "ioc_value": "drop.example.org",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 2,
+                    "unique_src_ips": 1,
+                    "vt_status": "found",
+                    "vt_malicious": 4,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                },
+                {
+                    "ioc_type": "ssh_key",
+                    "ioc_value": "ssh-ed25519 SHA256:syntheticFingerprintValue12345",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 1,
+                    "unique_src_ips": 1,
+                    "vt_status": None,
+                    "vt_malicious": None,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                },
+            ],
+            schema=EXTRACTED_IOCS_SCHEMA,
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            _reporting(),
+            _make_reputation(),
+            _make_progression(),
+            _make_clusters(),
+            extracted_iocs=extracted,
+        )
+        patterns = [o.pattern for o in bundle.objects if o.type == "indicator"]
+        assert any("file:hashes.'SHA-256'" in p for p in patterns)
+        assert any("ipv4-addr:value = '198.51.100.88'" in p for p in patterns)
+        assert any("url:value = 'http://drop.example.org/stage.sh'" in p for p in patterns)
+        assert any("domain-name:value = 'drop.example.org'" in p for p in patterns)
+        assert any("x-lantana-ssh-key:fingerprint" in p for p in patterns)
+
+        hash_ind = next(
+            o for o in bundle.objects if o.type == "indicator" and o.name == f"file-{'a' * 12}"
+        )
+        assert "vhash:014056655d155515" in hash_ind.labels
+        actors = [o for o in bundle.objects if o.type == "threat-actor"]
+        assert len(actors) == 1
+        assert actors[0].name == "UNC9999"
+
+    def test_inbound_indicators_have_7d_valid_until_and_exclude_scanners_riot_and_benign(
+        self,
+    ) -> None:
+        from datetime import timedelta
+
+        rep = pl.DataFrame(
+            {
+                "src_endpoint_ip": [
+                    "203.0.113.50",  # interactive attacker -> INCLUDE
+                    "203.0.113.51",  # pure scanner (behavioral=0) -> EXCLUDE
+                    "203.0.113.52",  # RIOT -> EXCLUDE
+                    "203.0.113.53",  # GreyNoise benign (Censys) -> EXCLUDE
+                ],
+                "risk_score": [85.0, 50.0, 60.0, 55.0],
+                "behavioral_risk_score": [75.0, 0.0, 50.0, 50.0],
+                "enrichment_risk_score": [95.0, 100.0, 0.0, 0.0],
+                "greynoise_riot": [False, False, True, False],
+                "greynoise_class": ["malicious", "malicious", "malicious", "benign"],
+                "greynoise_name": ["Mirai", "Scanner", "Cloudflare", "Censys"],
+                "total_events": [20, 5, 5, 5],
+                "auth_attempts": [5, 0, 1, 1],
+                "auth_successes": [1, 0, 1, 1],
+                "commands_executed": [3, 0, 1, 1],
+                "findings_triggered": [0, 0, 0, 0],
+                "first_seen": [_ts(0)] * 4,
+                "last_seen": [_ts(5)] * 4,
+            }
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            _reporting(),
+            rep,
+            _make_progression(),
+            pl.DataFrame(),
+        )
+        inds = [o for o in bundle.objects if o.type == "indicator"]
+        assert [i.name for i in inds] == ["203.0.113.50"]
+        assert inds[0].valid_until == datetime(2026, 4, 25, tzinfo=UTC) + timedelta(days=7)
+        assert "Mirai" in inds[0].labels
+        assert "Censys" not in bundle.serialize()
+
+    def test_detection_findings_do_not_emit_bogus_http_pattern(self) -> None:
+        detection = pl.DataFrame(
+            {
+                "finding_title": ["ET SCAN Potential SSH Scan"],
+                "finding_uid": ["2001219"],
+                "unique_ips": [25],
+                "event_count": [100],
+                "category": ["Attempted Information Leak"],
+                "first_seen": [_ts(0)],
+            }
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            _reporting(),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            detection=detection,
+        )
+        assert "http-request-ext" not in bundle.serialize()
+        assert [o for o in bundle.objects if o.type == "indicator"] == []
+
+    def test_assert_no_infra_leaks_catches_cidr_variant_and_hostname(self) -> None:
+        import pytest
+
+        reporting = _reporting()
+        reporting.redact.infrastructure_hostnames = ["vps-secret-node.example.net"]
+
+        # Unlisted member inside 10.50.99.0/24 CIDR
+        cidr_rep = _make_reputation().with_columns(
+            pl.Series("src_endpoint_ip", ["10.50.99.222", "198.51.100.22", "192.0.2.99"])
+        )
+        with pytest.raises(ValueError, match="Infrastructure IP leak") as exc_cidr:
+            generate_bundle(
+                date(2026, 4, 25), reporting, cidr_rep, _make_progression(), _make_clusters()
+            )
+        assert "10.50.99.222" not in str(exc_cidr.value)
+
+        # Hostname leaked inside campaign cluster username
+        host_clusters = _make_clusters().with_columns(
+            pl.Series("shared_username", ["vps-secret-node.example.net"])
+        )
+        with pytest.raises(ValueError, match="Infrastructure hostname leak") as exc_host:
+            generate_bundle(
+                date(2026, 4, 25), reporting, _make_reputation(), _make_progression(), host_clusters
+            )
+        assert "vps-secret-node.example.net" not in str(exc_host.value)
+
+    def test_naive_datetime_first_seen_does_not_raise_typeerror(self) -> None:
+        """Tz-naive first_seen values (production mixed-dataset Parquet) normalize to UTC."""
+        naive_ts = datetime(2026, 4, 25, 14, 0, 1)  # intentionally tz-naive
+        rep = _make_reputation().with_columns(pl.lit(naive_ts).alias("first_seen"))
+        clusters = _make_clusters().with_columns(pl.lit(naive_ts).alias("first_seen"))
+        extracted = pl.DataFrame(
+            {
+                "ioc_type": ["c2_ip", "malware_hash"],
+                "ioc_value": ["203.0.113.88", "a" * 64],
+                "vhash": [None, None],
+                "first_seen": [naive_ts, naive_ts],
+                "last_seen": [naive_ts, naive_ts],
+                "event_count": [1, 1],
+                "unique_src_ips": [1, 1],
+                "vt_status": [None, None],
+                "vt_malicious": [None, None],
+                "gti_verdict": [None, None],
+                "gti_score": [None, None],
+                "malware_family": [None, None],
+                "actor_associations": [None, None],
+            }
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            _reporting(),
+            rep,
+            _make_progression(),
+            clusters,
+            extracted_iocs=extracted,
+        )
+        inds = [o for o in bundle.objects if o.type == "indicator"]
+        assert len(inds) == 4
+        assert all(ind.valid_until > ind.valid_from for ind in inds)

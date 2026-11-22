@@ -1,0 +1,121 @@
+# Self-owned pinned Dionaea malware honeypot image for Lantana.
+# Upstream: https://github.com/DinoTools/dionaea (GPL-2.0-or-later)
+#
+# In-container UID/GID (1000:1000) is a repo constant.
+# Bakes dionaea.cfg (processors=filter_emu, permanently disabling bistreams),
+# patches http.py to emit structured HTTP request incidents (including bounded
+# POST bodies), and ships the lantana_json ihandler for rich JSON telemetry
+# with per-session SHA-256 malware attribution.
+
+ARG DIONAEA_REPO=https://github.com/DinoTools/dionaea.git
+ARG DIONAEA_REF=4e459f1b672a5b4c1e8335c0bff1b93738019215
+
+FROM ubuntu:18.04
+
+ARG DIONAEA_REPO
+ARG DIONAEA_REF
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        check \
+        cmake \
+        cython3 \
+        git \
+        libcurl4-openssl-dev \
+        libemu-dev \
+        libev-dev \
+        libglib2.0-dev \
+        libloudmouth1-dev \
+        libnetfilter-queue-dev \
+        libpcap-dev \
+        libssl-dev \
+        libtool \
+        libudns-dev \
+        python3 \
+        python3-bson \
+        python3-dev \
+        python3-yaml && \
+    git init /code && \
+    cd /code && \
+    git remote add origin "${DIONAEA_REPO}" && \
+    git fetch --depth 1 origin "${DIONAEA_REF}" && \
+    git checkout --detach FETCH_HEAD && \
+    mkdir -p /code/build && \
+    cd /code/build && \
+    cmake -DCMAKE_INSTALL_PREFIX:PATH=/opt/dionaea /code && \
+    make -j"$(nproc)" && \
+    make install && \
+    addgroup --gid 1000 dionaea && \
+    adduser --system --no-create-home --shell /bin/bash --uid 1000 \
+        --disabled-password --disabled-login --gid 1000 dionaea && \
+    chown -R dionaea:dionaea /opt/dionaea/var && \
+    apt-get purge -y \
+        build-essential \
+        check \
+        cmake \
+        cython3 \
+        git \
+        libcurl4-openssl-dev \
+        libemu-dev \
+        libev-dev \
+        libglib2.0-dev \
+        libloudmouth1-dev \
+        libnetfilter-queue-dev \
+        libpcap-dev \
+        libssl-dev \
+        libtool \
+        libudns-dev \
+        python3-dev && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libcurl4 \
+        libemu2 \
+        libev4 \
+        libglib2.0-0 \
+        libnetfilter-queue1 \
+        libpcap0.8 \
+        libpython3.6 \
+        libudns0 && \
+    apt-get autoremove --purge -y && \
+    apt-get clean && \
+    rm -rf /code /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+COPY dionaea.cfg /opt/dionaea/etc/dionaea/dionaea.cfg
+COPY lantana_json.py /opt/dionaea/lib/dionaea/python/dionaea/lantana_json.py
+COPY patch_http.py /tmp/patch_http.py
+COPY entrypoint.sh /usr/local/sbin/entrypoint.sh
+
+RUN python3 /tmp/patch_http.py && \
+    rm -f /tmp/patch_http.py && \
+    chmod 0755 /usr/local/sbin/entrypoint.sh && \
+    chmod 0644 /opt/dionaea/etc/dionaea/dionaea.cfg \
+               /opt/dionaea/lib/dionaea/python/dionaea/lantana_json.py && \
+    python3 -m py_compile \
+        /opt/dionaea/lib/dionaea/python/dionaea/http.py \
+        /opt/dionaea/lib/dionaea/python/dionaea/lantana_json.py
+
+ARG SOURCE_DATE_EPOCH
+
+LABEL org.opencontainers.image.title="Lantana Dionaea Malware Honeypot" \
+      org.opencontainers.image.description="Pinned Dionaea honeypot built from upstream DinoTools/dionaea (GPL-2.0-or-later) with bistreams disabled and rich lantana_json ihandler." \
+      org.opencontainers.image.source="https://github.com/lopes/lantana" \
+      org.opencontainers.image.url="https://github.com/DinoTools/dionaea" \
+      org.opencontainers.image.vendor="Lantana (upstream: DinoTools/dionaea)" \
+      org.opencontainers.image.licenses="GPL-2.0-or-later" \
+      org.opencontainers.image.revision="${DIONAEA_REF}" \
+      org.opencontainers.image.base.name="ubuntu:18.04" \
+      org.opencontainers.image.created="${SOURCE_DATE_EPOCH}"
+
+USER 1000:1000
+WORKDIR /opt/dionaea
+
+RUN test "$(id -u)" = "1000" && test "$(id -g)" = "1000"
+
+ENTRYPOINT ["/usr/local/sbin/entrypoint.sh"]

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build gold tables from live VPS data and launch the Streamlit dashboard.
+"""Build all 7 Gold tables from local/fetched VPS data and launch the Vigil dashboard.
 
 Arguments:
     --live-root  Path to fetched VPS data (default: pipeline/tests/fixtures/live)
     --wan-ip     Real WAN IP address to scrub as infrastructure (repeatable)
+    --port       Local HTTP port on 127.0.0.1 (default: 8501)
 
 Example:
     cd pipeline && uv run python ../scripts/run-dashboard-local.py
@@ -14,8 +15,6 @@ Example:
 from __future__ import annotations
 
 import argparse
-import os
-import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -33,12 +32,14 @@ from lantana.common.redact import (
     redact_infrastructure_ips,
     validate_no_leaks,
 )
+from lantana.dashboard.app import serve
 from lantana.models.normalize import normalize_dataset
 from lantana.transform.metrics import (
     compute_behavioral_progression,
     compute_campaign_clusters,
     compute_daily_summary,
     compute_detection_findings,
+    compute_extracted_iocs,
     compute_geographic_summary,
     compute_ip_reputation,
 )
@@ -77,8 +78,6 @@ OPTIONAL_COLS: dict[str, pl.DataType] = {
     "file_path": pl.Utf8(),
 }
 
-# Path roots set from CLI args in main(); declared here so module-level
-# function bodies that reference them type-check cleanly.
 LIVE_ROOT: Path = Path()
 BRONZE_ROOT: Path = Path()
 SILVER_ROOT: Path = Path()
@@ -181,12 +180,17 @@ def build_gold(target_date: date, redact_config: RedactionConfig) -> None:
             write_gold_table(result, name, target_date, gold_root=GOLD_ROOT)
             print(f"    gold/{name}: {len(result):,} rows")
 
+    iocs = compute_extracted_iocs(silver, redact_config=redact_config)
+    if not iocs.is_empty():
+        write_gold_table(iocs, "extracted_iocs", target_date, gold_root=GOLD_ROOT)
+        print(f"    gold/extracted_iocs: {len(iocs):,} rows")
+
 
 def main() -> None:
     global LIVE_ROOT, BRONZE_ROOT, SILVER_ROOT, GOLD_ROOT
 
     parser = argparse.ArgumentParser(
-        description="Build gold tables from live VPS data and launch Streamlit dashboard",
+        description="Build all 7 gold tables from live VPS data and launch Vigil dashboard",
     )
     parser.add_argument(
         "--live-root",
@@ -199,6 +203,12 @@ def main() -> None:
         action="append",
         default=[],
         help="Real WAN IP address to scrub as infrastructure (repeatable).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8501,
+        help="Local HTTP port on 127.0.0.1 (default: 8501).",
     )
     args = parser.parse_args()
 
@@ -227,27 +237,9 @@ def main() -> None:
         build_gold(d, redact_config)
 
     print()
-    print("Launching Streamlit dashboard (127.0.0.1 only) ...")
+    print(f"Launching air-gapped Vigil dashboard on http://127.0.0.1:{args.port}/overview ...")
     print()
-
-    env = {
-        **os.environ,
-        "LANTANA_SILVER_ROOT": str(SILVER_ROOT.resolve()),
-        "LANTANA_GOLD_ROOT": str(GOLD_ROOT.resolve()),
-    }
-    subprocess.run(  # nosemgrep
-        [
-            sys.executable,
-            "-m",
-            "streamlit",
-            "run",
-            "src/lantana/dashboard/app.py",
-            "--server.address=127.0.0.1",
-        ],
-        cwd=PIPELINE_DIR,
-        env=env,
-        check=False,
-    )
+    serve(host="127.0.0.1", port=args.port, gold_root=GOLD_ROOT, silver_root=SILVER_ROOT)
 
 
 if __name__ == "__main__":

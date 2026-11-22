@@ -8,23 +8,22 @@
 [Unit]
 Description=Dionaea Malware Honeypot Sensor
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Container]
-# :latest is frozen at the Nov-2020 0.11.0 release; :nightly is the
-# actively-rebuilt tag (refreshed daily by the upstream CI). Both ship
-# the same source codebase (dionaea 0.11.0) but :nightly carries fresh
-# OS-package security updates.
-Image=docker.io/dinotools/dionaea:nightly
+# Self-owned pinned Dionaea image (containers/dionaea/Containerfile):
+# bakes dionaea.cfg (processors=filter_emu, disabling bistreams), patches
+# http.py for structured HTTP telemetry, ships the lantana_json ihandler, runs
+# strictly non-root as USER 1000:1000, and uses a non-destructive entrypoint
+# that preserves host POSIX ACLs.
+Image={{ dionaea_image }}
 ContainerName=sensor-dionaea
 Network=pasta
 
-# Force the entrypoint's init_etc / init_lib / init_log functions to
-# run on every container start. Without these, the entrypoint's
-# `test ! -d /opt/dionaea/etc/dionaea` check would see our bind-mounted
-# subdirectories as existing → skip the seeding → dionaea launches with
-# no dionaea.cfg → exit 133 instantly.
-Environment=DIONAEA_FORCE_INIT_CONF=1
-Environment=DIONAEA_FORCE_INIT_DATA=1
+# Map the rootless host user (stigma) to the image's dionaea user (UID 1000) so
+# stigma-owned bind-mount paths appear inside the container as dionaea-owned.
+# UID 1000:1000 is pinned as a repo constant in containers/dionaea/Containerfile.
+UserNS=keep-id:uid=1000,gid=1000
 
 {% for svc, s in dionaea_service_catalog.items() -%}
 PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}:{{ s.int_port }}
@@ -36,52 +35,37 @@ PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }
 {% endfor %}
 
 # Hardening
-# Capability strategy: drop everything by default, then add back only
-# what the bundled image's startup actually needs.
-#   NET_BIND_SERVICE — dionaea binds privileged ports (21, 80, 135, 445)
-#                     inside the container.
-#   SETUID + SETGID  — the entrypoint launches dionaea with `-u dionaea
-#                     -g dionaea`; without these the privilege-drop
-#                     fails and dionaea exits silently with status 133.
-#   CHOWN + FOWNER   — the entrypoint's `cp -a` (template/lib → var/lib)
-#                     preserves ownership; without these we get EPERM
-#                     noise on every boot. Cosmetic but worth removing.
-# ReadOnly=true is incompatible with this image's entrypoint, which has
-# to write the seeded dionaea.cfg into /opt/dionaea/etc/dionaea/. The
-# bundled dionaea.cfg disables nfq and pcap modules so no CAP_NET_ADMIN
-# or CAP_NET_RAW required.
+# Runs strictly as unprivileged UID 1000:1000 with zero Linux capabilities.
+# Allowing unprivileged binds inside the container's isolated network namespace
+# lets dionaea listen on ports 21, 80, 135, 445 without NET_BIND_SERVICE or
+# root-to-dionaea privilege-drop syscalls (SETUID/SETGID/CHOWN).
 DropCapability=ALL
-AddCapability=NET_BIND_SERVICE SETUID SETGID CHOWN FOWNER
+Sysctl=net.ipv4.ip_unprivileged_port_start=0
 NoNewPrivileges=true
+ReadOnly=true
 VolatileTmp=true
 
 # Health check (Podman 5.x Quadlet key names)
-# Process-level: resilient to dionaea_services toggles (port-level checks
-# would break if SMB or whichever port we probed got disabled).
-HealthCmd=CMD-SHELL pgrep -f dionaea >/dev/null || exit 1
-HealthInterval=30s
+# Application-layer handshake probe (HTTP GET -> HTTP/1., fallback FTP 220):
+# catches deadlocked libev loops behind rootless pasta where pgrep and bare TCP
+# connect stay green. HealthOnFailure=kill forces systemd auto-recovery.
+HealthCmd=CMD python3 /healthcheck.py
+HealthInterval=60s
 HealthTimeout=5s
 HealthRetries=3
+HealthOnFailure=kill
 
 # Resource limits (higher than Cowrie: handles more protocols + stores malware)
 PodmanArgs=--cpus=1.0 --memory=512m
 
 # Volumes
 #   services-enabled/ and ihandlers-enabled/ are mounted :ro over the
-#   bundled directories inside the image. The bundled dionaea.cfg globs
-#   *.yaml from these paths and only the files we render here will be
-#   loaded — overriding the image's default 16 services (including
-#   blackhole on port 23, which would conflict with Cowrie) and 6
-#   ihandlers (none of which is log_json).
-#   log + lib bind-mounts have NO ,U flag: the dionaea entrypoint chowns
-#   /opt/dionaea/var/log/dionaea and /opt/dionaea/var/lib/dionaea to
-#   dionaea:dionaea (UID 1000) at every start. ,U would fire on every start
-#   too, racing the entrypoint and chowning the source back to the container
-#   user (root → host stigma), leaving the worker (UID 1000) unable to
-#   reopen its log files on restart. The entrypoint's init_lib + init_log
-#   copy seed dirs (binaries, bistreams, ftp, http, ...) into these mounts
-#   on first boot via cp -van (no-clobber). See docs/troubleshooting.md
-#   "Dionaea Sensor — log_json silent fail" for the failure mode + recovery.
+#   baked /opt/dionaea/etc/dionaea/ directories. The baked dionaea.cfg globs
+#   *.yaml from these paths, loading only our rendered services + lantana_json
+#   and store ihandlers.
+#   Ownership flows via UserNS=keep-id:uid=1000,gid=1000 above (no ,U needed),
+#   and entrypoint.sh preserves host POSIX ACLs for vector and nectar.
+Volume=/etc/lantana/sensor/dionaea/healthcheck.py:/healthcheck.py:ro
 Volume=/etc/lantana/sensor/dionaea/services-enabled:/opt/dionaea/etc/dionaea/services-enabled:ro
 Volume=/etc/lantana/sensor/dionaea/ihandlers-enabled:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro
 Volume=/var/log/lantana/sensor/dionaea:/opt/dionaea/var/log/dionaea:rw
@@ -89,6 +73,7 @@ Volume=/var/lib/lantana/sensor/dionaea:/opt/dionaea/var/lib/dionaea:rw
 
 [Service]
 Restart=always
+RestartSec=10s
 
 [Install]
 WantedBy=default.target

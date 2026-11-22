@@ -16,6 +16,7 @@ from lantana.notify.alerts import (
     ErrorBuckets,
     build_embed_body,
     categorize_errors,
+    evaluate_liveness_alerts,
     has_been_alerted,
     load_errors_for_date,
     mark_alerted,
@@ -101,15 +102,25 @@ class TestCategorizeErrors:
                 {
                     "dataset_processing_failed",
                     "transform_failed",
+                    "pipeline_starved",
+                    "sensor_silent_critical",
+                    "disk_critical",
+                    "step_failed",
                 }
             )
             == CRITICAL_ERROR_TYPES
         )
 
     def test_info_set_contract(self) -> None:
-        """Info tier is routine ops noise; new entries require explicit thought
-        about whether rate-limit-class signals are appropriate."""
-        assert frozenset({"rate_limit"}) == INFO_ERROR_TYPES
+        """Info tier is routine ops noise (429 rate-limits and 404 unseen lookups)."""
+        assert frozenset({"rate_limit", "not_found"}) == INFO_ERROR_TYPES
+
+    def test_not_found_is_info_not_warning(self) -> None:
+        rows = [{"error_type": "not_found", "provider": "virustotal", "count": 4}]
+        buckets = categorize_errors(rows)
+        assert buckets.warning == []
+        assert len(buckets.info) == 1
+        assert buckets.is_clean is True
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +184,126 @@ class TestLoadErrorsForDate:
         )
         rows = load_errors_for_date(errors_path, date(2026, 5, 20))
         assert len(rows) == 1
+
+    def test_skips_non_dict_json_rows(self, tmp_path: Path) -> None:
+        """Valid JSON that is not an object (e.g. list/number) must be skipped."""
+        errors_path = tmp_path / "errors.json"
+        errors_path.write_text(
+            "[1, 2, 3]\n42\n"
+            '{"date": "2026-05-20", "provider": "ok", "error_type": "timeout", "count": 1}\n'
+        )
+        rows = load_errors_for_date(errors_path, date(2026, 5, 20))
+        assert len(rows) == 1
+        assert rows[0]["provider"] == "ok"
+
+
+class TestEvaluateLivenessAlerts:
+    def _write_silver(self, silver_root: Path, ds: str, d: date) -> None:
+        import polars as pl
+
+        from lantana.common.datalake import write_silver_partition
+
+        write_silver_partition(
+            pl.DataFrame({"src_endpoint_ip": ["203.0.113.10"], "dataset": [ds]}),
+            d,
+            ds,
+            "sn-01",
+            silver_root=silver_root,
+        )
+
+    def test_empty_summary_emits_critical_pipeline_starved(self, tmp_path: Path) -> None:
+        import polars as pl
+
+        rows = evaluate_liveness_alerts(
+            target_date=date(2026, 7, 16),
+            summary=pl.DataFrame(),
+            expected_datasets=["cowrie", "dionaea", "suricata", "nftables"],
+            silver_root=tmp_path,
+        )
+        buckets = categorize_errors(rows)
+        assert buckets.has_critical is True
+        assert any(r["error_type"] == "pipeline_starved" for r in buckets.critical)
+
+    def test_single_day_silent_sensor_is_warning_two_days_is_critical(self, tmp_path: Path) -> None:
+        import polars as pl
+
+        d1 = date(2026, 7, 16)
+        d2 = date(2026, 7, 15)
+        summary = pl.DataFrame({"total_events": [500]})
+        # Day 1 silence: dionaea present on D-2 (Jul 15), missing on D-1 (Jul 16)
+        for ds in ("cowrie", "suricata", "nftables"):
+            self._write_silver(tmp_path, ds, d1)
+            self._write_silver(tmp_path, ds, d2)
+        self._write_silver(tmp_path, "dionaea", d2)
+
+        rows_day1 = evaluate_liveness_alerts(
+            target_date=d1,
+            summary=summary,
+            expected_datasets=["cowrie", "dionaea", "suricata", "nftables"],
+            silver_root=tmp_path,
+        )
+        b1 = categorize_errors(rows_day1)
+        assert not b1.has_critical
+        assert any(
+            r["error_type"] == "sensor_silent" and r["provider"] == "dionaea" for r in b1.warning
+        )
+
+        # Day 2 silence: dionaea missing on BOTH Jul 16 and Jul 17 -> CRITICAL
+        d_next = date(2026, 7, 17)
+        for ds in ("cowrie", "suricata", "nftables"):
+            self._write_silver(tmp_path, ds, d_next)
+        rows_day2 = evaluate_liveness_alerts(
+            target_date=d_next,
+            summary=summary,
+            expected_datasets=["cowrie", "dionaea", "suricata", "nftables"],
+            silver_root=tmp_path,
+        )
+        b2 = categorize_errors(rows_day2)
+        assert b2.has_critical is True
+        assert any(
+            r["error_type"] == "sensor_silent_critical" and r["provider"] == "dionaea"
+            for r in b2.critical
+        )
+
+    def test_disk_thresholds_and_failed_systemd_step_escalate(self, tmp_path: Path) -> None:
+        import polars as pl
+
+        from lantana.notify.timing import StepTiming
+
+        d1 = date(2026, 7, 16)
+        self._write_silver(tmp_path, "cowrie", d1)
+        summary = pl.DataFrame({"total_events": [100]})
+
+        rows_warn = evaluate_liveness_alerts(
+            target_date=d1,
+            summary=summary,
+            expected_datasets=["cowrie"],
+            silver_root=tmp_path,
+            disk_usage_pct=75.2,
+        )
+        bw = categorize_errors(rows_warn)
+        assert not bw.has_critical
+        assert any(r["error_type"] == "disk_warning" for r in bw.warning)
+
+        rows_crit = evaluate_liveness_alerts(
+            target_date=d1,
+            summary=summary,
+            expected_datasets=["cowrie"],
+            silver_root=tmp_path,
+            disk_usage_pct=84.5,
+            timings=[
+                StepTiming(
+                    unit="lantana-prune",
+                    duration_seconds=2.0,
+                    result="exit-code",
+                    finished_at=None,
+                )
+            ],
+        )
+        bc = categorize_errors(rows_crit)
+        assert bc.has_critical is True
+        types = {r["error_type"] for r in bc.critical}
+        assert {"disk_critical", "step_failed"} <= types
 
 
 # ---------------------------------------------------------------------------

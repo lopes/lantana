@@ -65,7 +65,7 @@
   # to prevent (2026-05-22 fresh-install regression). When find
   # returns empty, vector validates just vector.yaml — fine, since
   # there are no sources/transforms to interact with the sinks yet.
-  # See CLAUDE.md "Vector deployment discipline".
+  # See AGENTS.md and .agents/skills/deploy-sensors/SKILL.md.
   become: true
   ansible.builtin.shell: |
     set -e

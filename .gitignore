@@ -110,9 +110,9 @@ backups/
 pipeline/tests/fixtures/live/
 
 # ------------------------------------------------------------
-# CLAUDE CODE
+# LOCAL AGENT SETTINGS
 # ------------------------------------------------------------
-# Project-local Claude permissions (operator-specific). Skills under
+# Project-local agent permissions (operator-specific). Skills under
 # .agents/skills/ are tracked deliberately and not affected.
 .agents/settings.local.json
 

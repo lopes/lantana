@@ -10,19 +10,33 @@
     mode: "0755"
   tags: [cowrie]
 
-- name: "Create Cowrie data directories"
+- name: "Create Cowrie log directory"
   become: true
   ansible.builtin.file:
-    path: "{{ _cowrie_dir }}"
+    path: /var/log/lantana/sensor/cowrie
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0750"
+  tags: [cowrie]
+
+- name: "Grant Vector read-only POSIX ACL on Cowrie log directory"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    setfacl -R -P -m u:vector:rX /var/log/lantana/sensor/cowrie
+    setfacl -d -m u:vector:rX /var/log/lantana/sensor/cowrie
+  changed_when: false
+  tags: [cowrie, vector]
+
+- name: "Create Cowrie state directory"
+  become: true
+  ansible.builtin.file:
+    path: /var/lib/lantana/sensor/cowrie
     state: directory
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
     mode: "0755"
-  loop:
-    - /var/log/lantana/sensor/cowrie
-    - /var/lib/lantana/sensor/cowrie
-  loop_control:
-    loop_var: _cowrie_dir
   tags: [cowrie]
 
 - name: "Create Cowrie artifact directories"
@@ -40,6 +54,17 @@
     - /var/lib/lantana/sensor/cowrie/misc
   loop_control:
     loop_var: _cowrie_dir
+  tags: [cowrie]
+
+- name: "Grant collector POSIX ACL on Cowrie scratch directories (single-node)"
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      /usr/local/sbin/lantana-grant-read
+      /var/lib/lantana/sensor/cowrie/downloads
+      /var/lib/lantana/sensor/cowrie/tty
+  when: lantana.mode != "multi"
+  changed_when: false
   tags: [cowrie]
 
 - name: "Enable linger for sensor-user"
@@ -159,19 +184,19 @@
 
 # --- PIPELINE BRIDGE ---
 # Cowrie writes downloaded malware files at mode 0600 via Python's tempfile
-# module (hardcoded, ignores umask). The lantana pipeline (running as
-# nectar) needs to read them to compute SHA256 hashes. This cron uses the
-# lantana-grant-read utility to relax perms once a day, just before the
-# 01:00 UTC enrichment run.
-- name: "Schedule daily read-permission fix for Cowrie downloads"
+# module (which masks inherited default ACLs to ---). Running lantana-grant-read
+# at 00:10 UTC (before 00:15 prune and 01:00 enrich) recalculates POSIX ACL
+# masks for nectar (u:nectar:rwX) without touching owner/group bits or following
+# symlinks.
+- name: "Schedule daily ACL refresh for Cowrie scratch directories (single-node)"
   become: true
   ansible.builtin.copy:
     dest: /etc/cron.d/lantana-cowrie-downloads
     content: |
-      # Grant nectar read access to Cowrie downloads (0600 from tempfile) before
-      # the daily enrichment run. Managed by Ansible.
-      30 0 * * * root /usr/local/sbin/lantana-grant-read /var/lib/lantana/sensor/cowrie/downloads
+      # Grant nectar rwX ACL on Cowrie downloads and tty before 00:15 prune and 01:00 enrich.
+      10 0 * * * root /usr/local/sbin/lantana-grant-read /var/lib/lantana/sensor/cowrie/downloads /var/lib/lantana/sensor/cowrie/tty
     owner: root
     group: root
     mode: "0644"
+  when: lantana.mode != "multi"
   tags: [cowrie]

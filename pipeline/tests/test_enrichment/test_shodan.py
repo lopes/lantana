@@ -174,7 +174,8 @@ class TestShodanRiskScoreInResult:
         assert result.data["shodan_risk_score"] == 100.0
 
     @pytest.mark.asyncio()
-    async def test_404_response_score_is_zero(self, provider: ShodanProvider) -> None:
+    async def test_404_response_score_is_none(self, provider: ShodanProvider) -> None:
+        """404 = never scanned by Shodan -> risk_score=None so it never dilutes the mean."""
         not_found = httpx.Response(
             404,
             json={},
@@ -183,4 +184,4 @@ class TestShodanRiskScoreInResult:
         mock_get = AsyncMock(return_value=not_found)
         with patch.object(provider._client, "get", mock_get):
             result = await provider.enrich_ip("192.0.2.1")
-        assert result.data["shodan_risk_score"] == 0.0
+        assert result.data["shodan_risk_score"] is None

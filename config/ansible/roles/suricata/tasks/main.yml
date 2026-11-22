@@ -1,25 +1,106 @@
 ---
-# --- SURICATA DIRECTORIES ---
-- name: "Create Suricata directories"
-  become: true
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: "root"
-    group: "root"
-    mode: "0755"
-  loop:
-    - /var/log/lantana/honeywall/suricata
-    - /var/lib/lantana/honeywall/suricata/rules
-    - /var/lib/lantana/honeywall/suricata/files
-  tags: [suricata]
-
-# --- SURICATA INSTALLATION ---
+# --- SURICATA INSTALLATION & SERVICE ACCOUNT ---
 - name: "Install Suricata"
   become: true
   ansible.builtin.apt:
     name: suricata
     state: present
+  tags: [suricata]
+
+- name: "Ensure suricata system group exists"
+  become: true
+  ansible.builtin.group:
+    name: suricata
+    system: true
+    state: present
+  tags: [suricata]
+
+- name: "Ensure suricata system user exists"
+  become: true
+  ansible.builtin.user:
+    name: suricata
+    group: suricata
+    shell: /usr/sbin/nologin
+    create_home: false
+    system: true
+    state: present
+  tags: [suricata]
+
+# --- SURICATA DIRECTORIES ---
+- name: "Create Suricata rule directory"
+  become: true
+  ansible.builtin.file:
+    path: /var/lib/lantana/honeywall/suricata/rules
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  tags: [suricata]
+
+- name: "Create Suricata runtime directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "suricata"
+    group: "suricata"
+    mode: "0750"
+  loop:
+    - /var/log/lantana/honeywall/suricata
+    - /var/lib/lantana/honeywall/suricata/files
+  tags: [suricata]
+
+- name: "Grant Vector read-only POSIX ACL on Suricata log directory"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    setfacl -R -P -m u:vector:rX /var/log/lantana/honeywall/suricata
+    setfacl -d -m u:vector:rX /var/log/lantana/honeywall/suricata
+  changed_when: false
+  tags: [suricata, vector]
+
+# --- NIC OFFLOAD HARDENING (TX/GRO/GSO/TSO) ---
+- name: "Probe WAN NIC offload capabilities"
+  become: true
+  ansible.builtin.command: "ethtool -k {{ network.honeywall.wan.interface }}"
+  register: suricata_wan_offload_probe
+  changed_when: false
+  failed_when: false
+  tags: [suricata]
+
+- name: "Determine whether WAN TX checksum offload is fixed"
+  ansible.builtin.set_fact:
+    suricata_tx_offload_fixed: >-
+      {{
+        (suricata_wan_offload_probe.rc != 0) or
+        ('tx-checksumming: on [fixed]' in suricata_wan_offload_probe.stdout) or
+        ('tx-checksum-ip-generic: on [fixed]' in suricata_wan_offload_probe.stdout)
+      }}
+  tags: [suricata]
+
+- name: "Set Suricata stream checksum validation policy"
+  ansible.builtin.set_fact:
+    suricata_checksum_validation: "{{ not (suricata_tx_offload_fixed | bool) }}"
+  tags: [suricata]
+
+- name: "Deploy persistent WAN NIC offload service"
+  become: true
+  ansible.builtin.template:
+    src: lantana-nic-offload.service.j2
+    dest: /etc/systemd/system/lantana-nic-offload.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Reload systemd"
+  tags: [suricata]
+
+- name: "Enable and start WAN NIC offload service"
+  become: true
+  ansible.builtin.systemd:
+    name: lantana-nic-offload.service
+    enabled: true
+    state: started
+    daemon_reload: true
   tags: [suricata]
 
 # --- SURICATA CONFIGURATION ---
@@ -62,7 +143,10 @@
     owner: root
     group: root
     mode: "0644"
-    validate: /usr/bin/suricata -T -c %s
+    # Pass -l /tmp so root-run `suricata -T` never creates a root-owned eve.json
+    # inside /var/log/lantana/honeywall/suricata (which would cause EACCES when
+    # the non-root suricata.service starts).
+    validate: /usr/bin/suricata -T -c %s -l /tmp
   notify: "Restart Suricata"
   tags: [suricata]
 
@@ -110,10 +194,47 @@
   notify: "Restart Suricata"
   tags: [suricata]
 
+- name: "Create Suricata systemd override directory"
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/system/suricata.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [suricata]
+
+- name: "Configure Suricata systemd non-root override"
+  become: true
+  ansible.builtin.copy:
+    src: suricata-override.conf
+    dest: /etc/systemd/system/suricata.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - "Reload systemd"
+    - "Restart Suricata"
+  tags: [suricata]
+
+- name: "Ensure Suricata runtime directories and log files are owned by suricata"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "suricata"
+    group: "suricata"
+    recurse: true
+  loop:
+    - /var/log/lantana/honeywall/suricata
+    - /var/lib/lantana/honeywall/suricata/files
+  tags: [suricata]
+
 - name: "Ensure Suricata is enabled and started"
   become: true
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: suricata
     state: started
     enabled: true
+    daemon_reload: true
   tags: [suricata]

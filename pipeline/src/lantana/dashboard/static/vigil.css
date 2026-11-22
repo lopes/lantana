@@ -1,0 +1,760 @@
+/* ==========================================================================
+   Lantana Vigil Editorial Console (self-contained, air-gapped)
+   Adapted from the Vigil design system — sharp 0px radii, editorial typography,
+   tabular figures, Light & Dark themes via CSS custom properties.
+   Zero external font, CDN, or remote stylesheet requests.
+   ========================================================================== */
+
+:root {
+  /* Typography — four faces, four jobs (local/system fallbacks only) */
+  --font-display: "Playfair Display", "Georgia", "Times New Roman", serif;
+  --font-body:    "Lora", "Georgia", "Times New Roman", serif;
+  --font-heading: "Source Sans 3", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", "Consolas", "Menlo", monospace;
+
+  /* Light Palette (Paper White default) */
+  --w-bg:          #ffffff;
+  --w-surface:     #f7f7f7;
+  --w-navbar:      #ffffff;
+  --w-border:      #e2e8f0;
+  --w-rule-strong: #000000;
+  --w-text:        #1a1a1a;
+  --w-heading:     #1a1a1a;
+  --w-muted:       #666666;
+  --w-blue:        #057dbc;
+  --w-blue-hv:     #045f94;
+  --w-code-color:  #045f94;
+  --w-footer-bg:   #1a1a1a;
+  --w-footer-text: rgba(255, 255, 255, 0.72);
+
+  /* Semantic Accents (Light) */
+  --w-note:      #057dbc;
+  --w-tip:       #1a7f37;
+  --w-caution:   #bc4c00;
+  --w-warning:   #bf8700;
+  --w-important: #cf222e;
+}
+
+html[data-theme="dark"] {
+  --w-bg:          #111111;
+  --w-surface:     #1a1a1a;
+  --w-navbar:      #000000;
+  --w-border:      #2a2a2a;
+  --w-rule-strong: #ffffff;
+  --w-text:        #e0e0e0;
+  --w-heading:     #ffffff;
+  --w-muted:       #8c8c8c;
+  --w-blue:        #4db8e0;
+  --w-blue-hv:     #7ccfed;
+  --w-code-color:  #7ccfed;
+  --w-footer-bg:   #0a0a0a;
+  --w-footer-text: #888888;
+
+  /* Semantic Accents (Dark — desaturated) */
+  --w-note:      #4db8e0;
+  --w-tip:       #6ab187;
+  --w-caution:   #d4956a;
+  --w-warning:   #c9a84c;
+  --w-important: #e07878;
+}
+
+/* ==========================================================================
+   1. Base Reset & Typography
+   ========================================================================== */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  border-radius: 0 !important;
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--w-bg);
+  color: var(--w-text);
+  font-family: var(--font-heading);
+  font-size: 0.96rem;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+h1, h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  color: var(--w-heading);
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+h1 {
+  font-size: clamp(1.75rem, 2.2vw + 0.9rem, 2.35rem);
+  line-height: 1.08;
+  margin-top: 0;
+}
+
+h2 {
+  font-size: clamp(1.25rem, 1.1vw + 0.85rem, 1.5rem);
+  line-height: 1.18;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--w-border);
+}
+
+h3, h4 {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  color: var(--w-heading);
+  margin-top: 1.4rem;
+  margin-bottom: 0.5rem;
+}
+
+h3 { font-size: 1.05rem; }
+h4 { font-size: 0.92rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+p { margin: 0 0 0.9rem; }
+
+a {
+  color: var(--w-blue);
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+a:hover { color: var(--w-blue-hv); }
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+  background-color: var(--w-surface);
+  color: var(--w-code-color);
+  padding: 0.1em 0.32em;
+  word-break: break-all;
+}
+
+pre {
+  background-color: var(--w-surface);
+  color: var(--w-text);
+  border: 1px solid var(--w-border);
+  padding: 0.95rem 1.1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 460px;
+}
+
+pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  word-break: normal;
+}
+
+:focus-visible {
+  outline: 2px solid var(--w-blue);
+  outline-offset: 2px;
+}
+
+/* ==========================================================================
+   2. Sticky Masthead Navbar & Global Window Selector
+   ========================================================================== */
+
+.navbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background-color: var(--w-navbar);
+  border-bottom: 2px solid var(--w-rule-strong);
+  padding: 0.6rem 1.25rem;
+}
+
+.navbar-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.25rem;
+}
+
+.navbar-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.15rem;
+}
+
+.navbar-brand {
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  color: var(--w-heading);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.brand-tag {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  color: var(--w-muted);
+  border: 1px solid var(--w-border);
+  padding: 0.1rem 0.35rem;
+}
+
+.navbar-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.navbar .nav-link {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.85px;
+  color: var(--w-text);
+  padding: 0.35rem 0.6rem;
+  border-bottom: 2px solid transparent;
+}
+
+.navbar .nav-link:hover {
+  color: var(--w-blue);
+}
+
+.navbar .nav-link.active {
+  color: var(--w-heading);
+  font-weight: 700;
+  border-bottom-color: var(--w-rule-strong);
+}
+
+.navbar-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.window-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.window-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--w-muted);
+}
+
+.ctrl-select,
+.ctrl-input {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  background-color: var(--w-surface);
+  color: var(--w-text);
+  border: 1px solid var(--w-border);
+  padding: 0.3rem 0.5rem;
+}
+
+.ctrl-input[type="date"] {
+  padding: 0.24rem 0.4rem;
+}
+
+.custom-range-fields {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.custom-range-fields.hidden {
+  display: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  border: 1px solid var(--w-rule-strong);
+  background-color: var(--w-surface);
+  color: var(--w-heading);
+  padding: 0.38rem 0.75rem;
+  cursor: pointer;
+}
+
+.btn:hover {
+  color: var(--w-blue);
+  border-color: var(--w-blue);
+}
+
+.btn-primary {
+  background-color: var(--w-rule-strong);
+  color: var(--w-bg);
+}
+
+.btn-primary:hover {
+  background-color: var(--w-blue);
+  border-color: var(--w-blue);
+  color: #ffffff;
+}
+
+.theme-toggle {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  background: var(--w-surface);
+  color: var(--w-text);
+  border: 1px solid var(--w-border);
+  padding: 0.32rem 0.6rem;
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  border-color: var(--w-blue);
+  color: var(--w-blue);
+}
+
+/* ==========================================================================
+   3. Console Layout & Sticky Section TOC
+   ========================================================================== */
+
+.main-container {
+  flex: 1;
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3.5rem;
+}
+
+.console-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 2.25rem;
+  align-items: start;
+}
+
+.console-main {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.sidebar.toc-left {
+  position: sticky;
+  top: 4.5rem;
+  max-height: calc(100vh - 5.5rem);
+  overflow-y: auto;
+}
+
+.toc-title {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--w-heading);
+  border-bottom: 2px solid var(--w-rule-strong);
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.toc-list li {
+  margin: 0.25rem 0;
+}
+
+.toc-list a {
+  display: block;
+  font-family: var(--font-heading);
+  font-size: 0.84rem;
+  color: var(--w-muted);
+  padding: 0.16rem 0.45rem;
+  border-left: 2px solid transparent;
+}
+
+.toc-list a:hover {
+  color: var(--w-blue);
+  border-left-color: var(--w-blue);
+}
+
+/* Page Header */
+.page-header {
+  border-bottom: 1px solid var(--w-border);
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.page-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  color: var(--w-muted);
+  margin-bottom: 0.35rem;
+}
+
+.page-subtitle {
+  font-family: var(--font-body);
+  font-style: italic;
+  color: var(--w-muted);
+  font-size: 0.98rem;
+  margin: 0.35rem 0 0;
+}
+
+/* ==========================================================================
+   4. KPI Cards, What/Why/How Help Blocks & Callouts
+   ========================================================================== */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 0.9rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.kpi-card {
+  background-color: var(--w-surface);
+  border: 1px solid var(--w-border);
+  border-top: 2px solid var(--w-rule-strong);
+  padding: 0.85rem 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.kpi-card.tone-high { border-top-color: var(--w-important); }
+.kpi-card.tone-med  { border-top-color: var(--w-warning); }
+.kpi-card.tone-low  { border-top-color: var(--w-tip); }
+.kpi-card.tone-info { border-top-color: var(--w-note); }
+
+.kpi-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.85px;
+  color: var(--w-muted);
+}
+
+.kpi-value {
+  font-family: var(--font-mono);
+  font-size: 1.55rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--w-heading);
+  line-height: 1.15;
+}
+
+.kpi-sub {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--w-muted);
+}
+
+details.help-tip {
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--w-muted);
+}
+
+details.help-tip summary {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  cursor: pointer;
+  color: var(--w-muted);
+  list-style: none;
+}
+
+details.help-tip summary::-webkit-details-marker { display: none; }
+
+details.help-tip summary:hover { color: var(--w-blue); }
+
+details.help-tip .help-body {
+  margin-top: 0.35rem;
+  padding-left: 0.55rem;
+  border-left: 2px solid var(--w-border);
+  font-family: var(--font-heading);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--w-text);
+}
+
+.section-help {
+  margin: -0.35rem 0 0.85rem;
+}
+
+.callout {
+  border: 1px solid var(--w-border);
+  border-left: 3px solid var(--w-note);
+  background-color: var(--w-surface);
+  padding: 0.85rem 1.05rem;
+  margin: 1rem 0;
+}
+
+.callout-warning { border-left-color: var(--w-warning); }
+.callout-important { border-left-color: var(--w-important); }
+
+.callout-title {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-weight: 700;
+  margin-bottom: 0.3rem;
+  color: var(--w-heading);
+}
+
+/* ==========================================================================
+   5. Chart Grids & Containers
+   ========================================================================== */
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.15rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.chart-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.chart-card {
+  border: 1px solid var(--w-border);
+  background-color: var(--w-bg);
+  padding: 0.85rem 0.95rem;
+  min-width: 0;
+}
+
+.chart-card-title {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.85px;
+  font-weight: 700;
+  color: var(--w-heading);
+  margin: 0 0 0.4rem;
+}
+
+.plotly-host {
+  width: 100%;
+  min-height: 220px;
+}
+
+/* ==========================================================================
+   6. Interactive Tables, Filters & Badges
+   ========================================================================== */
+
+.table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.table-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.table-meta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--w-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--w-border);
+  background-color: var(--w-bg);
+  margin-bottom: 0.6rem;
+}
+
+table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+table.data-table th,
+table.data-table td {
+  border-bottom: 1px solid var(--w-border);
+  padding: 0.48rem 0.65rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+table.data-table th {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.75px;
+  font-weight: 700;
+  background-color: var(--w-surface);
+  color: var(--w-heading);
+  border-bottom: 2px solid var(--w-rule-strong);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+table.data-table th:hover {
+  color: var(--w-blue);
+}
+
+table.data-table th.sort-asc::after { content: " ▲"; font-size: 0.62rem; }
+table.data-table th.sort-desc::after { content: " ▼"; font-size: 0.62rem; }
+
+table.data-table td.num {
+  font-family: var(--font-mono);
+  text-align: right;
+  white-space: nowrap;
+}
+
+table.data-table td.mono {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+table.data-table tbody tr:hover {
+  background-color: var(--w-surface);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin: 0.4rem 0 1.4rem;
+}
+
+.pager button {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  border: 1px solid var(--w-border);
+  background: var(--w-surface);
+  color: var(--w-text);
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pager button:not(:disabled):hover {
+  border-color: var(--w-blue);
+  color: var(--w-blue);
+}
+
+.badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.65px;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--w-border);
+  white-space: nowrap;
+}
+
+.badge-high { border-color: var(--w-important); color: var(--w-important); }
+.badge-med  { border-color: var(--w-warning);   color: var(--w-warning); }
+.badge-low  { border-color: var(--w-tip);       color: var(--w-tip); }
+.badge-info { border-color: var(--w-note);      color: var(--w-note); }
+
+.disk-meter {
+  width: 100%;
+  height: 12px;
+  border: 1px solid var(--w-border);
+  background-color: var(--w-surface);
+  margin: 0.45rem 0 0.85rem;
+}
+
+.disk-meter-fill {
+  height: 100%;
+  background-color: var(--w-tip);
+}
+
+.disk-meter-fill.tone-med  { background-color: var(--w-warning); }
+.disk-meter-fill.tone-high { background-color: var(--w-important); }
+
+.action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.85rem 0 1.25rem;
+}
+
+/* ==========================================================================
+   7. Footer & Responsive
+   ========================================================================== */
+
+.nav-footer {
+  background-color: var(--w-footer-bg);
+  color: var(--w-footer-text);
+  border-top: 1px solid var(--w-border);
+  padding: 1.15rem 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.5px;
+  text-align: center;
+}
+
+@media (max-width: 1080px) {
+  .console-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+  }
+  .sidebar.toc-left { display: none; }
+  .chart-grid.cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767.98px) {
+  .chart-grid,
+  .chart-grid.cols-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .main-container {
+    padding: 1rem 0.85rem 2.5rem;
+  }
+}

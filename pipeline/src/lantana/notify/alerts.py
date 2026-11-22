@@ -38,31 +38,45 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from lantana.common.config import load_reporting, load_secrets
 from lantana.notify.discord import send_notification
+from lantana.prune import DISK_CRITICAL_THRESHOLD, DISK_WARNING_THRESHOLD
+
+if TYPE_CHECKING:
+    import polars as pl
+
+    from lantana.notify.timing import StepTiming
 
 logger = structlog.get_logger()
 
-DEFAULT_ERRORS_PATH = Path("/var/lib/lantana/datalake/enrichment_errors.json")
+DEFAULT_ERRORS_PATH = Path(
+    os.environ.get("LANTANA_ENRICHMENT_ERRORS", "/var/lib/lantana/datalake/enrichment_errors.json")
+)
 DEFAULT_STATE_PATH = Path("/var/lib/lantana/datalake/.last_alerted")
 
 CRITICAL_ERROR_TYPES: frozenset[str] = frozenset(
     {
         "dataset_processing_failed",
         "transform_failed",
+        "pipeline_starved",
+        "sensor_silent_critical",
+        "disk_critical",
+        "step_failed",
     }
 )
 
 INFO_ERROR_TYPES: frozenset[str] = frozenset(
     {
         "rate_limit",
+        "not_found",
     }
 )
 
@@ -131,9 +145,135 @@ def load_errors_for_date(errors_path: Path, target_date: date) -> list[dict[str,
             except json.JSONDecodeError:
                 logger.warning("alerter_malformed_row", line=stripped[:120])
                 continue
+            if not isinstance(entry, dict):
+                logger.warning("alerter_non_dict_row", line=stripped[:120])
+                continue
             if entry.get("date") == target:
                 rows.append(entry)
     return rows
+
+
+def _dataset_has_silver_data(silver_root: Path, dataset: str, target_date: date) -> bool:
+    """Return True iff Silver has at least one non-empty Parquet file for dataset/date."""
+    date_dir = silver_root / f"dataset={dataset}" / f"date={target_date.isoformat()}"
+    if not date_dir.is_dir():
+        return False
+    for parquet_path in date_dir.glob("server=*/events.parquet"):
+        try:
+            if parquet_path.is_file() and parquet_path.stat().st_size > 0:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def evaluate_liveness_alerts(
+    target_date: date,
+    summary: pl.DataFrame,
+    expected_datasets: list[str],
+    silver_root: Path,
+    timings: list[StepTiming] | None = None,
+    disk_usage_pct: float | None = None,
+) -> list[dict[str, Any]]:
+    """Evaluate stateless dead-man's-switch, disk thresholds, and systemd step health.
+
+    Returns synthetic error rows in the same schema as ``enrichment_errors.json``
+    so ``categorize_errors()``, ``max_severity()``, and the daily brief render
+    them through one unified severity pipeline.
+    """
+    date_str = target_date.isoformat()
+    alerts: list[dict[str, Any]] = []
+
+    # 1. Total pipeline starvation (0 events or missing daily_summary) -> CRITICAL
+    total_events = 0
+    if not summary.is_empty() and "total_events" in summary.columns:
+        raw_total = summary.row(0, named=True).get("total_events")
+        total_events = int(raw_total) if raw_total is not None else 0
+
+    if summary.is_empty() or total_events == 0:
+        alerts.append(
+            {
+                "date": date_str,
+                "provider": "pipeline",
+                "error_type": "pipeline_starved",
+                "count": 1,
+                "message": f"Zero events ingested across all datasets for {date_str}.",
+            }
+        )
+    else:
+        # 2. Stateless D-1 / D-2 per-dataset silence check
+        prev_date = target_date - timedelta(days=1)
+        for dataset in expected_datasets:
+            if not _dataset_has_silver_data(silver_root, dataset, target_date):
+                if _dataset_has_silver_data(silver_root, dataset, prev_date):
+                    alerts.append(
+                        {
+                            "date": date_str,
+                            "provider": dataset,
+                            "error_type": "sensor_silent",
+                            "count": 1,
+                            "message": (
+                                f"Dataset '{dataset}' emitted 0 events on {date_str} (Day 1)."
+                            ),
+                        }
+                    )
+                else:
+                    alerts.append(
+                        {
+                            "date": date_str,
+                            "provider": dataset,
+                            "error_type": "sensor_silent_critical",
+                            "count": 1,
+                            "message": (
+                                f"Dataset '{dataset}' emitted 0 events for 2+ consecutive days "
+                                f"({prev_date.isoformat()} and {date_str})."
+                            ),
+                        }
+                    )
+
+    # 3. Non-root usable disk percentage thresholds
+    if disk_usage_pct is not None:
+        if disk_usage_pct > DISK_CRITICAL_THRESHOLD:
+            alerts.append(
+                {
+                    "date": date_str,
+                    "provider": "disk",
+                    "error_type": "disk_critical",
+                    "count": 1,
+                    "message": (
+                        f"Non-root usable disk at {disk_usage_pct:.1f}% "
+                        f"(critical > {DISK_CRITICAL_THRESHOLD:.0f}%)."
+                    ),
+                }
+            )
+        elif disk_usage_pct > DISK_WARNING_THRESHOLD:
+            alerts.append(
+                {
+                    "date": date_str,
+                    "provider": "disk",
+                    "error_type": "disk_warning",
+                    "count": 1,
+                    "message": (
+                        f"Non-root usable disk at {disk_usage_pct:.1f}% "
+                        f"(warning > {DISK_WARNING_THRESHOLD:.0f}%)."
+                    ),
+                }
+            )
+
+    # 4. Systemd unit failure escalation (catches failed lantana-prune/enrich/transform)
+    for step in timings or []:
+        if step.result not in ("success", "", "unknown"):
+            alerts.append(
+                {
+                    "date": date_str,
+                    "provider": step.unit,
+                    "error_type": "step_failed",
+                    "count": 1,
+                    "message": f"Systemd unit '{step.unit}' exited with result='{step.result}'.",
+                }
+            )
+
+    return alerts
 
 
 def _truncate(value: str, limit: int = MESSAGE_TRUNCATE) -> str:

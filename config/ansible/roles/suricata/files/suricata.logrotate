@@ -4,6 +4,7 @@
 /var/log/lantana/honeywall/suricata/*.log
 /var/log/lantana/honeywall/suricata/*.json
 {
+    su suricata suricata
     # No 'daily': forced with cron for more determinism
     rotate 7
     missingok

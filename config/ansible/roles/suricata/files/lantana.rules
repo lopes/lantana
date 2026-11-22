@@ -20,8 +20,8 @@ alert tcp $EXTERNAL_NET any -> $HOME_NET [22,2222] (msg:"LANTANA SSH Scripted Cl
 # SMB detection (complement Dionaea)
 # =============================================================================
 
-# SMB null session enumeration
-alert tcp $EXTERNAL_NET any -> $HOME_NET [445,8445] (msg:"LANTANA SMB Null Session Attempt"; flow:to_server,established; content:"|ff|SMB"; depth:4; content:"|73 00 00 00|"; distance:0; classtype:attempted-recon; sid:9000010; rev:1;)
+# SMB null session enumeration (TCP/445 carries a 4-byte NetBIOS Session Service header before \xffSMB)
+alert tcp $EXTERNAL_NET any -> $HOME_NET [445,8445] (msg:"LANTANA SMB Null Session Attempt"; flow:to_server,established; content:"|ff|SMB"; offset:4; depth:4; content:"|73 00 00 00|"; distance:0; classtype:attempted-recon; sid:9000010; rev:2;)
 
 # SMB brute force: rapid connection attempts
 alert tcp $EXTERNAL_NET any -> $HOME_NET [445,8445] (msg:"LANTANA SMB Brute Force"; flow:to_server,established; content:"|ff|SMB"; threshold:type threshold, track by_src, count 10, seconds 60; classtype:attempted-admin; sid:9000011; rev:1;)

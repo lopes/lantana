@@ -20,6 +20,8 @@ updates:
     directory: "/pipeline"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     labels: ["dependencies", "python"]
     groups:
@@ -31,6 +33,8 @@ updates:
     directory: "/infra/terraform/environments/proxmox"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     labels: ["dependencies", "terraform"]
     groups:
@@ -42,6 +46,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     labels: ["dependencies", "ci"]
     groups:

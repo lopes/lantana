@@ -2,15 +2,26 @@
 
 Pure DataFrame transforms that aggregate silver-layer events into
 intelligence-ready gold tables. Each function accepts a collected
-DataFrame (not LazyFrame) and returns a new DataFrame.
+DataFrame (not LazyFrame) and returns a new DataFrame with explicit
+stable schemas.
 """
 
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import polars as pl
 
+from lantana.common.redact import RedactionConfig
+from lantana.enrichment.ioc import (
+    extract_outbound_c2_ips,
+    extract_outbound_urls,
+    extract_ssh_public_keys,
+    extract_stager_domains,
+)
 from lantana.models.ocsf import (
     CLASS_AUTHENTICATION,
     CLASS_DETECTION_FINDING,
@@ -20,6 +31,9 @@ from lantana.models.ocsf import (
     STATUS_FAILURE,
     STATUS_SUCCESS,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # Behavioral progression stage constants
 STAGE_SCAN: int = 1
@@ -34,33 +48,54 @@ STAGE_LABELS: dict[int, str] = {
     STAGE_INTERACTIVE: "interactive",
 }
 
-# Top-N limit for summary lists
+# Top-N limits
 TOP_N: int = 10
+DETECTION_FINDINGS_TOP_N: int = 100
 
-# Behavioral risk-score factors (composite formula in docs/risk-scoring.md §Gold composite).
-# Tuning any of these requires updating the doc and the regression tests in
-# tests/test_transform/test_metrics.py::TestRiskScoreDecomposition.
-BEHAVIORAL_AUTH_FACTOR: float = 20.0
+# Suricata internal decoder/stream/app-layer-event noise SID range.
+# Excluded from findings_detected, behavioral_risk_score, and detection_findings.
+DECODER_SID_MIN: int = 2200000
+DECODER_SID_MAX: int = 2260999
+
+# Behavioral risk-score weights (sum to 100.0 max: 25 + 25 + 25 + 15 + 10).
+BEHAVIORAL_AUTH_FACTOR: float = 25.0
 BEHAVIORAL_COMMAND_FACTOR: float = 25.0
+BEHAVIORAL_DOWNLOAD_FACTOR: float = 25.0
 BEHAVIORAL_FINDING_FACTOR: float = 15.0
-BEHAVIORAL_DOWNLOAD_FACTOR: float = 20.0
 BEHAVIORAL_AUTH_ATTEMPT_CAP: float = 100.0
 BEHAVIORAL_AUTH_ATTEMPT_WEIGHT: float = 0.1
+SCANNER_ENRICHMENT_SCALE: float = 0.35
 
 # Automated-actor heuristic thresholds (compute_behavioral_progression).
 AUTOMATED_AUTH_ATTEMPTS_MIN: int = 10
 AUTOMATED_UNIQUE_PASSWORDS_MIN: int = 5
 AUTOMATED_WINDOW_SECONDS_MAX: int = 120
 
-# Dataset-specific columns that gold aggregations reference. The
-# diagonal-concat in ``read_silver_partition`` produces a frame containing
-# the UNION of columns across all datasets present that day; on days when
-# a dataset's silver write failed (provider outage, normalize bug,
-# defect-of-the-month), its contributed columns disappear, and aggregations
-# that name them crash with ``ColumnNotFoundError``. This list pins them so
-# ``_ensure_gold_columns`` can backfill typed nulls regardless.
+# Explicit Polars list schemas so empty days never write List(Null) Parquet.
+_TOP_VALUE_LIST_DTYPE: pl.DataType = pl.List(pl.Struct({"value": pl.Utf8(), "count": pl.Int64()}))
+_TOP_CRED_PAIR_LIST_DTYPE: pl.DataType = pl.List(
+    pl.Struct({"username": pl.Utf8(), "password": pl.Utf8(), "count": pl.Int64()})
+)
+_UTF8_LIST_DTYPE: pl.DataType = pl.List(pl.Utf8())
+
+EXTRACTED_IOCS_SCHEMA: dict[str, pl.DataType] = {
+    "ioc_type": pl.Utf8(),
+    "ioc_value": pl.Utf8(),
+    "vhash": pl.Utf8(),
+    "first_seen": pl.Datetime(time_unit="us", time_zone="UTC"),
+    "last_seen": pl.Datetime(time_unit="us", time_zone="UTC"),
+    "event_count": pl.Int64(),
+    "unique_src_ips": pl.Int64(),
+    "vt_status": pl.Utf8(),
+    "vt_malicious": pl.Int64(),
+    "gti_verdict": pl.Utf8(),
+    "gti_score": pl.Int64(),
+    "malware_family": pl.Utf8(),
+    "actor_associations": pl.Utf8(),
+}
+
+# Dataset-specific columns that gold aggregations reference.
 _OPTIONAL_GOLD_COLUMNS: dict[str, pl.DataType] = {
-    # Cowrie / Dionaea login + command + file-download fields
     "session": pl.Utf8(),
     "user_name": pl.Utf8(),
     "unmapped_password": pl.Utf8(),
@@ -70,7 +105,6 @@ _OPTIONAL_GOLD_COLUMNS: dict[str, pl.DataType] = {
     "file_hash_sha256": pl.Utf8(),
     "file_name": pl.Utf8(),
     "file_intent": pl.Utf8(),
-    # Suricata detection metadata
     "finding_title": pl.Utf8(),
     "finding_uid": pl.Utf8(),
     "finding_category": pl.Utf8(),
@@ -79,15 +113,7 @@ _OPTIONAL_GOLD_COLUMNS: dict[str, pl.DataType] = {
 
 
 def _ensure_gold_columns(silver: pl.DataFrame) -> pl.DataFrame:
-    """Backfill optional gold columns as typed nulls when absent.
-
-    Gold runs against the union of whichever datasets produced silver that
-    day. When cowrie silver fails (defect #9, etc.) the column
-    ``session`` simply isn't in the diagonal-concat; without this guard,
-    ``compute_daily_summary`` crashes on ``pl.col("session")`` and the
-    whole transform step dies — leaving operators with NO gold tables
-    for that date despite suricata silver being healthy.
-    """
+    """Backfill optional gold columns as typed nulls when absent."""
     missing = [
         pl.lit(None, dtype=dtype).alias(name)
         for name, dtype in _OPTIONAL_GOLD_COLUMNS.items()
@@ -96,21 +122,48 @@ def _ensure_gold_columns(silver: pl.DataFrame) -> pl.DataFrame:
     return silver.with_columns(missing) if missing else silver
 
 
-def _optional_first(df: pl.DataFrame, col: str, alias: str) -> pl.Expr:
-    """Return first non-null value for a column, or null literal if column is absent."""
+def _optional_first(
+    df: pl.DataFrame,
+    col: str,
+    alias: str,
+    dtype: pl.DataType | None = None,
+) -> pl.Expr:
+    """Return first non-null value for a column, or a typed null literal if absent."""
     if col in df.columns:
-        return pl.col(col).drop_nulls().first().alias(alias)
+        expr = pl.col(col).drop_nulls().first()
+        if dtype is not None and df.schema.get(col) == pl.Null:
+            expr = expr.cast(dtype)
+        return expr.alias(alias)
+    if dtype is not None:
+        return pl.lit(None, dtype=dtype).alias(alias)
     return pl.lit(None).alias(alias)
 
 
-def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[dict[str, str | int]]:
-    """Top-N most frequent non-null values + their event counts, ranked by count.
+def _is_real_finding_expr() -> pl.Expr:
+    """True for Detection Finding rows outside Suricata's decoder SID range (2200000-2260999)."""
+    sid_int = pl.col("finding_uid").cast(pl.Int64, strict=False)
+    is_decoder = sid_int.is_between(DECODER_SID_MIN, DECODER_SID_MAX).fill_null(False)
+    return (pl.col("class_uid") == CLASS_DETECTION_FINDING) & ~is_decoder
 
-    Returns `[{"value": str, "count": int}, ...]`, stored in gold as
-    `list[struct[value, count]]`. Dashboard pages render this as
-    `Rank | Value | Count`; the Discord report shows `value (count)`;
-    STIX export extracts just the `value` field.
-    """
+
+def _is_non_probe_download_expr() -> pl.Expr:
+    """True for File Activity rows excluding probe writes (``file_intent == 'probe'``)."""
+    return (pl.col("class_uid") == CLASS_FILE_ACTIVITY) & (
+        pl.col("file_intent").fill_null("malware") != "probe"
+    )
+
+
+def _filter_valid_src_ip(silver: pl.DataFrame) -> pl.DataFrame:
+    """Drop rows without a non-empty source IP (e.g. unattributed Dionaea disk captures)."""
+    if "src_endpoint_ip" not in silver.columns:
+        return silver.clear()
+    return silver.filter(
+        pl.col("src_endpoint_ip").is_not_null() & (pl.col("src_endpoint_ip").cast(pl.Utf8) != "")
+    )
+
+
+def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[dict[str, str | int]]:
+    """Top-N most frequent non-null values + their event counts, ranked by count."""
     if col not in df.columns:
         return []
     return (
@@ -127,15 +180,7 @@ def _top_n(df: pl.DataFrame, col: str, n: int = TOP_N) -> list[dict[str, str | i
 
 
 def _top_n_credential_pairs(df: pl.DataFrame, n: int = TOP_N) -> list[dict[str, str | int]]:
-    """Top-N username/password pairs, ranked by event count.
-
-    Returns `[{"username": str, "password": str, "count": int}, ...]`, stored
-    as `list[struct[username, password, count]]`. Useful on the Credentials
-    page to surface which exact pairs attackers reuse most — a different
-    signal from "top usernames" or "top passwords" alone (which can be
-    misleading when the most-tried user and most-tried pass never appear
-    together).
-    """
+    """Top-N username/password pairs, ranked by event count."""
     if "user_name" not in df.columns or "unmapped_password" not in df.columns:
         return []
     return (
@@ -155,15 +200,13 @@ def _top_n_credential_pairs(df: pl.DataFrame, n: int = TOP_N) -> list[dict[str, 
 
 
 def _top_n_countries_by_unique_ips(df: pl.DataFrame, n: int = TOP_N) -> list[dict[str, str | int]]:
-    """Top-N source countries + unique-IP counts.
-
-    Ranked by unique attacker IPs (not event count) to match `geographic_summary`.
-    A single chatty IP from CH should not outrank a swarm of distinct US scanners.
-    """
+    """Top-N source countries + unique-IP counts (null src IPs excluded)."""
     if "geo.country_code" not in df.columns or "src_endpoint_ip" not in df.columns:
         return []
     return (
-        df.filter(pl.col("geo.country_code").is_not_null())
+        df.filter(
+            pl.col("geo.country_code").is_not_null() & pl.col("src_endpoint_ip").is_not_null()
+        )
         .group_by("geo.country_code")
         .agg(pl.col("src_endpoint_ip").n_unique().alias("count"))
         .sort("count", descending=True)
@@ -176,7 +219,10 @@ def _top_n_countries_by_unique_ips(df: pl.DataFrame, n: int = TOP_N) -> list[dic
 def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
     """Compute daily summary statistics from silver-layer data.
 
-    Returns a single-row DataFrame with aggregate counts and top-N lists.
+    Excludes null ``src_endpoint_ip`` from ``unique_source_ips`` and excludes
+    Suricata decoder SIDs (2200000-2260999) from ``findings_detected``.
+    Pins explicit Polars struct-list schemas so empty lists never serialize
+    as ``List(Null)``.
     """
     if silver.is_empty():
         return pl.DataFrame()
@@ -185,28 +231,21 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
 
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
+    real_finding = _is_real_finding_expr()
 
     scalars = silver.select(
         pl.len().alias("total_events"),
-        pl.col("src_endpoint_ip").n_unique().alias("unique_source_ips"),
+        pl.col("src_endpoint_ip").drop_nulls().n_unique().alias("unique_source_ips"),
         pl.col("session").drop_nulls().n_unique().alias("unique_sessions"),
         (cls == CLASS_AUTHENTICATION).sum().alias("auth_attempts"),
         ((cls == CLASS_AUTHENTICATION) & (sts == STATUS_SUCCESS)).sum().alias("auth_successes"),
         ((cls == CLASS_AUTHENTICATION) & (sts == STATUS_FAILURE)).sum().alias("auth_failures"),
         (cls == CLASS_PROCESS_ACTIVITY).sum().alias("commands_executed"),
-        (cls == CLASS_DETECTION_FINDING).sum().alias("findings_detected"),
+        real_finding.sum().alias("findings_detected"),
         (cls == CLASS_NETWORK_ACTIVITY).sum().alias("network_events"),
         (cls == CLASS_FILE_ACTIVITY).sum().alias("downloads_captured"),
     )
 
-    # Restrict the malware top-N to events tagged ``file_intent='malware'``
-    # so attacker SSH-pubkey persistence and probe-byte writes don't
-    # dominate the brief's "captured malware" table. ``_ensure_gold_columns``
-    # has already backfilled file_intent as typed-null on legacy silver
-    # that lacks the column; a literal-null filter excludes nothing on a
-    # purely-null column, so we re-check is_not_null to gate the filter
-    # on real classification data. Legacy silver → falls through to the
-    # unfiltered behaviour (no regression on partial-coverage days).
     has_real_intent = (
         "file_intent" in silver.columns
         and silver.get_column("file_intent").null_count() < silver.height
@@ -216,7 +255,6 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
     else:
         malware_silver = silver
 
-    # Top-N lists as list columns
     lists = pl.DataFrame(
         {
             "top_usernames": [_top_n(silver, "user_name")],
@@ -227,50 +265,59 @@ def compute_daily_summary(silver: pl.DataFrame) -> pl.DataFrame:
             "top_source_ips": [_top_n(silver, "src_endpoint_ip")],
             "top_download_urls": [_top_n(malware_silver, "file_url")],
             "top_download_hashes": [_top_n(malware_silver, "file_hash_sha256")],
-        }
+        },
+        schema={
+            "top_usernames": _TOP_VALUE_LIST_DTYPE,
+            "top_passwords": _TOP_VALUE_LIST_DTYPE,
+            "top_credential_pairs": _TOP_CRED_PAIR_LIST_DTYPE,
+            "top_commands": _TOP_VALUE_LIST_DTYPE,
+            "top_source_countries": _TOP_VALUE_LIST_DTYPE,
+            "top_source_ips": _TOP_VALUE_LIST_DTYPE,
+            "top_download_urls": _TOP_VALUE_LIST_DTYPE,
+            "top_download_hashes": _TOP_VALUE_LIST_DTYPE,
+        },
     )
 
     return pl.concat([scalars, lists], how="horizontal")
 
 
 def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
-    """Compute per-IP reputation scores from enrichment and behavioral data.
+    """Compute per-IP reputation scores using the behavioral-anchored monotonic formula.
 
-    Three risk scores per IP (all 0..100, clipped):
+    Filters out null/empty ``src_endpoint_ip`` rows, excludes Suricata decoder
+    SIDs (2200000-2260999) from ``findings_triggered``, and excludes
+    ``file_intent == "probe"`` from download behavioral risk weight.
 
-    * ``enrichment_risk_score`` — horizontal mean of the four per-provider
-      scores that landed in silver (``abuseipdb_risk_score``,
-      ``virustotal_risk_score``, ``shodan_risk_score``,
-      ``greynoise_risk_score``), skipping nulls. If every provider was
-      null for this IP, the mean is null and the composite below falls
-      back to behavioral only.
-    * ``behavioral_risk_score`` — derived purely from on-honeypot
-      activity:
-        +20 if auth_successes > 0
-        +25 if commands_executed > 0
-        +15 if findings_triggered > 0
-        +20 if downloads > 0
+    Scoring (0..100, clipped):
+    * ``behavioral_risk_score`` (0..100):
+        +25 auth_successes > 0
+        +25 commands_executed > 0
+        +25 non-probe downloads > 0
+        +15 real findings > 0
         +min(auth_attempts, 100) * 0.1
-    * ``risk_score`` — the single number every downstream consumer reads
-      (STIX gate, dashboard buckets, Discord top-5, geography map):
-        risk_score = (enrichment.fill_null(0) + behavioral) / 2
-      Mean of two halves, each 0..100, so the composite is 0..100. The
-      ``fill_null(0)`` is deliberate: an IP with zero enrichment data
-      still attracts behavioral attention, just halved by the absent
-      intel side.
-
-    See docs/risk-scoring.md for the full formula + worked examples.
+    * ``enrichment_risk_score`` (0..100 or null):
+        horizontal mean of non-null per-provider scores
+    * ``risk_score`` (monotonic behavioral-anchored composite):
+        - Pure scan (``behavioral == 0``):
+            ``0.0`` if RIOT or GreyNoise ``benign``,
+            else ``enrichment.fill_null(0.0) * 0.35`` (capped at 35, never enters STIX)
+        - Interactive / credential activity (``behavioral > 0``):
+            ``behavioral / 2.0`` if RIOT or GreyNoise ``benign`` (FP brake),
+            else ``max(behavioral, 0.5 * behavioral + 0.5 * enrichment)`` when
+            enrichment is present, or ``behavioral`` when enrichment is null.
     """
     if silver.is_empty():
         return pl.DataFrame()
 
-    silver = _ensure_gold_columns(silver)
+    silver = _filter_valid_src_ip(_ensure_gold_columns(silver))
+    if silver.is_empty():
+        return pl.DataFrame()
 
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
+    real_finding = _is_real_finding_expr()
+    real_download = _is_non_probe_download_expr()
 
-    # Core columns always present in silver (built by the normaliser, not
-    # dependent on which providers ran).
     core_aggs: list[pl.Expr] = [
         pl.len().alias("total_events"),
         pl.col("dataset").unique().alias("datasets"),
@@ -279,50 +326,43 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
         pl.col("user_name").drop_nulls().n_unique().alias("unique_usernames"),
         pl.col("unmapped_password").drop_nulls().n_unique().alias("unique_passwords"),
         (cls == CLASS_PROCESS_ACTIVITY).sum().alias("commands_executed"),
-        (cls == CLASS_DETECTION_FINDING).sum().alias("findings_triggered"),
-        (cls == CLASS_FILE_ACTIVITY).sum().alias("downloads"),
+        real_finding.sum().alias("findings_triggered"),
+        real_download.sum().alias("downloads"),
         pl.col("time").min().alias("first_seen"),
         pl.col("time").max().alias("last_seen"),
-        _optional_first(silver, "geo.country_code", "geo_country"),
+        _optional_first(silver, "geo.country_code", "geo_country", pl.Utf8()),
         _optional_first(silver, "geo.asn", "geo_asn"),
-        _optional_first(silver, "geo.isp", "geo_isp"),
+        _optional_first(silver, "geo.isp", "geo_isp", pl.Utf8()),
     ]
 
-    # Optional enrichment columns — may be absent on any given day when a
-    # provider was rate-limited, circuit-broken, or simply not configured.
-    # _optional_first returns a typed null literal when the column is absent
-    # so the group_by aggregation doesn't crash.
-    optional = [
-        ("geo.city", "geo_city"),
-        ("geo.latitude", "geo_latitude"),
-        ("geo.longitude", "geo_longitude"),
-        ("abuseipdb_confidence_score", "abuseipdb_score"),
-        ("abuseipdb_total_reports", "abuseipdb_reports"),
-        ("greynoise_classification", "greynoise_class"),
-        ("greynoise_name", "greynoise_name"),
-        ("greynoise_noise", "greynoise_noise"),
-        ("greynoise_riot", "greynoise_riot"),
-        ("shodan_ports", "shodan_ports"),
-        ("shodan_os", "shodan_os"),
-        ("shodan_vulns", "shodan_vulns"),
-        ("shodan_org", "shodan_org"),
-        ("vt_malicious_count", "vt_malicious"),
-        ("vt_ip_reputation", "vt_reputation"),
-        # Per-provider risk_scores from Phase D.1 — pulled into gold for
-        # the composite blend below. Each is a Float64 in [0, 100] or null
-        # when the provider didn't contribute to this IP this run.
-        ("abuseipdb_risk_score", "abuseipdb_risk_score"),
-        ("virustotal_risk_score", "virustotal_risk_score"),
-        ("shodan_risk_score", "shodan_risk_score"),
-        ("greynoise_risk_score", "greynoise_risk_score"),
+    optional: list[tuple[str, str, pl.DataType]] = [
+        ("geo.city", "geo_city", pl.Utf8()),
+        ("geo.latitude", "geo_latitude", pl.Float64()),
+        ("geo.longitude", "geo_longitude", pl.Float64()),
+        ("abuseipdb_confidence_score", "abuseipdb_score", pl.Int64()),
+        ("abuseipdb_total_reports", "abuseipdb_reports", pl.Int64()),
+        ("greynoise_classification", "greynoise_class", pl.Utf8()),
+        ("greynoise_name", "greynoise_name", pl.Utf8()),
+        ("greynoise_noise", "greynoise_noise", pl.Boolean()),
+        ("greynoise_riot", "greynoise_riot", pl.Boolean()),
+        ("shodan_ports", "shodan_ports", pl.Utf8()),
+        ("shodan_os", "shodan_os", pl.Utf8()),
+        ("shodan_vulns", "shodan_vulns", pl.Utf8()),
+        ("shodan_org", "shodan_org", pl.Utf8()),
+        ("vt_malicious_count", "vt_malicious", pl.Int64()),
+        ("vt_ip_reputation", "vt_reputation", pl.Int64()),
+        ("gti_verdict", "gti_verdict", pl.Utf8()),
+        ("gti_score", "gti_score", pl.Int64()),
+        ("gti_threat_actors", "gti_threat_actors", pl.Utf8()),
+        ("abuseipdb_risk_score", "abuseipdb_risk_score", pl.Float64()),
+        ("virustotal_risk_score", "virustotal_risk_score", pl.Float64()),
+        ("shodan_risk_score", "shodan_risk_score", pl.Float64()),
+        ("greynoise_risk_score", "greynoise_risk_score", pl.Float64()),
     ]
-    enrichment_aggs = [_optional_first(silver, col, alias) for col, alias in optional]
+    enrichment_aggs = [_optional_first(silver, col, alias, dt) for col, alias, dt in optional]
 
     grouped = silver.group_by("src_endpoint_ip").agg(core_aggs + enrichment_aggs)
 
-    # Phase D.2 composite. Three score columns in a single with_columns so
-    # later expressions can reference the earlier aliases (polars resolves
-    # within one with_columns left-to-right via the expression chain).
     behavioral_expr = (
         pl.when(pl.col("auth_successes") > 0).then(BEHAVIORAL_AUTH_FACTOR).otherwise(0.0)
         + pl.when(pl.col("commands_executed") > 0).then(BEHAVIORAL_COMMAND_FACTOR).otherwise(0.0)
@@ -336,49 +376,56 @@ def compute_ip_reputation(silver: pl.DataFrame) -> pl.DataFrame:
     ).clip(0.0, 100.0)
 
     enrichment_expr = pl.mean_horizontal(
-        pl.col("abuseipdb_risk_score").cast(pl.Float64),
-        pl.col("virustotal_risk_score").cast(pl.Float64),
-        pl.col("shodan_risk_score").cast(pl.Float64),
-        pl.col("greynoise_risk_score").cast(pl.Float64),
+        pl.col("abuseipdb_risk_score").cast(pl.Float64).clip(0.0, 100.0),
+        pl.col("virustotal_risk_score").cast(pl.Float64).clip(0.0, 100.0),
+        pl.col("shodan_risk_score").cast(pl.Float64).clip(0.0, 100.0),
+        pl.col("greynoise_risk_score").cast(pl.Float64).clip(0.0, 100.0),
     ).clip(0.0, 100.0)
+
+    is_benign_or_riot = pl.col("greynoise_riot").fill_null(False) | (
+        pl.col("greynoise_class").fill_null("") == "benign"
+    )
+    b = pl.col("behavioral_risk_score")
+    e = pl.col("enrichment_risk_score")
+    composite_expr = (
+        pl.when(b <= 0.0)
+        .then(
+            pl.when(is_benign_or_riot)
+            .then(pl.lit(0.0))
+            .otherwise(e.fill_null(0.0) * SCANNER_ENRICHMENT_SCALE)
+        )
+        .when(is_benign_or_riot)
+        .then(b / 2.0)
+        .when(e.is_not_null())
+        .then(pl.max_horizontal(b, 0.5 * b + 0.5 * e))
+        .otherwise(b)
+        .clip(0.0, 100.0)
+    )
 
     result = grouped.with_columns(
         enrichment_expr.alias("enrichment_risk_score"),
         behavioral_expr.alias("behavioral_risk_score"),
-    ).with_columns(
-        ((pl.col("enrichment_risk_score").fill_null(0.0) + pl.col("behavioral_risk_score")) / 2.0)
-        .clip(0.0, 100.0)
-        .alias("risk_score"),
-    )
+    ).with_columns(composite_expr.alias("risk_score"))
 
     return result.sort(
-        ["risk_score", "enrichment_risk_score"],
-        descending=[True, True],
+        ["risk_score", "behavioral_risk_score", "enrichment_risk_score"],
+        descending=[True, True, True],
         nulls_last=True,
     )
 
 
 def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
-    """Compute attacker behavioral progression metrics.
-
-    Stages:
-    1. SCAN — only network events
-    2. CREDENTIAL — login attempts present
-    3. AUTHENTICATED — at least one successful login
-    4. INTERACTIVE — commands executed
-
-    Automated heuristic: auth_attempts > 10 AND unique_passwords > 5
-    within 120s window, OR greynoise_noise == true.
-    """
+    """Compute attacker behavioral progression metrics (excluding null source IPs)."""
     if silver.is_empty():
         return pl.DataFrame()
 
-    silver = _ensure_gold_columns(silver)
+    silver = _filter_valid_src_ip(_ensure_gold_columns(silver))
+    if silver.is_empty():
+        return pl.DataFrame()
 
     cls = pl.col("class_uid")
     sts = pl.col("status_id")
 
-    # Per-IP aggregations
     grouped = silver.group_by("src_endpoint_ip").agg(
         pl.col("time").min().alias("first_seen"),
         pl.col("time").max().alias("last_seen"),
@@ -388,19 +435,15 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
         (cls == CLASS_PROCESS_ACTIVITY).sum().alias("commands_executed"),
         pl.col("session").drop_nulls().n_unique().alias("unique_sessions"),
         pl.col("unmapped_password").drop_nulls().n_unique().alias("unique_passwords"),
-        # Timing: first event of each type
         pl.col("time").filter(cls == CLASS_AUTHENTICATION).min().alias("first_auth_time"),
         pl.col("time")
         .filter((cls == CLASS_AUTHENTICATION) & (sts == STATUS_SUCCESS))
         .min()
         .alias("first_success_time"),
         pl.col("time").filter(cls == CLASS_PROCESS_ACTIVITY).min().alias("first_command_time"),
-        # Automated detection inputs (greynoise_noise absent when the provider
-        # didn't contribute to this date — fall back to false via fill_null below)
-        _optional_first(silver, "greynoise_noise", "greynoise_noise"),
+        _optional_first(silver, "greynoise_noise", "greynoise_noise", pl.Boolean()),
     )
 
-    # Compute max_stage
     result = grouped.with_columns(
         pl.when(pl.col("commands_executed") > 0)
         .then(pl.lit(STAGE_INTERACTIVE))
@@ -412,19 +455,15 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
         .alias("max_stage"),
     )
 
-    # Stage label
     result = result.with_columns(
         pl.col("max_stage").replace_strict(STAGE_LABELS, default="unknown").alias("stage_label"),
     )
 
-    # Escalation timing (seconds)
     result = result.with_columns(
-        # seconds from first_seen to first auth attempt
         pl.when(pl.col("first_auth_time").is_not_null())
         .then((pl.col("first_auth_time") - pl.col("first_seen")).dt.total_seconds().cast(pl.Int64))
-        .otherwise(pl.lit(None))
+        .otherwise(pl.lit(None, dtype=pl.Int64))
         .alias("seconds_to_auth"),
-        # seconds from first auth to first success
         pl.when(
             pl.col("first_success_time").is_not_null() & pl.col("first_auth_time").is_not_null()
         )
@@ -433,9 +472,8 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
             .dt.total_seconds()
             .cast(pl.Int64)
         )
-        .otherwise(pl.lit(None))
+        .otherwise(pl.lit(None, dtype=pl.Int64))
         .alias("seconds_to_success"),
-        # seconds from first success to first command
         pl.when(
             pl.col("first_command_time").is_not_null() & pl.col("first_success_time").is_not_null()
         )
@@ -444,11 +482,10 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
             .dt.total_seconds()
             .cast(pl.Int64)
         )
-        .otherwise(pl.lit(None))
+        .otherwise(pl.lit(None, dtype=pl.Int64))
         .alias("seconds_to_command"),
     )
 
-    # Automated heuristic
     time_window = (pl.col("last_seen") - pl.col("first_seen")).dt.total_seconds()
     result = result.with_columns(
         (
@@ -461,7 +498,6 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
         ).alias("is_automated"),
     )
 
-    # Drop intermediate timing columns
     result = result.drop(
         "first_auth_time",
         "first_success_time",
@@ -474,17 +510,14 @@ def compute_behavioral_progression(silver: pl.DataFrame) -> pl.DataFrame:
 
 
 def compute_campaign_clusters(silver: pl.DataFrame) -> pl.DataFrame:
-    """Compute campaign clusters from shared credential pairs.
-
-    Groups IPs by (username, password) pairs. Only clusters with >= 2
-    unique IPs are included.
-    """
+    """Compute campaign clusters from shared credential pairs (>= 2 unique IPs)."""
     if silver.is_empty():
         return pl.DataFrame()
 
-    silver = _ensure_gold_columns(silver)
+    silver = _filter_valid_src_ip(_ensure_gold_columns(silver))
+    if silver.is_empty():
+        return pl.DataFrame()
 
-    # Filter to auth events with credentials
     auth = silver.filter(
         (pl.col("class_uid") == CLASS_AUTHENTICATION)
         & pl.col("user_name").is_not_null()
@@ -496,7 +529,6 @@ def compute_campaign_clusters(silver: pl.DataFrame) -> pl.DataFrame:
     if auth.is_empty():
         return pl.DataFrame()
 
-    # Group by credential pair
     clusters = auth.group_by("user_name", "unmapped_password").agg(
         pl.col("src_endpoint_ip").unique().alias("ips"),
         pl.col("src_endpoint_ip").n_unique().alias("ip_count"),
@@ -505,13 +537,10 @@ def compute_campaign_clusters(silver: pl.DataFrame) -> pl.DataFrame:
         pl.col("time").max().alias("last_seen"),
     )
 
-    # Only clusters with >= 2 IPs
     clusters = clusters.filter(pl.col("ip_count") >= 2)
-
     if clusters.is_empty():
         return pl.DataFrame()
 
-    # Generate cluster_id from credential hash
     clusters = clusters.with_columns(
         pl.struct("user_name", "unmapped_password")
         .map_elements(
@@ -523,7 +552,6 @@ def compute_campaign_clusters(silver: pl.DataFrame) -> pl.DataFrame:
         .alias("cluster_id"),
     )
 
-    # Rename for clarity
     clusters = clusters.rename(
         {
             "user_name": "shared_username",
@@ -544,17 +572,16 @@ def compute_campaign_clusters(silver: pl.DataFrame) -> pl.DataFrame:
 
 
 def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
-    """Compute geographic distribution of attack origins.
-
-    Returns a single-row DataFrame with top countries, cities, and ASNs
-    encoded as list columns (same pattern as daily_summary).
-    """
+    """Compute geographic distribution of attack origins with explicit Utf8 list schemas."""
     if silver.is_empty() or "geo.country_code" not in silver.columns:
         return pl.DataFrame()
 
-    # Top countries by unique IPs
+    valid = _filter_valid_src_ip(silver)
+    if valid.is_empty():
+        return pl.DataFrame()
+
     countries = (
-        silver.filter(pl.col("geo.country_code").is_not_null())
+        valid.filter(pl.col("geo.country_code").is_not_null())
         .group_by("geo.country_code")
         .agg(
             pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
@@ -574,16 +601,15 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
         .to_list()
     )
 
-    # Top cities by unique IPs (with lat/lon for mapping)
     top_cities: list[str] = []
-    if "geo.city" in silver.columns:
+    if "geo.city" in valid.columns:
         city_group_cols = [
             c
             for c in ("geo.city", "geo.country_code", "geo.latitude", "geo.longitude")
-            if c in silver.columns
+            if c in valid.columns
         ]
         cities = (
-            silver.filter(pl.col("geo.city").is_not_null() & (pl.col("geo.city") != ""))
+            valid.filter(pl.col("geo.city").is_not_null() & (pl.col("geo.city") != ""))
             .group_by(city_group_cols)
             .agg(
                 pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
@@ -609,83 +635,356 @@ def compute_geographic_summary(silver: pl.DataFrame) -> pl.DataFrame:
             .to_list()
         )
 
-    # Top ASNs by unique IPs
     top_asns: list[str] = []
-    if "geo.asn" not in silver.columns:
-        return pl.DataFrame(
-            {
-                "top_countries": [top_countries],
-                "top_cities": [top_cities],
-                "top_asns": [top_asns],
-            }
+    if "geo.asn" in valid.columns:
+        if "geo.isp" not in valid.columns:
+            valid = valid.with_columns(pl.lit(None, dtype=pl.Utf8).alias("geo.isp"))
+        asns = (
+            valid.filter(pl.col("geo.asn").is_not_null())
+            .group_by("geo.asn", "geo.isp")
+            .agg(
+                pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
+                pl.len().alias("total_events"),
+            )
+            .sort("unique_ips", descending=True)
+            .head(TOP_N)
         )
-
-    if "geo.isp" not in silver.columns:
-        silver = silver.with_columns(pl.lit(None, dtype=pl.Utf8).alias("geo.isp"))
-
-    # geo.asn is Int64 in production (MaxMind ASN MMDB returns int); is_not_null
-    # is the only validity check needed. The previous `!= ""` comparison worked
-    # only against string-typed test fixtures.
-    asns = (
-        silver.filter(pl.col("geo.asn").is_not_null())
-        .group_by("geo.asn", "geo.isp")
-        .agg(
-            pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
-            pl.len().alias("total_events"),
+        top_asns = (
+            asns.select(
+                pl.concat_str(
+                    [
+                        pl.col("geo.asn").cast(pl.Utf8),
+                        pl.lit("|"),
+                        pl.col("geo.isp").fill_null(""),
+                        pl.lit(":"),
+                        pl.col("unique_ips").cast(pl.Utf8),
+                    ],
+                    separator="",
+                ).alias("entry")
+            )
+            .get_column("entry")
+            .to_list()
         )
-        .sort("unique_ips", descending=True)
-        .head(TOP_N)
-    )
-    top_asns = (
-        asns.select(
-            pl.concat_str(
-                [
-                    pl.col("geo.asn").cast(pl.Utf8),
-                    pl.lit("|"),
-                    pl.col("geo.isp").fill_null(""),
-                    pl.lit(":"),
-                    pl.col("unique_ips").cast(pl.Utf8),
-                ],
-                separator="",
-            ).alias("entry")
-        )
-        .get_column("entry")
-        .to_list()
-    )
 
     return pl.DataFrame(
         {
             "top_countries": [top_countries],
             "top_cities": [top_cities],
             "top_asns": [top_asns],
-        }
+        },
+        schema={
+            "top_countries": _UTF8_LIST_DTYPE,
+            "top_cities": _UTF8_LIST_DTYPE,
+            "top_asns": _UTF8_LIST_DTYPE,
+        },
     )
 
 
 def compute_detection_findings(silver: pl.DataFrame) -> pl.DataFrame:
     """Compute detection finding statistics from Suricata alerts.
 
-    Returns one row per rule with event count, unique IPs, and severity.
-    Top 20 rules by event count.
+    Excludes Suricata stream/decoder SIDs (2200000-2260999), preserves
+    ``finding_uid`` in gold, and retains up to 100 rules per day.
     """
     if silver.is_empty() or "finding_title" not in silver.columns:
         return pl.DataFrame()
 
-    findings = silver.filter(pl.col("class_uid") == CLASS_DETECTION_FINDING)
+    silver = _ensure_gold_columns(silver)
+    findings = silver.filter(_is_real_finding_expr() & pl.col("finding_title").is_not_null())
     if findings.is_empty():
         return pl.DataFrame()
 
-    # Group by finding_title
     aggs: list[pl.Expr] = [
+        pl.col("finding_uid").drop_nulls().first().cast(pl.Utf8).alias("finding_uid"),
         pl.len().alias("event_count"),
-        pl.col("src_endpoint_ip").n_unique().alias("unique_ips"),
+        pl.col("src_endpoint_ip").drop_nulls().n_unique().alias("unique_ips"),
         pl.col("severity_id").mode().first().alias("severity_id"),
         pl.col("time").min().alias("first_seen"),
         pl.col("time").max().alias("last_seen"),
+        pl.col("finding_category").drop_nulls().first().cast(pl.Utf8).alias("category"),
     ]
-    if "finding_category" in findings.columns:
-        aggs.append(pl.col("finding_category").first().alias("category"))
 
     result = findings.group_by("finding_title").agg(aggs)
+    return result.sort("event_count", descending=True).head(DETECTION_FINDINGS_TOP_N)
 
-    return result.sort("event_count", descending=True).head(20)
+
+def _ensure_utc_dt(value: object) -> datetime | None:
+    """Normalize a timestamp value to UTC-aware datetime."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return None
+
+
+def _opt_str(val: object) -> str | None:
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
+def _opt_int(val: object) -> int | None:
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        return int(val)
+    return None
+
+
+def compute_extracted_iocs(
+    silver: pl.DataFrame,
+    *,
+    redact_config: RedactionConfig | None = None,
+    enrichment_lookup: Mapping[tuple[str, str], Mapping[str, object]] | None = None,
+) -> pl.DataFrame:
+    """Build the 7th Gold table: one row per durable daily observable.
+
+    Durable IOC types:
+      * ``malware_hash``  — all non-probe, non-persistence SHA-256 captures
+      * ``c2_ip``         — external outbound C2 / payload-staging IPs
+      * ``stager_url``    — external post-auth stager URLs
+      * ``stager_domain`` — external domain names from post-auth stager URLs
+      * ``ssh_key``       — persistent OpenSSH public-key fingerprints
+    """
+    if silver.is_empty():
+        return pl.DataFrame(schema=EXTRACTED_IOCS_SCHEMA)
+
+    silver = _ensure_gold_columns(silver)
+    cfg = redact_config if redact_config is not None else RedactionConfig()
+    lookup = enrichment_lookup or {}
+
+    # Accumulator keyed by (ioc_type, ioc_value)
+    acc: dict[tuple[str, str], dict[str, object]] = {}
+
+    def _touch(
+        ioc_type: str,
+        ioc_value: str,
+        ts: datetime | None,
+        src_ip: str | None,
+        meta: Mapping[str, object] | None = None,
+    ) -> None:
+        key = (ioc_type, ioc_value)
+        entry = acc.get(key)
+        if entry is None:
+            entry = {
+                "ioc_type": ioc_type,
+                "ioc_value": ioc_value,
+                "vhash": None,
+                "first_seen": ts,
+                "last_seen": ts,
+                "event_count": 0,
+                "src_ips": set(),
+                "vt_status": None,
+                "vt_malicious": None,
+                "gti_verdict": None,
+                "gti_score": None,
+                "malware_family": None,
+                "actor_associations": None,
+            }
+            acc[key] = entry
+        prev_count = entry["event_count"]
+        entry["event_count"] = (prev_count if isinstance(prev_count, int) else 0) + 1
+        if ts is not None:
+            fs = entry["first_seen"]
+            ls = entry["last_seen"]
+            if fs is None or (isinstance(fs, datetime) and ts < fs):
+                entry["first_seen"] = ts
+            if ls is None or (isinstance(ls, datetime) and ts > ls):
+                entry["last_seen"] = ts
+        if src_ip:
+            ips_set = entry["src_ips"]
+            if isinstance(ips_set, set):
+                ips_set.add(src_ip)
+        if meta:
+            for field in (
+                "vhash",
+                "vt_status",
+                "vt_malicious",
+                "gti_verdict",
+                "gti_score",
+                "malware_family",
+                "actor_associations",
+            ):
+                if entry.get(field) is None and meta.get(field) is not None:
+                    entry[field] = meta[field]
+
+    # 1. Malware hashes (all daily non-probe, non-persistence file captures)
+    file_cols = [
+        c
+        for c in (
+            "class_uid",
+            "file_intent",
+            "file_hash_sha256",
+            "time",
+            "src_endpoint_ip",
+            "vt_file_vhash",
+            "vt_status",
+            "vt_file_malicious_count",
+            "vt_file_family",
+            "gti_verdict",
+            "gti_score",
+            "gti_malware_families",
+            "gti_threat_actors",
+        )
+        if c in silver.columns
+    ]
+    malware_rows = silver.filter(
+        (pl.col("class_uid") == CLASS_FILE_ACTIVITY)
+        & pl.col("file_hash_sha256").is_not_null()
+        & (pl.col("file_hash_sha256") != "")
+        & (~pl.col("file_intent").fill_null("malware").is_in(["probe", "persistence"]))
+    )
+    for row in malware_rows.select(file_cols).iter_rows(named=True):
+        sha = str(row["file_hash_sha256"])
+        cached = lookup.get(("hash", sha), {})
+        family = (
+            _opt_str(row.get("vt_file_family"))
+            or _opt_str(row.get("gti_malware_families"))
+            or _opt_str(cached.get("vt_file_family"))
+            or _opt_str(cached.get("gti_malware_families"))
+        )
+        meta = {
+            "vhash": _opt_str(row.get("vt_file_vhash")) or _opt_str(cached.get("vt_file_vhash")),
+            "vt_status": _opt_str(row.get("vt_status")) or _opt_str(cached.get("vt_status")),
+            "vt_malicious": (
+                _opt_int(row.get("vt_file_malicious_count"))
+                if row.get("vt_file_malicious_count") is not None
+                else _opt_int(cached.get("vt_file_malicious_count"))
+            ),
+            "gti_verdict": _opt_str(row.get("gti_verdict")) or _opt_str(cached.get("gti_verdict")),
+            "gti_score": (
+                _opt_int(row.get("gti_score"))
+                if row.get("gti_score") is not None
+                else _opt_int(cached.get("gti_score"))
+            ),
+            "malware_family": family,
+            "actor_associations": (
+                _opt_str(row.get("gti_threat_actors")) or _opt_str(cached.get("gti_threat_actors"))
+            ),
+        }
+        _touch(
+            "malware_hash",
+            sha,
+            _ensure_utc_dt(row.get("time")),
+            _opt_str(row.get("src_endpoint_ip")),
+            meta,
+        )
+
+    # 2. Outbound URLs, stager domains, C2 IPs, and SSH public keys
+    text_rows = silver.filter(
+        pl.col("actor_process_cmd_line").is_not_null()
+        | (
+            pl.col("file_url").is_not_null()
+            & (pl.col("file_intent").fill_null("malware") != "probe")
+        )
+    )
+    text_cols = [
+        c
+        for c in (
+            "time",
+            "src_endpoint_ip",
+            "actor_process_cmd_line",
+            "file_url",
+            "file_intent",
+            "vt_url_malicious_count",
+            "vt_status",
+            "gti_verdict",
+            "gti_score",
+            "gti_malware_families",
+            "gti_threat_actors",
+        )
+        if c in text_rows.columns
+    ]
+    for row in text_rows.select(text_cols).iter_rows(named=True):
+        mini = pl.DataFrame(
+            {
+                "actor_process_cmd_line": [row.get("actor_process_cmd_line")],
+                "file_url": [row.get("file_url")],
+                "file_intent": [row.get("file_intent")],
+            },
+            schema={
+                "actor_process_cmd_line": pl.Utf8,
+                "file_url": pl.Utf8,
+                "file_intent": pl.Utf8,
+            },
+        )
+        ts = _ensure_utc_dt(row.get("time"))
+        src_ip = _opt_str(row.get("src_endpoint_ip"))
+
+        row_urls = extract_outbound_urls(mini, cfg)
+        for url in sorted(row_urls):
+            cached_u = lookup.get(("url", url), {})
+            u_meta = {
+                "vt_status": _opt_str(cached_u.get("vt_status")),
+                "vt_malicious": (
+                    _opt_int(cached_u.get("vt_url_malicious_count"))
+                    if cached_u.get("vt_url_malicious_count") is not None
+                    else _opt_int(row.get("vt_url_malicious_count"))
+                ),
+                "gti_verdict": _opt_str(cached_u.get("gti_verdict")),
+                "gti_score": _opt_int(cached_u.get("gti_score")),
+                "malware_family": _opt_str(cached_u.get("gti_malware_families")),
+                "actor_associations": _opt_str(cached_u.get("gti_threat_actors")),
+            }
+            _touch("stager_url", url, ts, src_ip, u_meta)
+
+        for domain in sorted(extract_stager_domains(row_urls, cfg)):
+            cached_d = lookup.get(("domain", domain), {})
+            d_meta = {
+                "vt_status": _opt_str(cached_d.get("vt_status")),
+                "vt_malicious": _opt_int(cached_d.get("vt_domain_malicious_count")),
+                "gti_verdict": _opt_str(cached_d.get("gti_verdict")),
+                "gti_score": _opt_int(cached_d.get("gti_score")),
+                "malware_family": _opt_str(cached_d.get("gti_malware_families")),
+                "actor_associations": _opt_str(cached_d.get("gti_threat_actors")),
+            }
+            _touch("stager_domain", domain, ts, src_ip, d_meta)
+
+        for c2_ip in sorted(extract_outbound_c2_ips(mini, cfg)):
+            try:
+                ipaddress.ip_address(c2_ip)
+            except ValueError:
+                continue
+            cached_ip = lookup.get(("ip", c2_ip), {})
+            ip_meta = {
+                "vt_status": _opt_str(cached_ip.get("vt_status")),
+                "vt_malicious": _opt_int(cached_ip.get("vt_malicious_count")),
+                "gti_verdict": _opt_str(cached_ip.get("gti_verdict")),
+                "gti_score": _opt_int(cached_ip.get("gti_score")),
+                "malware_family": _opt_str(cached_ip.get("gti_malware_families")),
+                "actor_associations": _opt_str(cached_ip.get("gti_threat_actors")),
+            }
+            _touch("c2_ip", c2_ip, ts, src_ip, ip_meta)
+
+        for ssh_fp in sorted(extract_ssh_public_keys(mini)):
+            _touch("ssh_key", ssh_fp, ts, src_ip)
+
+    if not acc:
+        return pl.DataFrame(schema=EXTRACTED_IOCS_SCHEMA)
+
+    rows: list[dict[str, object]] = []
+    for entry in acc.values():
+        ips_set = entry["src_ips"]
+        unique_srcs = len(ips_set) if isinstance(ips_set, set) else 0
+        rows.append(
+            {
+                "ioc_type": entry["ioc_type"],
+                "ioc_value": entry["ioc_value"],
+                "vhash": entry["vhash"],
+                "first_seen": entry["first_seen"],
+                "last_seen": entry["last_seen"],
+                "event_count": entry["event_count"],
+                "unique_src_ips": unique_srcs,
+                "vt_status": entry["vt_status"],
+                "vt_malicious": entry["vt_malicious"],
+                "gti_verdict": entry["gti_verdict"],
+                "gti_score": entry["gti_score"],
+                "malware_family": entry["malware_family"],
+                "actor_associations": entry["actor_associations"],
+            }
+        )
+
+    return pl.DataFrame(rows, schema=EXTRACTED_IOCS_SCHEMA).sort(
+        ["ioc_type", "event_count", "ioc_value"],
+        descending=[False, True, False],
+    )

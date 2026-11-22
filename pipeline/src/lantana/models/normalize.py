@@ -642,10 +642,20 @@ DIONAEA_FIELD_MAP: dict[str, tuple[str, str, str]] = {
     # --- Conditional ---
     "credential_username": ("user_name", "conditional", "Login events; null otherwise"),
     "credential_password": ("unmapped_password", "conditional", "Login events; credential intel"),
-    "ftp_command": ("actor_process_cmd_line", "conditional", "FTP command events only"),
+    "ftp_command": ("actor_process_cmd_line", "conditional", "FTP command events"),
+    "sql_command": ("actor_process_cmd_line", "conditional", "MSSQL/MySQL query commands"),
+    "shasum": ("file_hash_sha256", "conditional", "Captured binary SHA-256 hash"),
+    "download_url": ("file_url", "conditional", "Captured binary download URL / upload URI"),
+    "binary_file_name": ("file_name", "conditional", "Captured binary on-disk filename"),
     # --- Preserved ---
     "connection_transport": ("connection_transport", "preserve", "TCP/UDP/TLS transport"),
     "src_hostname": ("src_hostname", "preserve", "Reverse DNS hostname"),
+    "http_method": ("http_method", "preserve", "HTTP request method (lantana_json)"),
+    "http_uri": ("http_uri", "preserve", "HTTP request URI with query string"),
+    "http_user_agent": ("http_user_agent", "preserve", "HTTP User-Agent header"),
+    "http_host": ("http_host", "preserve", "HTTP Host header"),
+    "http_content_type": ("http_content_type", "preserve", "HTTP Content-Type header"),
+    "http_body_preview": ("http_body_preview", "preserve", "Bounded HTTP POST/PUT body preview"),
 }
 
 
@@ -654,12 +664,11 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
 
     Event dispatch:
     - eventid="dionaea.binary.captured" -> File Activity (1001)
-      (synthetic event from the disk-scan helper covering SMB/FTP/HTTP
-      uploads that dionaea writes to ``var/lib/dionaea/binaries`` without
-      ever emitting a hash event to ``log_json``)
+      (emitted with per-session ``src_ip`` & ``download_url`` by the custom
+      ``lantana_json`` ihandler, or synthesised from disk as fallback)
     - credential_username present       -> Authentication (3002)
-    - ftp_command present               -> Process Activity (1007)
-    - other connections                 -> Network Activity (4001)
+    - ftp_command or sql_command        -> Process Activity (1007)
+    - other connections (incl. HTTP)    -> Network Activity (4001)
 
     Bronze fields are pre-flattened by Vector (connection.* -> connection_*,
     credentials[] -> credential_username/credential_password).
@@ -679,22 +688,60 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         else pl.lit(False)
     )
 
+    has_sql_command = (
+        (pl.col("sql_command").is_not_null() & (pl.col("sql_command") != ""))
+        if "sql_command" in df.columns
+        else pl.lit(False)
+    )
+
+    has_command = has_ftp_command | has_sql_command
+
+    has_http_request = (
+        (pl.col("http_method").is_not_null() & (pl.col("http_method") != ""))
+        if "http_method" in df.columns
+        else pl.lit(False)
+    )
+
     is_binary_capture = (
         (pl.col("eventid") == "dionaea.binary.captured")
         if "eventid" in df.columns
         else pl.lit(False)
     )
 
+    ftp_expr = (
+        pl.when(has_ftp_command).then(pl.col("ftp_command")).otherwise(pl.lit(None, dtype=pl.Utf8))
+        if "ftp_command" in df.columns
+        else pl.lit(None, dtype=pl.Utf8)
+    )
+    sql_expr = (
+        pl.when(has_sql_command).then(pl.col("sql_command")).otherwise(pl.lit(None, dtype=pl.Utf8))
+        if "sql_command" in df.columns
+        else pl.lit(None, dtype=pl.Utf8)
+    )
+    cmd_line_expr = pl.coalesce([ftp_expr, sql_expr]).cast(pl.Utf8)
+
+    download_url_expr = (
+        pl.when(
+            is_binary_capture
+            & pl.col("download_url").is_not_null()
+            & (pl.col("download_url") != "")
+        )
+        .then(pl.col("download_url"))
+        .otherwise(pl.lit(None, dtype=pl.Utf8))
+        .cast(pl.Utf8)
+        if "download_url" in df.columns
+        else pl.lit(None, dtype=pl.Utf8)
+    )
+
     # OCSF metadata columns + conditional field mappings
     result = df.with_columns(
-        # class_uid dispatch — binary_capture wins over credential/ftp because
-        # synthetic rows lack those fields and would otherwise fall through to
-        # NETWORK_ACTIVITY (the wrong class for a captured malware sample).
+        # class_uid dispatch — binary_capture wins over credential/command because
+        # captured binary rows represent FILE_ACTIVITY regardless of connection attrs.
         pl.when(is_binary_capture)
         .then(pl.lit(CLASS_FILE_ACTIVITY))
         .when(has_credential)
         .then(pl.lit(CLASS_AUTHENTICATION))
-        .when(has_ftp_command)
+        .when(has_command)
         .then(pl.lit(CLASS_PROCESS_ACTIVITY))
         .otherwise(pl.lit(CLASS_NETWORK_ACTIVITY))
         .alias("class_uid"),
@@ -703,7 +750,7 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit(CATEGORY_SYSTEM))
         .when(has_credential)
         .then(pl.lit(CATEGORY_IAM))
-        .when(has_ftp_command)
+        .when(has_command)
         .then(pl.lit(CATEGORY_SYSTEM))
         .otherwise(pl.lit(CATEGORY_NETWORK))
         .alias("category_uid"),
@@ -712,7 +759,7 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit(SEVERITY_HIGH))
         .when(has_credential)
         .then(pl.lit(SEVERITY_MEDIUM))
-        .when(has_ftp_command)
+        .when(has_command)
         .then(pl.lit(SEVERITY_MEDIUM))
         .otherwise(pl.lit(SEVERITY_LOW))
         .alias("severity_id"),
@@ -721,7 +768,7 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit(1))
         .when(has_credential)
         .then(pl.lit(1))
-        .when(has_ftp_command)
+        .when(has_command)
         .then(pl.lit(1))
         .otherwise(pl.lit(0))
         .alias("activity_id"),
@@ -749,18 +796,20 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         .alias("unmapped_password"),
         # is_cleartext (honeypots always see plaintext credentials)
         pl.when(has_credential).then(pl.lit(True)).otherwise(pl.lit(None)).alias("is_cleartext"),
-        # Process-specific: actor_process_cmd_line (from ftp_command)
-        pl.when(has_ftp_command)
-        .then(pl.col("ftp_command") if "ftp_command" in df.columns else pl.lit(None))
-        .otherwise(pl.lit(None))
+        # Process-specific: actor_process_cmd_line (from ftp_command or sql_command)
+        pl.when(has_command)
+        .then(cmd_line_expr)
+        .otherwise(pl.lit(None, dtype=pl.Utf8))
         .cast(pl.Utf8)
         .alias("actor_process_cmd_line"),
-        # File-specific: file_hash_sha256 (only on synthetic binary captures)
+        # File-specific: file_hash_sha256 (only on binary captures)
         pl.when(is_binary_capture)
         .then(pl.col("shasum") if "shasum" in df.columns else pl.lit(None))
         .otherwise(pl.lit(None))
         .cast(pl.Utf8)
         .alias("file_hash_sha256"),
+        # File-specific: file_url (download URL or HTTP upload URI)
+        download_url_expr.alias("file_url"),
         # File-specific: file_name (the on-disk binary filename — typically MD5)
         pl.when(is_binary_capture)
         .then(pl.col("binary_file_name") if "binary_file_name" in df.columns else pl.lit(None))
@@ -782,7 +831,7 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         (pl.col("class_uid") * 100 + pl.col("activity_id")).alias("type_uid"),
     )
 
-    # message: binary capture gets explicit description; connection events use protocol + type
+    # message: binary capture, structured HTTP request, or protocol + connection_type
     proto_col = (
         pl.col("connection_protocol").fill_null("")
         if "connection_protocol" in result.columns
@@ -793,9 +842,15 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
         if "connection_type" in result.columns
         else pl.lit("")
     )
+    http_method_col = (
+        pl.col("http_method").fill_null("") if "http_method" in result.columns else pl.lit("")
+    )
+    http_uri_col = pl.col("http_uri").fill_null("") if "http_uri" in result.columns else pl.lit("")
     result = result.with_columns(
         pl.when(is_binary_capture)
         .then(pl.lit("dionaea binary captured ") + pl.col("file_name").fill_null(""))
+        .when(has_http_request)
+        .then(pl.lit("HTTP ") + http_method_col + pl.lit(" ") + http_uri_col)
         .otherwise(proto_col + pl.lit(" ") + conn_type_col)
         .alias("message"),
     )
@@ -815,7 +870,17 @@ def normalize_dionaea(df: pl.DataFrame) -> pl.DataFrame:
     # Drop raw columns consumed into OCSF equivalents
     drop_cols = [
         c
-        for c in ("connection_type", "credential_username", "credential_password", "ftp_command")
+        for c in (
+            "connection_type",
+            "credential_username",
+            "credential_password",
+            "ftp_command",
+            "sql_command",
+            "download_url",
+            "shasum",
+            "binary_file_name",
+            "eventid",
+        )
         if c in result.columns
     ]
     if drop_cols:

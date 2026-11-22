@@ -6,7 +6,8 @@
     "description": "{{ narrative.operation_name }} honeypot sensor",
     "sector": "{{ narrative.sector }}",
     "region": "{{ narrative.identity.country }}",
-    "start_date": "{{ narrative.start_date }}"
+    "start_date": "{{ narrative.start_date }}",
+    "expected_datasets": {{ ((sensor_honeypots | default(['cowrie', 'dionaea'])) + ['suricata', 'nftables']) | unique | list | to_json }}
   },
   "redact": {
     "infrastructure_ips": [
@@ -23,6 +24,7 @@
       "{{ network.prefixes.ipv4 }}",
       "{{ network.prefixes.ipv6 }}"
     ],
+    "infrastructure_hostnames": {{ (reporting.redact.infrastructure_hostnames | default([])) | to_json }},
     "pseudonym_map": {
       "{{ network.honeywall.wan.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.wan }}",
       "{{ network.honeywall.wan.ipv6.split('/')[0] }}": "{{ reporting.pseudonym_map.wan }}",

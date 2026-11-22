@@ -3,7 +3,7 @@
 Daily workflow:
 1. Read all silver Parquet for the target date (cross-dataset)
 2. Collect LazyFrame once into eager DataFrame
-3. Compute 6 gold metric tables
+3. Compute 7 gold metric tables (including extracted_iocs)
 4. Write each to gold layer
 """
 
@@ -17,17 +17,25 @@ from pathlib import Path
 
 import structlog
 
+from lantana.common.config import load_reporting
 from lantana.common.datalake import (
     GOLD_ROOT,
     SILVER_ROOT,
     read_silver_partition,
     write_gold_table,
 )
+from lantana.common.redact import RedactionConfig
+from lantana.enrichment.runner import (
+    CACHE_DB_PATH,
+    _sanitize_error_message,
+    load_enrichment_cache_lookup,
+)
 from lantana.transform.metrics import (
     compute_behavioral_progression,
     compute_campaign_clusters,
     compute_daily_summary,
     compute_detection_findings,
+    compute_extracted_iocs,
     compute_geographic_summary,
     compute_ip_reputation,
 )
@@ -39,14 +47,31 @@ ERRORS_PATH = Path(
 logger = structlog.get_logger()
 
 
-def _append_transform_failed_row(target_date: date, exc: BaseException, errors_path: Path) -> None:
-    """Append a ``transform_failed`` row to the shared errors NDJSON.
+def _load_best_effort_redact() -> RedactionConfig | None:
+    """Load reporting redaction rules for error sanitization when available."""
+    try:
+        return load_reporting().redact
+    except (OSError, ValueError):
+        return None
+
+
+def _append_transform_failed_row(
+    target_date: date,
+    exc: BaseException,
+    errors_path: Path,
+    redact_config: RedactionConfig | None = None,
+) -> None:
+    """Append a sanitized ``transform_failed`` row to the shared errors NDJSON.
 
     Mirrors the schema used by ``_write_error_summary`` in
     ``enrichment.runner`` so ``lantana-alert`` can read both error sources
     out of one file. Same severity rules apply downstream: this row gets
     classified as critical (gold for the date is missing).
     """
+    safe_msg = _sanitize_error_message(
+        repr(exc),
+        redact_config=redact_config or _load_best_effort_redact(),
+    )
     try:
         errors_path.parent.mkdir(parents=True, exist_ok=True)
         with errors_path.open("a", encoding="utf-8") as f:
@@ -57,7 +82,7 @@ def _append_transform_failed_row(target_date: date, exc: BaseException, errors_p
                         "provider": "transform",
                         "error_type": "transform_failed",
                         "count": 1,
-                        "message": repr(exc),
+                        "message": safe_msg,
                         "timestamp": datetime.now(tz=UTC).isoformat(),
                     }
                 )
@@ -73,6 +98,9 @@ def run_transform(
     target_date: date,
     silver_root: Path = SILVER_ROOT,
     gold_root: Path = GOLD_ROOT,
+    cache_db_path: Path = CACHE_DB_PATH,
+    redact_config: RedactionConfig | None = None,
+    reporting_path: Path | None = None,
 ) -> None:
     """Run the full transform pipeline for a given date."""
     logger.info("transform_start", date=target_date.isoformat())
@@ -86,12 +114,32 @@ def run_transform(
 
     logger.info("silver_loaded", rows=len(silver), columns=len(silver.columns))
 
+    effective_redact = redact_config
+    if effective_redact is None:
+        try:
+            reporting = (
+                load_reporting(reporting_path) if reporting_path is not None else load_reporting()
+            )
+            effective_redact = reporting.redact
+        except FileNotFoundError:
+            # Fail closed on production datalake paths or explicit reporting_path;
+            # allow empty fallback only for isolated temp-dir unit tests.
+            if reporting_path is not None or silver_root == SILVER_ROOT:
+                raise
+            logger.warning(
+                "transform_reporting_missing_fallback",
+                silver_root=str(silver_root),
+            )
+            effective_redact = RedactionConfig()
+
+    enrichment_lookup = load_enrichment_cache_lookup(cache_db_path)
+
     # Per-table row counts feed the final `run_summary` log line so
     # operators can read the day's gold output in one event instead of
     # grepping for seven separate `gold_written` lines.
     gold_rows: dict[str, int] = {}
 
-    # Compute and write each gold table
+    # Compute and write all 7 gold tables
     tables = [
         ("daily_summary", compute_daily_summary),
         ("ip_reputation", compute_ip_reputation),
@@ -99,6 +147,14 @@ def run_transform(
         ("campaign_clusters", compute_campaign_clusters),
         ("geographic_summary", compute_geographic_summary),
         ("detection_findings", compute_detection_findings),
+        (
+            "extracted_iocs",
+            lambda frame: compute_extracted_iocs(
+                frame,
+                redact_config=effective_redact,
+                enrichment_lookup=enrichment_lookup,
+            ),
+        ),
     ]
 
     failed_tables: list[tuple[str, Exception]] = []
@@ -122,16 +178,19 @@ def run_transform(
                 exc_repr=repr(exc),
             )
 
-    if len(failed_tables) == len(tables):
-        raise failed_tables[0][1]
-
     logger.info(
         "run_summary",
         date=target_date.isoformat(),
         silver_rows=len(silver),
         silver_columns=len(silver.columns),
         gold_rows=gold_rows,
+        failed_tables=[name for name, _ in failed_tables],
     )
+
+    if failed_tables:
+        summary_msg = ", ".join(f"{name}: {exc!r}" for name, exc in failed_tables)
+        raise RuntimeError(f"Gold table failure(s): {summary_msg}")
+
     logger.info("transform_done", date=target_date.isoformat())
 
 

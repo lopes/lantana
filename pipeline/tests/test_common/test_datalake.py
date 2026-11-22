@@ -183,3 +183,95 @@ def test_read_gold_table_unreadable(tmp_path: Path) -> None:
         assert result.is_empty()
     finally:
         tmp_path.chmod(0o755)
+
+
+def test_read_bronze_strips_sparse_null_bytes_and_recovers_truncated_lines(tmp_path: Path) -> None:
+    """Sparse NUL prefixes (copytruncate) are stripped; ENOSPC truncated tails are skipped."""
+    bronze_dir = tmp_path / "dataset=cowrie" / "date=2026-07-09" / "server=sn-01"
+    bronze_dir.mkdir(parents=True)
+    raw = (
+        b'\x00\x00\x00{"src_ip": "203.0.113.10", "eventid": "cowrie.login.failed", '
+        b'"message": "ok\x00clean"}\n'
+        b'{"src_ip": "198.51.100.20", "eventid": "cowrie.command.input", '
+        b'"input": "line1\xe2\x80\xa8line2"}\n'
+        b'\xff\xfe{"src_ip": "192.0.2.5", "bad_utf8": true}\n'
+        b'{"src_ip": "192.0.2.9", "truncated": '
+    )
+    (bronze_dir / "events.json").write_bytes(raw)
+
+    df = read_bronze_ndjson(date(2026, 7, 9), dataset="cowrie", bronze_root=tmp_path)
+
+    assert len(df) == 2
+    assert df.get_column("src_ip").to_list() == ["203.0.113.10", "198.51.100.20"]
+    # Embedded NUL removed and Unicode U+2028 did not split the JSON line
+    assert df.get_column("message").to_list()[0] == "okclean"
+    assert df.get_column("input").to_list()[1] == "line1\u2028line2"
+
+
+def test_read_bronze_backfills_null_or_empty_server_and_diagonal_relaxed_concat(
+    tmp_path: Path,
+) -> None:
+    """Backfill null/empty server rows from partition and concat mixed dtypes cleanly."""
+    d1 = tmp_path / "dataset=cowrie" / "date=2026-07-10" / "server=sn-01"
+    d2 = tmp_path / "dataset=cowrie" / "date=2026-07-10" / "server=sn-02"
+    d1.mkdir(parents=True)
+    d2.mkdir(parents=True)
+    (d1 / "events.json").write_text(
+        json.dumps({"src_ip": "203.0.113.1", "server": None, "port": 22})
+        + "\n"
+        + json.dumps({"src_ip": "203.0.113.2", "server": "", "port": 22})
+        + "\n",
+        encoding="utf-8",
+    )
+    (d2 / "events.json").write_text(
+        json.dumps({"src_ip": "203.0.113.3", "port": "22"}) + "\n",
+        encoding="utf-8",
+    )
+
+    df = read_bronze_ndjson(date(2026, 7, 10), dataset="cowrie", bronze_root=tmp_path)
+    assert len(df) == 3
+    servers = set(df.get_column("server").to_list())
+    assert servers == {"sn-01", "sn-02"}
+
+
+def test_write_silver_partition_sanitizes_empty_server_and_writes_atomically(
+    tmp_path: Path,
+) -> None:
+    """Empty/None server normalizes to 'unknown' and leaves no leftover .tmp files."""
+    df = pl.DataFrame({"src_ip": ["203.0.113.50"]})
+    path = write_silver_partition(df, date(2026, 7, 10), "dionaea", "", silver_root=tmp_path)
+    assert "server=unknown" in str(path)
+    assert path.exists()
+    assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_read_gold_range_normalizes_legacy_list_null_and_skips_missing(tmp_path: Path) -> None:
+    """read_gold_range concatenates multi-day gold even when older days have List(Null)."""
+    from lantana.common.datalake import read_gold_range
+
+    d1 = date(2026, 7, 1)
+    d2 = date(2026, 7, 2)
+    d_missing = date(2026, 7, 3)
+
+    legacy_df = pl.DataFrame(
+        {
+            "total_events": [10],
+            "top_asns": pl.Series([[]], dtype=pl.List(pl.Null)),
+            "top_download_hashes": pl.Series([[]], dtype=pl.List(pl.Null)),
+        }
+    )
+    modern_df = pl.DataFrame(
+        {
+            "total_events": [25],
+            "top_asns": [["64500|Example ISP:5"]],
+            "top_download_hashes": [[{"value": "a" * 64, "count": 2}]],
+        }
+    )
+    write_gold_table(legacy_df, "daily_summary", d1, gold_root=tmp_path)
+    write_gold_table(modern_df, "daily_summary", d2, gold_root=tmp_path)
+
+    combined = read_gold_range("daily_summary", [d2, d_missing, d1], gold_root=tmp_path)
+    assert combined.height == 2
+    assert combined.get_column("report_date").to_list() == [d1, d2]
+    assert combined.get_column("total_events").to_list() == [10, 25]
+    assert read_gold_range("daily_summary", [d_missing], gold_root=tmp_path).is_empty()

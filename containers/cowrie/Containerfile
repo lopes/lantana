@@ -1,0 +1,109 @@
+# Self-owned pinned Cowrie honeypot image for Lantana.
+# Upstream: https://github.com/cowrie/cowrie (BSD-3-Clause)
+#
+# In-container UID/GID (999:999) is a repo constant matched by
+# UserNS=keep-id:uid=999,gid=999 in config/ansible/roles/cowrie/templates/cowrie.container.j2.
+
+ARG COWRIE_REPO=https://github.com/cowrie/cowrie.git
+ARG COWRIE_REF=8e36327f6a24abe379dac807cc7e8b2d2fb01248
+ARG COWRIE_VERSION=3.1.7
+
+FROM debian:trixie-slim AS builder
+
+ARG COWRIE_REPO
+ARG COWRIE_REF
+ARG COWRIE_VERSION
+
+ENV COWRIE_GROUP=cowrie \
+    COWRIE_USER=cowrie \
+    COWRIE_UID=999 \
+    COWRIE_GID=999 \
+    COWRIE_HOME=/cowrie \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN groupadd -r -g "${COWRIE_GID}" "${COWRIE_GROUP}" && \
+    useradd -r -l -u "${COWRIE_UID}" -d "${COWRIE_HOME}" -m -g "${COWRIE_GROUP}" "${COWRIE_USER}"
+
+RUN apt-get -qq update && \
+    apt-get -qq install -y --no-install-recommends \
+        -o APT::Install-Suggests=false \
+        -o Dpkg::Use-Pty="0" \
+        build-essential \
+        ca-certificates \
+        cargo \
+        git \
+        libffi-dev \
+        libsnappy-dev \
+        libssl-dev \
+        python3 \
+        python3-dev \
+        python3-pip \
+        python3-venv \
+        rustc && \
+    rm -rf /var/lib/apt/lists/*
+
+USER 999:999
+WORKDIR ${COWRIE_HOME}
+
+RUN git init "${COWRIE_HOME}/cowrie-git" && \
+    cd "${COWRIE_HOME}/cowrie-git" && \
+    git remote add origin "${COWRIE_REPO}" && \
+    git fetch --depth 1 origin "${COWRIE_REF}" && \
+    git checkout --detach FETCH_HEAD && \
+    rm -rf .git
+
+RUN python3 -m venv "${COWRIE_HOME}/cowrie-env" && \
+    . "${COWRIE_HOME}/cowrie-env/bin/activate" && \
+    pip install -q --no-cache-dir --upgrade pip setuptools setuptools-scm wheel && \
+    pip install -q --no-cache-dir --upgrade cffi && \
+    pip install -q --no-cache-dir --upgrade -r "${COWRIE_HOME}/cowrie-git/requirements.txt" && \
+    pip install -q --no-cache-dir --upgrade -r "${COWRIE_HOME}/cowrie-git/requirements-output.txt" && \
+    SETUPTOOLS_SCM_PRETEND_VERSION="${COWRIE_VERSION}" \
+      pip install -q --no-cache-dir --no-deps --no-build-isolation -e "${COWRIE_HOME}/cowrie-git" && \
+    test -f "${COWRIE_HOME}/cowrie-git/src/cowrie/_version.py" && \
+    pip uninstall -q -y pip setuptools setuptools-scm wheel
+
+FROM gcr.io/distroless/python3-debian13:latest AS runtime
+
+ARG COWRIE_REF
+ARG SOURCE_DATE_EPOCH
+
+LABEL org.opencontainers.image.title="Lantana Cowrie SSH/Telnet Honeypot" \
+      org.opencontainers.image.description="Pinned Cowrie SSH/Telnet honeypot image built from upstream cowrie/cowrie (BSD-3-Clause) with constant UID/GID 999." \
+      org.opencontainers.image.source="https://github.com/lopes/lantana" \
+      org.opencontainers.image.url="https://cowrie.org/" \
+      org.opencontainers.image.documentation="https://docs.cowrie.org" \
+      org.opencontainers.image.vendor="Lantana (upstream: Cowrie)" \
+      org.opencontainers.image.licenses="BSD-3-Clause" \
+      org.opencontainers.image.revision="${COWRIE_REF}" \
+      org.opencontainers.image.base.name="gcr.io/distroless/python3-debian13" \
+      org.opencontainers.image.created="${SOURCE_DATE_EPOCH}"
+
+ENV COWRIE_GROUP=cowrie \
+    COWRIE_USER=cowrie \
+    COWRIE_HOME=/cowrie \
+    PATH=/cowrie/cowrie-env/bin:/usr/local/bin:/usr/bin:/bin \
+    PYTHONPATH=/cowrie/cowrie-git/src \
+    PYTHONUNBUFFERED=1
+
+COPY --from=builder --chown=0:0 /etc/passwd /etc/group /etc/
+COPY --from=builder --chown=999:999 /cowrie /cowrie
+
+RUN ["python3", "-c", "import sys, compileall; v=f'{sys.version_info.major}.{sys.version_info.minor}'; compileall.compile_dir('/cowrie/cowrie-git/src', quiet=1); compileall.compile_dir('/cowrie/cowrie-env', quiet=1); compileall.compile_dir('/usr/lib/python'+v, quiet=1)"]
+
+VOLUME ["/cowrie/cowrie-git/var", "/cowrie/cowrie-git/etc"]
+
+USER 999:999
+WORKDIR /cowrie/cowrie-git
+
+RUN ["python3", "/cowrie/cowrie-git/bin/regen-dropin.cache"]
+RUN ["python3", "-c", "import os, cowrie; assert os.getuid() == 999 and os.getgid() == 999; print('cowrie version:', cowrie.__version__)"]
+
+EXPOSE 2222 2223
+
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/cowrie/cowrie-env/bin/python3"]
+CMD ["/cowrie/cowrie-env/bin/twistd", "-n", "--umask=0022", "--pidfile=", "--logger", "cowrie.python.logfile.stdoutLogger", "cowrie"]

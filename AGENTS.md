@@ -1,281 +1,86 @@
-# AGENTS.md
+# AGENTS.md: Guide for AI Agents & Contributors
 
-Guidance and operational guardrails for AI coding agents working in this repository.
+Lantana is an open-source, honeypot-as-code platform aligned with MITRE Engage, targeting **Debian 13** via **Ansible**, **rootless Podman Quadlets**, **Datadog Vector**, **Suricata**, **nftables**, and a **Python >= 3.13** data pipeline managed with **`uv`**. It enforces **strict TDD**, **mypy `--strict`**, **stdlib-first** tooling (zero Streamlit/Pandas), and **four-layer OPSEC** (public repo placeholders -> Vector edge filter -> Silver pseudonymization -> `127.0.0.1` air-gapped Vigil dashboard). **Never add, install, or import any new Python package or OS tool without explicit maintainer approval.**
 
-## Project Overview
+---
 
-Lantana is a honeypot-as-code platform built on Ansible that deploys and operates IPv4/IPv6 dual-stack honeypots aligned with MITRE Engage principles. It supports single-node (all-in-one) and multi-node (distributed) deployment models using a zoned architecture (Honeywall, Sensor, Collector).
+## 1. Orientation & Documentation Tracks
 
-## Agent Skills (`.agents/skills/`)
+| Track | Primary Guides |
+| :--- | :--- |
+| **Architecture & Setup** | [`docs/architecture.md`](docs/architecture.md) · [`docs/setup.md`](docs/setup.md) · [`docs/glossary.md`](docs/glossary.md) |
+| **Sensors & Images** | [`docs/honeypots.md`](docs/honeypots.md) · [`containers/`](containers/) (self-owned pinned `ghcr.io/lopes/lantana-{cowrie,dionaea}:v1.5`) |
+| **Data Pipeline & Intel** | [`docs/pipeline.md`](docs/pipeline.md) · [`docs/risk-scoring.md`](docs/risk-scoring.md) · [`docs/integrations.md`](docs/integrations.md) |
+| **Validation & Ops** | [`docs/validation.md`](docs/validation.md) · [`docs/troubleshooting.md`](docs/troubleshooting.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| **Agent Skills** | [`.agents/skills/deploy-sensors/SKILL.md`](.agents/skills/deploy-sensors/SKILL.md) · [`.agents/skills/verify-pipeline/SKILL.md`](.agents/skills/verify-pipeline/SKILL.md) · [`.agents/skills/scaffold-narrative/SKILL.md`](.agents/skills/scaffold-narrative/SKILL.md) |
 
-Load these domain skills on demand to keep context focused:
-- [`scaffold-narrative`](.agents/skills/scaffold-narrative/SKILL.md) — Generate internally consistent `narrative.yml` deception personas, OS/kernel strings, and service banners.
-- [`deploy-sensors`](.agents/skills/deploy-sensors/SKILL.md) — Vector VRL merged-tree validation discipline, Cowrie/Dionaea Quadlet container invariants, and `validate-single-node.yml` / `validate-sensor-runtime.yml`.
-- [`verify-pipeline`](.agents/skills/verify-pipeline/SKILL.md) — Free-tier API quota cost model, SQLite enrichment cache inspection, mid-run hotfix protocol, targeted `--date` re-runs, and `validate-pipeline-cycle.yml`.
+---
 
-## Deployment Commands
+## 2. Workspace & Zoned Architecture Map
 
-All commands run from `config/ansible/`.
+| Path | Layer & Responsibility | Key Invariants |
+| :--- | :--- | :--- |
+| [`config/ansible/roles/`](config/ansible/roles/) | **Zoned Provisioning:** Atomic roles (`base`, `network`, `firewall`, `suricata`, `cowrie`, `dionaea`) composed into `profile_{honeywall,sensor_low,collector}`. | Single-node coexists on `ltn0` (`10.50.99.0/24`, `fd99:10:50:99::/64`); `filter_*` routes directly to `enrich_geo` in memory (no local forwarders). |
+| [`config/ansible/inventories/`](config/ansible/inventories/) | **Operation-as-Inventory:** Clone `op_single` / `op_multi` into gitignored `op_<name>` (`main.yml`, `network.yml`, `narrative.yml`, `reporting.yml`, `vault.yml`). | Only `op_<name>/group_vars/all/` holds real WAN IPs, hostnames, or API keys. |
+| [`containers/`](containers/) | **Pinned Honeypot Images:** Self-built Cowrie (`UID 999`) & Dionaea (`UID 1000`, `processors=filter_emu`, `patch_http.py`, `lantana_json.py`, non-destructive `entrypoint.sh`). | Built and smoke-tested by `.github/workflows/build-{cowrie,dionaea}.yml`. All Dionaea config/Python files must be 7-bit ASCII. |
+| [`pipeline/src/lantana/common/`](pipeline/src/lantana/common/) | **Core I/O & OPSEC:** `config.py`, streaming `\x00`-safe `datalake.py` (atomic Parquet + `read_gold_range`), two-pass `redact.py` (WAN variants + hostnames + SHA-256-only leak errors). | `stigma` (UID 2001) has EACCES on datalake/collector; `nectar` (UID 2002) owns unified symlink-safe (`O_NOFOLLOW`+`dir_fd`) pruning (`prune.py`). |
+| [`pipeline/src/lantana/enrichment/`](pipeline/src/lantana/enrichment/) | **Enrichment & IOCs:** Optional providers (`abuseipdb`, `shodan`, `greynoise`, `virustotal` + opt-in commercial GTI), token-bucket `rate_limit()`, behavioral priority queue, SQLite tiered cache. | 429 never retried (dual circuit breaker: `5` consecutive / `30` cumulative); `404` emits `None` risk score (never dilutes). |
+| [`pipeline/src/lantana/models/`](pipeline/src/lantana/models/) & [`transform/`](pipeline/src/lantana/transform/) | **OCSF Silver & 7 Gold Tables:** `daily_summary`, `ip_reputation`, `behavioral_progression`, `campaign_clusters`, `geographic_summary`, `detection_findings`, `extracted_iocs`. | Pure Polars transforms, explicit Gold schemas, decoder SIDs `2200000-2260999` excluded, monotonic behavioral-anchored `risk_score`. |
+| [`pipeline/src/lantana/intel/`](pipeline/src/lantana/intel/) & [`notify/`](pipeline/src/lantana/notify/) | **STIX 2.1, Discord Brief & Dead-Man's-Switch:** Durable IOC pivot + 7d interactive inbound IPs, stateless D-1/D-2 liveness, live `statvfs` disk %, shared `explanations.py`. | Zero bogus HTTP rules; benign GreyNoise scanners excluded from Threat Actors; `lantana-report` always posts. |
+| [`pipeline/src/lantana/dashboard/`](pipeline/src/lantana/dashboard/) | **Air-Gapped Vigil Console:** Stdlib `ThreadingHTTPServer` (`127.0.0.1:8501`), 5 CTI views (`/overview`, `/attackers`, `/behavior`, `/intel`, `/health` + `302` legacy redirects), local `static/vigil.css` & `/static/plotly.min.js`, pure `plotly.graph_objects` (zero Streamlit/Pandas). | Strict `connect-src 'none'` CSP; zero external URLs (`lopes.id`, CDNs, Google Fonts); zero secret values exposed on `/health`. |
+| [`config/ansible/tests/`](config/ansible/tests/) & [`pipeline/tests/`](pipeline/tests/) | **Verification Suites:** `validate-{single-node,canaries,sensor-runtime,pipeline-cycle}.yml` + mocked unit & production-shape tests (`test_integration_production_shape.py`). | Fixtures mirror nested Vector production shape (`{"geo": {...}}`, `{"alert": {...}}`). |
 
-**Single-node deployment:**
+---
+
+## 3. Golden Rules
+
+### 1. OPSEC Is Non-Negotiable (Layers 0–3)
+- **Layer 0 (Public Repo):** Never commit real WAN IPs, IPv6 addresses, hostnames, MACs, ASNs, SSH fingerprints, or credentials. Use RFC 5737 (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), RFC 3849 (`2001:db8::/32`), RFC 2606 (`example.com`), and RFC 5398 (`64496-64511`).
+- **Layer 1 (Vector Edge):** Every sensor/honeywall Vector pipeline strips `^::ffff:` and drops loopback, RFC 1918, link-local, ULA, internal prefixes, and WAN IPs before ingestion.
+- **Layer 2 (Silver Redaction):** `redact_infrastructure_ips` scrubs IP columns AND attacker-controlled text (including non-dotted WAN variants, PTR reversals, expanded IPv6, and `infrastructure_hostnames`). `validate_no_leaks` and `_assert_no_infra_leaks` never embed raw leaked values in exception text (SHA-256 prefix only).
+- **Layer 3 (Local Dashboard):** `lantana-dashboard` binds strictly to `127.0.0.1:8501` over SSH tunnel (`ssh -L 8501:localhost:8501`).
+
+### 2. Pipeline Fail-Safe Principles
+- **Scoped failure isolation:** A single dataset or provider failure never aborts remaining datasets/providers; `transform/runner.py` records `transform_failed` and exits non-zero if any Gold table fails.
+- **Loud, structured errors:** Never `except Exception: pass`. Log via `structlog` and persist sanitized errors to `enrichment_errors.json`.
+- **Schema variation tolerated by construction:** Flatten nested Vector structs (`geo`, `alert`) at dispatcher boundaries (`pl.Struct`, JSON `pl.Utf8`, or absent); backfill optional/cross-dataset columns via `_ensure_gold_columns()` and `_optional_first()`.
+- **Rate limits:** Exclude HTTP `429` from tenacity retries; honor `provider.rate_limit()` via `_AsyncRateLimiter` and trip on `5` consecutive / `30` cumulative 429s.
+
+### 3. One-Way Privilege Boundary & Sensor Discipline
+- **Security direction:** `stigma` (sensors) has zero access to `nectar` / datalake / secrets. `nectar` (`lantana-prune`, `00:15 UTC`) receives `u:nectar:rwX` POSIX ACLs (refreshed `00:10 UTC` via `lantana-grant-read`) to prune 14d sensor scratch safely using `O_NOFOLLOW` + `dir_fd`, 14d verified Bronze (non-empty Silver gate; 3d emergency `>80%`), and 180d Silver/Gold.
+- **Vector & Quadlets:** Load [`deploy-sensors`](.agents/skills/deploy-sensors/SKILL.md) before editing Ansible roles/Vector/Quadlets. Every Vector template must `notify: "Validate Vector config tree"` before `"Restart Vector"`. Both sensors enforce app-layer `healthcheck.py` + `HealthOnFailure=kill`. Suricata runs non-root (`suricata:suricata` systemd drop-in), disables NIC offloads (`ethtool`), and disables `pcap-log` & `file-store` by default.
+
+### 4. Risk Score & STIX 2.1 Invariants
+- **Monotonic behavioral-anchored formula** ([`docs/risk-scoring.md`](docs/risk-scoring.md)): pure scanners (`behavioral == 0`) cap at `enrichment * 0.35 <= 35.0` (0.0 if RIOT/benign); interactive attackers (`behavioral > 0`) score `max(behavioral, 0.5 * behavioral + 0.5 * enrichment)` (halved if RIOT/benign).
+- **STIX 2.1 pivot:** Durable IOCs come from `extracted_iocs` (malware hashes + `vhash` clusters, outbound C2 IPs, stager URLs/domains, SSH keys). Inbound IPs require `behavioral > 0` AND `risk_score >= 40` (non-RIOT/non-benign) with 7-day `valid_until`.
+
+### 5. Strict TDD, Stdlib-First & Dependency Gate
+- Write failing tests first (`Red -> Green -> Refactor`). Keep pure Polars transforms separate from I/O. Zero `Any` escape hatches or `.to_pandas()` calls.
+- Sync local dev env with `cd pipeline && uv sync --frozen --extra dev` (Ansible production deploy omits `--extra dev`). Never add OS packages or Python dependencies without confirmation.
+
+---
+
+## 4. Checklists ("How to Add X")
+
+- **Honeypot Sensor Role:** Create `config/ansible/roles/<name>/` dropping config (`/etc/lantana/sensor/<name>`), Vector VRL with Layer-1 OPSEC filter (`/etc/vector/conf.d/<name>.yaml` notifying validate -> restart), dual-stack `inet` nftables (`/etc/lantana/honeywall/nftables/sensors/<name>.nft`), app-layer `healthcheck.py`, and POSIX ACLs (`u:vector:rX`, `u:nectar:rwX`) -> register normalizer in `models/normalize.py` + `enrichment/runner.py` + `tests/test_models/test_normalize.py`.
+- **Enrichment Provider:** Implement `enrichment/providers/<name>.py` returning `<name>_risk_score` (`None` on `404`, never `0.0`) + `rate_limit()` -> register optional key in `common/config.py`, `secrets.json.j2`, and `_RISK_SCORE_FIELDS` in `enrichment/runner.py` -> update `docs/risk-scoring.md` and `tests/test_enrichment/`.
+- **Gold Table / Vigil View:** Add pure metric builder in `transform/metrics.py` + explicit schema + registration in `transform/runner.py` & `validate-pipeline-cycle.yml` -> add rollup in `dashboard/queries.py`, pure `go.*` chart in `dashboard/charts.py`, shared `WhatWhyHow` text in `notify/explanations.py`, route in `dashboard/app.py`, and air-gap test in `tests/test_dashboard/`.
+
+---
+
+## 5. Verification, Branching & Safety Gates
+
+All gates must return **0 errors** before completing work or opening a PR:
 
 ```bash
-ansible-playbook -i inventories/op_single/inventory.yml playbooks/deploy_single.yml --ask-vault-pass
+cd pipeline && uv sync --frozen --extra dev
+uv run ruff format --check . ../scripts/*.py
+uv run ruff check . ../scripts/*.py
+uv run mypy --strict src tests ../scripts/*.py
+uv run pytest
+cd ../config/ansible && ansible-lint playbooks roles tests
+cd ../.. && shellcheck scripts/*.sh config/ansible/roles/base/files/lantana-grant-read containers/dionaea/entrypoint.sh
 ```
 
-**Multi-node deployment:**
-
-```bash
-ansible-playbook -i inventories/op_multi/inventory.yml playbooks/deploy_multi.yml --ask-vault-pass
-```
-
-**Deploy honeypots (after base deployment):**
-
-```bash
-ansible-playbook -i inventories/<operation>/inventory.yml playbooks/deploy_honeypots.yml
-```
-
-**Validate single-node deployment:**
-
-```bash
-ansible-playbook -i inventories/op_single/inventory.yml tests/validate-single-node.yml -vvv
-```
-
-## Architecture
-
-### Zoned Model
-
-- **Honeywall Zone**: Network control, nftables firewalling, Suricata IDS, egress containment. Never hosts honeypots.
-- **Sensor Zone**: Runs honeypots in rootless Podman containers (low-interaction) or as full VMs (high-interaction, multi-node only). Managed by `stigma` user (UID 2001).
-- **Collector Zone**: Data ingestion, OCSF normalization, Parquet storage, enrichment via external APIs. Managed by `nectar` user (UID 2002).
-
-In single-node mode, all zones coexist on one host with a dummy interface (`ltn0`) simulating the private network. In multi-node mode, zones run on separate hosts with the honeywall as SSH bastion.
-
-### Operation-as-Inventory
-
-Each deployment is an Ansible inventory under `config/ansible/inventories/op_*`. Clone `op_single` or `op_multi` to create new operations. Each operation has its own `group_vars/all/` with:
-
-- `main.yml` - platform mode, system users, connection settings
-- `network.yml` - IP addressing, interface assignments
-- `narrative.yml` - deception story, fake host profiles, service versions
-- `vault.yml` - encrypted API keys (VirusTotal, AbuseIPDB, GreyNoise, Shodan, Discord)
-
-### Role Hierarchy
-
-- **Atomic roles** do one thing: `base`, `cowrie`, `dionaea`, `suricata`, `firewall`, `network`
-- **Composite roles** (`profile_*`) group atomic roles into zone archetypes via meta-dependencies: `profile_honeywall`, `profile_collector`, `profile_sensor_low`
-- **Playbooks** select a "Plate" (e.g., `deploy_single.yml`) then add "Toppings" (honeypots via `deploy_honeypots.yml`)
-
-### Honeypots as Plugins
-
-Each honeypot role self-registers by dropping files into three locations:
-
-- Config: `/etc/lantana/sensor/`
-- Telemetry: `/etc/vector/conf.d/`
-- Firewall rules: `/etc/lantana/honeywall/nftables/sensors/` (auto-included by nftables on reload)
-
-### Network Addressing
-
-- IPv4: `10.50.99.0/24` | IPv6 ULA: `fd99:10:50:99::/64`
-- Collector: `.10` | Sensor: `.100` | Honeywall gateway (multi-node): `.1`
-- SSH admin: user `lantana`, key-based auth, operator-chosen random ephemeral port (see the deployment contract in `docs/setup.md`)
-
-### Telemetry Pipeline
-
-Datadog Vector runs across all zones. Logs centralize in `/var/log/lantana/{honeywall,sensor,collector}`. Log rotation is managed via `/etc/cron.d/lantana-logs` triggering configs in `/etc/lantana/logrotate.d/`.
-
-Raw logs in `/var/log/lantana/` are a transient forwarding buffer for Vector, not a system of record. Bronze NDJSON on the collector is the durable copy: raw retention is short (days), lake retention is long (180d). Disk-safety circuit breakers belong at the lake layer (`prune.py`), not in logrotate — size-triggered truncation can drop bytes Vector hasn't yet shipped.
-
-## Project Structure
-
-```
-lantana/
-  config/ansible/     # Host configuration (Ansible roles, playbooks, inventories)
-  infra/terraform/    # Infrastructure provisioning (Proxmox VMs)
-  pipeline/           # Data processing pipeline (Python: enrichment, analysis, dashboard)
-  scripts/            # Operational scripts (VPS data fetch, injection, dashboard, malware quarantine)
-  docs/               # Project documentation
-```
-
-## Key Conventions
-
-- Target OS is Debian 13 exclusively
-- Ansible config lives at `config/ansible/ansible.cfg` (roles_path, collections_path, pipelining enabled)
-- Jinja2 templates (`.j2`) generate nftables rules, Vector pipelines, Cowrie configs, and SSH settings
-- Sensors run as rootless Podman containers under `stigma` using Quadlet `.container` files managed by user-scoped systemd
-- Firewall rules use `inet` family (dual-stack) in nftables; avoid `ip`-only matches when IPv6 is needed
-- `sensor_honeypots` list variable in inventory controls which honeypot roles are dynamically included
-- Single-node is the primary deployment model; multi-node exists as an architectural design principle for zone separation
-
-## Python Code Standards (pipeline/)
-
-- **Python 3.13+** (Debian 13 native)
-- **Pylance strict mode**: all types declared, no `Any` escape hatches, full type annotations on all function signatures and return types
-- **TDD**: write tests first, then implement. Every module has a corresponding test file mirroring the `src/` structure
-- **Functional programming style**: pure functions for data transforms, Pydantic models for structured data, push IO to the edges. Prefer Polars expression chains over imperative loops. Minimize side effects.
-- **Boring, reliable tooling only**: Polars, httpx, Pydantic, tenacity, structlog, stix2, Streamlit, Plotly, maxminddb. No exotic or trendy dependencies.
-- **Linting/formatting**: `ruff` for linting + formatting, `mypy` strict for type checking, `pytest` for tests
-- **Package manager**: `uv`. **Local sync**: `cd pipeline && uv sync --frozen --extra dev` — the `--extra dev` is required because pytest/ruff/mypy live in `[project.optional-dependencies.dev]` and a bare `uv sync --frozen` strips them. The Ansible deploy on the collector intentionally omits `--extra dev`; production runtime deps (polars, plotly, httpx, stix2, …) sit in `[project.dependencies]` and install unconditionally.
-
-## Shell Script Standards
-
-- Plain POSIX-compatible patterns, standard coreutils only
-- No exotic tools or fancy constructs
-- Readable and auditable
-
-## Pipeline fail-safe principles
-
-Op_alpha's first end-to-end production run (2026-05-20) surfaced eight distinct defects in sequence, six of which were variations on the same theme: production bronze data didn't match the shape the code assumed. The pipeline now has explicit guards against that whole class of bug, codified as principles that all new pipeline code must follow:
-
-### 1. No single defect cancels more than its scope
-
-A bug in any one dataset's normalize/redact/write must affect only that dataset's silver, never cancel the work for subsequent datasets in the loop. A provider outage must affect only that provider's enrichment columns. A row with malformed data drops just that row.
-
-**Implementation pattern:** `run_enrichment` in `enrichment/runner.py` wraps each dataset's Phase C body in try/except, logging `dataset_processing_failed` with `repr(exc)` and continuing. Use the same pattern in any loop that processes datasets / providers / IOCs independently.
-
-### 2. Failures are loud and structured
-
-Every skip / drop / fallback emits a structlog event with `dataset` (where applicable), `reason`, `count`, and `repr(exc)`. Errors are accumulated into `/var/lib/lantana/datalake/enrichment_errors.json` for daily review. Silence is not success.
-
-**Implementation pattern:** never `except Exception: pass`. `_classify_http_error` maps HTTP failures to `rate_limit`, `auth_failed`, `not_found`, `http_error`, and `server_error` (alongside transport `timeout` and `network_error`), and the catch-all in `_enrich_iocs_with_provider` records `error_type="unexpected_error"` with `repr(exc)` (not `str(exc)`) so the exception class name reaches `enrichment_errors.json`. Mirror this pattern in any new error path.
-
-### 3. Schema variation is tolerated by construction
-
-Four sub-patterns, all proven necessary by 2026-05-20/21 defects:
-
-- **Nested → flat at dispatcher boundaries.** Vector ships structured fields (`geo`, `alert`) as nested structs; downstream code uses flat dotted names (`geo.country_code`, `alert_severity`). Conversion happens once, in the normaliser's dispatcher (`_flatten_geo_struct` after `normalize_dataset`, `_flatten_suricata_alert_struct` at the top of `normalize_suricata`). Both helpers handle three input shapes: `pl.Struct` (test fixtures construct it that way), `pl.Utf8` JSON-encoded (production path — `read_bronze_ndjson` indiscriminately JSON-stringifies dict-valued fields to stabilise schema inference across heterogeneous rows), and absent (fill with typed nulls).
-- **Optional provider columns must be tolerated everywhere.** Any column that exists only when a specific provider succeeded that day (`abuseipdb_*`, `greynoise_*`, `shodan_*`, `vt_*`) is *optional* in every gold metric function. Use the `_optional_first` helper in `transform/metrics.py` — it returns a typed null literal when the column is absent. Never call `pl.col("provider_specific_field")` in `core_aggs`.
-- **Cross-dataset columns must be tolerated too.** Cowrie-only columns (`session`, `user_name`, `unmapped_password`, `actor_process_cmd_line`, `file_*`) and suricata-only columns (`finding_title`, `finding_uid`, `finding_category`, `flow_id`) disappear from the diagonal-concat when their dataset's silver write fails. Every gold metric function that references them must call `_ensure_gold_columns(silver)` at the top — that helper backfills typed nulls. Skipping this is defect #10 (2026-05-21 transform crash with `ColumnNotFoundError: session`).
-- **Defensive normalize: detect missing required fields, return empty.** When bronze lacks the parser fields a normaliser expects (e.g. nftables without action/chain/src_ip), return `df.clear()` so the runner logs `silver_skipped_empty_after_normalize` and continues. Do not crash, do not write half-formed silver.
-
-### 4. Tests must mirror production shape, not the convenient shape
-
-Test fixtures must not pre-flatten what Vector ships nested. If a future test fixture uses `{"geo.country_code": "BR"}` (dotted-key dict), the test is asserting against the *post-normaliser* shape — make sure the test exercises `normalize_dataset`, not a function that bypasses it. Production-shape fixtures must use `{"geo": {"country_code": "BR", ...}}` (nested struct).
-
-The load-bearing regression test that pipes production-shape fixtures through the whole bronze → silver → gold path lives at `pipeline/tests/test_integration_production_shape.py`. Its fixtures under `pipeline/tests/fixtures/production_shape/bronze/dataset=*/...` are the canonical reference for "what Vector actually produces."
-
-### 5. Rate-limit handling: never retry, dual circuit-breaker
-
-429s mean the provider's quota window (daily/weekly/monthly) is exhausted; tenacity's 2-30 s exponential backoff cannot outwait that. `is_retryable_http_error` in `enrichment/providers/base.py` excludes 429 — the provider raises `httpx.HTTPStatusError` immediately on rate-limit, and the runner's circuit-breaker decides when to bail.
-
-Two thresholds, both required:
-- **Consecutive (`CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD = 5`)** — fast path for fully-exhausted providers with sparse cache: trips on the first 5 IPs in the queue, skips the rest.
-- **Cumulative (`CIRCUIT_BREAKER_RATE_LIMIT_CUMULATIVE_THRESHOLD = 30`)** — safety net for providers whose cache holds ~25% of the day's IPs scattered through the sort order (Shodan post-multi-day cache accumulation). Cache hits would otherwise reset the consecutive counter every 4-5 misses and the loop would grind through every IP. Cumulative trips regardless of intervening hits.
-
-Defect #11 (2026-05-21): without these, a Shodan re-run with 4670 IPs / 1243 cache-warm hung for hours stacking up tenacity backoff on the remaining 3427 misses.
-
-### 6. Risk score composition is explicit
-
-`risk_score` is the single number STIX gate, dashboard buckets, and Discord top-5 read. It is composed in two layers — never re-derived ad-hoc:
-
-- **Per-provider sub-scores live in silver.** Every enrichment provider must expose a `<provider>_risk_score` field on a 0..100 scale alongside its raw fields, computed by a module-level `compute_risk_score(...)` helper. Tests for the helper live in the provider's test file. Adding a new provider without a sub-score means the gold composite silently ignores it.
-- **Gold composite is mean-of-two.** `enrichment_risk_score` is `pl.mean_horizontal` of the four per-provider scores (skipping nulls). `behavioral_risk_score` is honeypot-activity (auth + commands + downloads + findings). Final `risk_score = (enrichment.fill_null(0) + behavioral) / 2`, clipped 0..100.
-- **GreyNoise RIOT short-circuits to 0.** RIOT means the IP is on the Rule-It-Out list (known-benign infrastructure — CDNs, NTP, DNS). When set, `greynoise_risk_score=0` overrides classification, pulling the enrichment mean down. The row stays in silver with full enrichment intact; only the score is overridden. This prevents false-positive Indicators in STIX export and is the only place in the formula where one signal can subtract from another.
-
-Full reference (including all per-provider formulas, worked examples, and the FAQ): [docs/risk-scoring.md](/docs/risk-scoring.md). Any change to the formula must update that doc and the test fixtures in `pipeline/tests/test_transform/test_metrics.py::TestRiskScoreDecomposition`.
-
-## Pipeline, Vector & Honeypot Deployment Discipline
-
-Before running live pipeline verification or modifying Ansible roles, Vector VRL configs, or Cowrie/Dionaea Quadlets, load the corresponding operational skill:
-
-- **Pipeline Verification & Quota Discipline ([`verify-pipeline`](.agents/skills/verify-pipeline/SKILL.md)):**
-  - Mock first (`tests/test_enrichment/`), gate every live run on `cd pipeline && uv run pytest && uv run ruff check && uv run mypy --strict`, inspect `.enrichment_cache.db` before re-running, use `--date YYYY-MM-DD` for targeted re-runs, never kill an active live run mid-flight (silver writes last), and verify post-cycle invariants with `config/ansible/tests/validate-pipeline-cycle.yml`.
-- **Vector & Honeypot Sensor Discipline ([`deploy-sensors`](.agents/skills/deploy-sensors/SKILL.md)):**
-  - **Vector:** Every Ansible role rendering a Vector config must `notify: "Validate Vector config tree"` (`roles/base/handlers/main.yml`, using `find /etc/vector/conf.d`) *before* `"Restart Vector"` fires.
-  - **Dionaea (`docker.io/dinotools/dionaea:nightly`):** Driven by `dionaea_service_catalog`; 7-bit ASCII only in `services-enabled/*.yaml` (Python 3.6 + PyYAML); keep `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`, `FOWNER`; omit `ReadOnly=true`; keep `DIONAEA_FORCE_INIT_CONF=1` and `DIONAEA_FORCE_INIT_DATA=1`; no `,U` or `UserNS=keep-id`.
-  - **Cowrie:** Health check must use `HealthCmd=CMD python3 /healthcheck.py` (never `CMD-SHELL` or JSON array); ownership flows via `UserNS=keep-id:uid=999,gid=999` (never `,U`).
-  - **Validation Playbooks:** Run `tests/validate-single-node.yml` and `tests/validate-sensor-runtime.yml` after deployments.
-
-## Daily Discord report
-
-`lantana-report` (systemd timer at 06:00 UTC, also runnable on demand) is the **merged daily flow** that absorbed the previous `lantana-alert` step. It reads gold tables for yesterday's date, loads `/var/lib/lantana/datalake/enrichment_errors.json` and classifies rows by severity, then posts a single Discord embed whose color follows the maximum severity (red=critical, yellow=warning, green=clean) with the full Markdown brief attached as a `.md` file. The brief always posts — there's no longer a separate "silent on clean days" alerter step.
-
-Pipeline-health severity (driven by `notify/alerts.py`):
-- **Critical** = anything that prevented file creation: `dataset_processing_failed`, `transform_failed` (the latter is appended by `lantana-transform`'s `main()` wrapper when `run_transform` raises).
-- **Warning** = provider degradation: timeouts, parse errors, transient HTTP errors.
-- **Info** = routine rate-limit exhaustion (`rate_limit`); kept grouped but doesn't turn the embed yellow on its own.
-
-The `lantana-alert` CLI still exists (`lantana.notify.alerts:main`) for off-cycle replay/debug — `sudo systemctl start lantana-alert.service` or `lantana-alert --force --date YYYY-MM-DD` — but its timer was retired when the daily brief absorbed the flow. The pipeline never takes a Discord dependency in the hot path; the report runner reads the NDJSON file the runners already write.
-
-The brief itself is a **reading document, not an IOC dump.** The long-tail IOC inventory was lifted to the dashboard's STIX Export page in 2026-05-26 (one Plotly metric breakdown + a Raw IOC CSV.gz button); the brief footer now points to it. Brief and dashboard widgets share their explanation strings via `notify/explanations.py` (`BRIEF_SECTIONS` + `METRICS` dicts of `WhatWhyHow` triplets) — never add inline `help=` or `st.caption()` literals on a dashboard page when the brief might surface the same widget.
-
-## Enrichment cache lifecycle
-
-The SQLite enrichment cache at `/var/lib/lantana/datalake/.enrichment_cache.db` uses a **tiered per-row TTL** keyed off the provider's own risk_score (`enrichment/runner.py:_classify_ttl`). Numbers match OpenCTI's default decay-rule durations:
-
-| Classification | IPs    | Domains | Hashes  |
-|---|---|---|---|
-| Benign         | 7 days | 7 days  | 7 days  |
-| Malicious      | 60d    | 90d     | 180d    |
-
-A row is "malicious" iff its per-provider `<provider>_risk_score` field (set by the provider's `compute_*_risk_score` helper) is ≥ `RISK_SCORE_MALICIOUS_THRESHOLD` (50.0). Classification happens per-row at write time; `expires_at` is persisted on the row so policy changes don't retroactively re-tier existing entries. The read path filters on `expires_at > NOW()`. Rows with NULL `expires_at` (only possible for entries written before the write path was migrated) read as misses by SQL three-valued logic — exactly the behavior we want.
-
-Adding a new enrichment provider: expose a `<provider>_risk_score` field in the result data and register the field name in `_RISK_SCORE_FIELDS` (`enrichment/runner.py`). Without that the cache classifier can't distinguish malicious from benign and every row falls into the 7-day benign tier.
-
-## OPSEC Requirements
-
-Lantana produces shareable intelligence (Discord reports, STIX bundles). The primary OPSEC concern is **external/WAN IP leakage** — the public-facing addresses that identify the honeypot on the internet. If an attacker or peer discovers these, they can blacklist the honeypot, fingerprint the setup, or map the operator's infrastructure. Only the honeypot owner should know these addresses. OPSEC is enforced at every layer:
-
-### Layer 0: Source code, docs, and examples (placeholders only)
-
-The repository is **public on GitHub** (`github.com/lopes/lantana`). Anything committed under `docs/`, `README.md`, `scripts/`, `config/ansible/` (except untracked operation inventories), code comments, or playbook examples is world-readable and search-indexable. Real operator-identifying values must never appear in these files.
-
-- **Never paste a real WAN IP, IPv6 address, hostname, MAC, ASN, domain, server provider account ID, or SSH fingerprint into any tracked file.** This applies to runbooks, READMEs, troubleshooting guides, code comments, commit messages, and PR descriptions.
-- **Use reserved documentation ranges in every example:**
-  - IPv4 → RFC 5737 TEST-NET blocks: `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`
-  - IPv6 → RFC 3849: `2001:db8::/32`
-  - Domains → `example.com`, `example.org`, `example.net` (RFC 2606)
-  - ASNs → RFC 5398: `64496–64511`, `65536–65551`
-  - Hostnames → archetype-generic (`vps-01`, `sn-01`) — never the real production hostname
-- **Real values belong only in operation inventories** (`config/ansible/inventories/op_<name>/group_vars/all/`). These directories are either gitignored or vault-encrypted; treat any path outside them as public.
-- **Public IPs as probe payloads are fine** (e.g. `8.8.8.8`, `1.1.1.1`, or attacker IPs already in OSINT) — they don't identify the operator. The rule is operator-identifying values, not all real IPs.
-- **Before editing any doc that includes an IP, hostname, or domain, verify it falls inside one of the reserved ranges above.** When in doubt, ask the user before committing.
-- **Heuristic for spotting a real one:** if an example IP isn't in an RFC documentation range, it's almost certainly real. Allocations registered to commercial VPS/cloud providers (OVH, Hetzner, DigitalOcean, Linode, AWS, GCP, Azure, …) are the most common slip — replace any such address with the appropriate reserved range before committing.
-
-### Layer 1: Vector telemetry (noise suppression)
-
-- Every honeypot Vector pipeline must include a `filter_<honeypot>` transform that drops events from non-attacker source IPs before forwarding to the collector
-- Dropped sources: loopback (`127.0.0.0/8`, `::1`, IPv4-mapped `::ffff:127.0.0.1`), link-local (`fe80::`), internal network prefixes (`network.prefixes.ipv4`, `network.prefixes.ipv6`), and the honeypot's own WAN addresses (`network.honeywall.wan.ipv4`, `network.honeywall.wan.ipv6`)
-- This catches health check probes, inter-zone traffic, operational noise, AND outbound-response packets from the honeypot itself (Suricata sees both flow directions, so these would otherwise leak the WAN IP into `src_endpoint_ip` and trip the silver-layer leak validator)
-- Pattern: use non-aborting VRL `ip_cidr_contains()` + `?? false` for CIDR checks, exact-match `src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}"` for WAN addresses
-- **Every new honeypot role must replicate this filter** — see `suricata.vector.yaml.j2` as the reference (most complete)
-
-### Layer 2: Silver datalake (pseudonymization)
-
-- During bronze-to-silver enrichment, all operation-related IPs are replaced with pseudonyms (e.g., `honeypot-sensor-01`)
-- **External/WAN IPs are the primary redaction target** — these are the public addresses in `network.honeywall.wan.ipv4/ipv6` that appear as destination IPs in attacker events
-- Internal IPs (`network.prefixes.*`, sensor/collector addresses) are also redacted for defense in depth
-- Controlled by `reporting.yml` → `redact.infrastructure_ips` and `redact.pseudonym_map`
-- **Redaction (`redact_infrastructure_ips`) runs in two passes:**
-  - IP-typed columns (`DST_IP_COLUMNS`: `dst_ip`, `dest_ip`, `local_ip`, `dst_host`, `destination.ip`, `dst_endpoint_ip`) get exact-match + canonical IPv6/CIDR pseudonym swap.
-  - Attacker-content columns (`ATTACKER_CONTENT_COLUMNS`, including `destfile`, `file_name`, `unmapped_password`, `actor_process_cmd_line`, `file_url`, `message`, ...) get longest-prefix-first substring replacement, because attackers can put the WAN address into any free-text field (defect #9: WAN-as-password) and Vector preserves raw kernel logs in `message` with `DST=<wan>` embedded.
-- `validate_no_leaks()` is scoped to IP-typed columns (`DST_IP_COLUMNS + SRC_IP_COLUMNS`) — attacker-content columns can legitimately contain IP-shaped strings (RFC1918 in a password, embedded URLs, etc.) and false-positives there were dropping cowrie silver entirely on busy days.
-
-### Layer 3: Gold / Reports / STIX (complete absence)
-
-- Gold aggregation reads only from silver (already redacted)
-- `generate_bundle()` in `intel/stix.py` enforces Layer-3 infrastructure-IP absence on serialized STIX 2.1 bundles
-- Discord reports generated exclusively from gold data
-- Reports never contain: honeypot WAN IPs, internal IPs, server hostnames, network topology, SSH admin port, interface names, CIDRs
-
-## Datalake Architecture
-
-- Per-instance singleton. Multiple operations coexist via `operation` column tag (not filesystem partition)
-- Partition scheme (Hive-style): `dataset={name}/date={YYYY-MM-DD}/server={hostname}/`
-- Bronze = raw NDJSON (Vector writes). Silver = enriched Parquet (OCSF, redacted). Gold = correlated intelligence (Parquet)
-- Cross-honeypot correlation happens ONLY at the gold layer
-
-## Third-Party Integrations
-
-Six third-party services total — **five enrichment integrations** across two stages plus **Discord** for daily reporting/notifications — all keyed in the vault (`vault_apikey_<service>` / `vault_webhook_<service>`):
-
-- **Wire-speed enrichment (Vector, local MMDB):** MaxMind GeoLite2 (City + ASN). Foundational integration — every event passes through it before reaching bronze. Ansible downloads the MMDBs at deploy time and refreshes monthly via cron. License key required for download; lookup is offline.
-- **Daily-batch enrichment (Python pipeline, HTTP APIs):** AbuseIPDB, Shodan, VirusTotal (required keys); GreyNoise (free Community endpoint, optional key).
-- **Daily reporting & operational notifications (Python pipeline, webhook):** Discord (`vault_webhook_discord`, with `discord_webhook` accepted as alias in `SecretsConfig`).
-
-Validation tooling:
-
-- `scripts/probe-mmdb.py` — full-stack MaxMind validation. Reads `vault_apikey_maxmind` from `--secrets <secrets.json>`, downloads the City + ASN tarballs if not already on disk, queries them, and prints raw + Vector-VRL-normalized output. Auto-falls back to `/tmp/lantana/mmdb` when the collector path isn't present.
-- `scripts/probe-enrichment.py` — hits each HTTP provider's live API; prints raw upstream response + normalized `EnrichmentResult.data`.
-
-See [docs/integrations.md](/docs/integrations.md) for endpoints, free-tier limits, field-extraction tables, and enablement rules.
+- **Pipeline live runs:** Load [`verify-pipeline`](.agents/skills/verify-pipeline/SKILL.md) before touching live API quota or datalake partitions.
+- **Git hygiene:** Never commit directly to `main`. Use GPG-signed Scoped Commits (`<scope>: <description>`, no `feat:`/`fix:`/`chore:`/`update:`, no trailing period, no AI trailers). Keep `config/ansible/inventories/op_<name>/` untracked/gitignored.

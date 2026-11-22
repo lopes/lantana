@@ -1,16 +1,18 @@
-"""Main enrichment orchestrator — IOC-first.
+"""Main enrichment orchestrator — IOC-first, priority-ranked, rate-limited.
 
 Daily workflow:
-1. Load every dataset's bronze NDJSON for the target date.
-2. Extract IOCs globally across datasets (IPs from all four datasets,
-   SHA256 hashes from cowrie file_download events plus a defensive
-   disk scan).
-3. OPSEC-filter IPs against the operation's infrastructure ranges.
-4. For each (provider, ioc_type) pair, fulfil each IOC cache-first;
-   freshly-queried results land in the cache so subsequent runs
-   short-circuit the HTTP call.
-5. Per dataset: merge enrichments by `src_ip` (and by `shasum` for
-   cowrie), OCSF-normalize, redact infrastructure IPs, write silver
+1. Load every dataset's bronze NDJSON for the target date (plus synthetic
+   Dionaea binary captures).
+2. Extract IOCs globally across datasets: inbound IPs, malware SHA-256 hashes
+   (bronze + date-scoped sensor disk sweep), outbound C2 IPs, and post-auth
+   stager URLs & domains.
+3. OPSEC-filter all IPs, URLs, and domains against infrastructure ranges and
+   hostnames before any external API lookup.
+4. Enrich cache-first with token-bucket rate limiting and behavioral priority
+   sorting. VirusTotal/GTI runs a unified priority queue:
+   hashes -> outbound C2 IPs -> post-auth stager URLs/domains -> inbound IPs.
+5. Per dataset: merge enrichments, OCSF-normalize, drop infra-source rows,
+   redact infra IPs/variants/hostnames, validate zero leaks, write silver
    Parquet.
 """
 
@@ -18,10 +20,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 import re
 import sqlite3
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -36,6 +40,7 @@ from lantana.common.redact import (
     RedactionConfig,
     drop_infrastructure_source_rows,
     redact_infrastructure_ips,
+    scrub_infra_strings,
     validate_no_leaks,
 )
 from lantana.enrichment.ioc import (
@@ -43,6 +48,9 @@ from lantana.enrichment.ioc import (
     extract_hashes_from_bronze,
     extract_hashes_from_disk,
     extract_ips,
+    extract_outbound_c2_ips,
+    extract_outbound_urls,
+    extract_stager_domains,
     filter_internal_ips,
 )
 from lantana.enrichment.providers.abuseipdb import AbuseIPDBProvider
@@ -53,20 +61,17 @@ from lantana.enrichment.providers.virustotal import VirusTotalProvider
 from lantana.models.normalize import normalize_dataset
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
 logger = structlog.get_logger()
 
 CACHE_DB_PATH = Path("/var/lib/lantana/datalake/.enrichment_cache.db")
 
-# Tiered cache TTLs by classification and ioc_type. Malicious-tier values
-# match OpenCTI's default decay-rule durations (IPv4 60d, domain 90d,
-# file hash 180d). The benign tier stays short so noise / unclassified
-# IOCs are re-checked frequently. Classification is per-row, derived
-# from the provider's own risk_score field (see _classify_ttl).
+# Tiered cache TTLs by classification and ioc_type (OpenCTI decay defaults).
 CACHE_TTL_BENIGN_DAYS = 7
 CACHE_TTL_MALICIOUS_IP_DAYS = 60
 CACHE_TTL_MALICIOUS_DOMAIN_DAYS = 90
+CACHE_TTL_MALICIOUS_URL_DAYS = 90
 CACHE_TTL_MALICIOUS_HASH_DAYS = 180
 RISK_SCORE_MALICIOUS_THRESHOLD = 50.0
 
@@ -79,69 +84,116 @@ DATASETS = ["cowrie", "suricata", "nftables", "dionaea"]
 
 IOC_TYPE_IP = "ip"
 IOC_TYPE_HASH = "hash"
-IOC_TYPE_DOMAIN = "domain"  # placeholder; no provider enriches domains yet
+IOC_TYPE_URL = "url"
+IOC_TYPE_DOMAIN = "domain"
 
+# Free VT daily quota is 500/day shared across hashes/IPs/URLs/domains; keep a
+# 20-request margin and stay comfortably inside the 01:00-05:30 UTC window.
+VT_FREE_DAILY_REQUEST_BUDGET = 480
 
-# Per-provider IP-selection policy. Two knobs:
-#
-#   * subsample_top_n: when set, pass only the N highest-event-count IPs to
-#     this provider instead of the full sorted unique-IP list. Used for tiny
-#     free-tier quotas where calling every IP is impossible (GreyNoise's
-#     50/week makes ~1100 daily IPs unreachable; without subsampling, the
-#     scarce budget burns on lowest-numbered IPs alphabetically).
-#
-#   * skip_window_days: when set, if the previous run hit a rate_limit
-#     error for this provider AND fewer than N days have passed since,
-#     skip the provider entirely (no HTTP calls). Avoids burning quota
-#     on a provider whose window hasn't refreshed yet. Pairs with the
-#     ``.provider_state.json`` file to persist trip dates across runs.
-#
-# Providers absent from this map (abuseipdb, virustotal) use the default
-# behaviour: full sorted IP list, no cross-run skipping. Their quota
-# windows are short enough (daily / per-minute) that skipping isn't
-# useful — the next day's run gets a fresh allowance.
+# Per-provider IP-selection policy.
 _PROVIDER_POLICY: dict[str, dict[str, int]] = {
-    # 50/week → 40 IPs gives a 10-IP safety margin. 6-day skip leaves 1
-    # day for the quota to definitely refresh before the next attempt.
     "greynoise": {"subsample_top_n": 40, "skip_window_days": 6},
-    # 100/month → cache holds the long tail. Skip if exhausted; the
-    # 28-day window leaves a 2-day margin under the rolling 30-day cap.
     "shodan": {"skip_window_days": 28},
 }
 
 # Circuit-breaker thresholds for _enrich_iocs_with_provider.
-#
-# Two complementary counters guard against burning wall-clock against a
-# provider whose quota has reset hours from now:
-#
-#   * RATE_LIMIT_THRESHOLD (consecutive): trips when N 429s arrive in a row
-#     with no successful response between them. Fast path for fully-
-#     exhausted providers with a sparse-or-empty cache — the very first IPs
-#     trip it, the remaining queue is skipped.
-#   * RATE_LIMIT_CUMULATIVE_THRESHOLD: trips on the total count of 429s
-#     across the whole loop, even if interleaved cache hits keep resetting
-#     the consecutive counter. Without this, a provider whose cache holds
-#     ~25% of the day's IPs (Shodan post-multi-day-accumulation) processes
-#     the entire queue because every 4-5 misses hit one cache entry — the
-#     consecutive counter never reaches 5. Defect #11, observed on the
-#     2026-05-21 12:10 re-run for date=2026-05-20.
-#
-# Auth failures don't fix themselves mid-run either — one is enough.
 CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD = 5
 CIRCUIT_BREAKER_RATE_LIMIT_CUMULATIVE_THRESHOLD = 30
 CIRCUIT_BREAKER_AUTH_FAILED_THRESHOLD = 1
 
 
+# -- Token-bucket rate limiter -----------------------------------------------
+
+
+class _AsyncRateLimiter:
+    """Async token-bucket pacer honoring ``provider.rate_limit()``.
+
+    Short windows (``per_seconds <= 3600``, e.g. VT's ``(4, 60)``) are paced
+    strictly at ``max_requests / per_seconds`` with burst capacity
+    ``max_requests``. Multi-day quota windows (``per_seconds > 3600``, e.g.
+    AbuseIPDB ``(1000, 86400)``, Shodan ``(100, 2592000)``, GreyNoise
+    ``(50, 604800)``) are paced gently at 1 req/s (burst 2) so we respect
+    per-second API rules without sleeping hours between requests.
+    """
+
+    def __init__(
+        self,
+        max_requests: int,
+        per_seconds: int,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._clock = clock
+        self._sleep = sleep
+        if max_requests <= 0 or per_seconds <= 0:
+            self._enabled = False
+            self._capacity = 0.0
+            self._rate = 0.0
+            self._tokens = 0.0
+            self._last = 0.0
+            return
+
+        self._enabled = True
+        if per_seconds <= 3600:
+            self._capacity = float(max_requests)
+            self._rate = float(max_requests) / float(per_seconds)
+        else:
+            self._capacity = 2.0
+            self._rate = 1.0
+        self._tokens = self._capacity
+        self._last = self._clock()
+
+    async def acquire(self) -> None:
+        """Consume one token, sleeping only when the bucket is empty."""
+        if not self._enabled:
+            return
+        now = self._clock()
+        elapsed = max(0.0, now - self._last)
+        self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+        self._last = now
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return
+        wait_seconds = (1.0 - self._tokens) / self._rate
+        await self._sleep(wait_seconds)
+        self._last = self._clock()
+        self._tokens = 0.0
+
+
+def _build_rate_limiter(provider: object) -> _AsyncRateLimiter | None:
+    """Construct an _AsyncRateLimiter from ``provider.rate_limit()`` when valid."""
+    rl_fn = getattr(provider, "rate_limit", None)
+    if not callable(rl_fn) or inspect.iscoroutinefunction(rl_fn):
+        return None
+    raw = rl_fn()
+    if inspect.iscoroutine(raw):
+        raw.close()
+        return None
+    if (
+        isinstance(raw, tuple)
+        and len(raw) == 2
+        and isinstance(raw[0], int)
+        and isinstance(raw[1], int)
+        and not isinstance(raw[0], bool)
+        and not isinstance(raw[1], bool)
+    ):
+        return _AsyncRateLimiter(raw[0], raw[1])
+    return None
+
+
 # -- Cache -------------------------------------------------------------------
 
 
-# Per-provider risk_score field names in EnrichmentResult.data. Probed
-# in order — first hit wins. VirusTotal lists two entries because IP
-# and file results share the same provider key but expose distinct
-# fields (`virustotal_risk_score` on IPs, `vt_file_risk_score` on hashes).
 _RISK_SCORE_FIELDS: dict[str, tuple[str, ...]] = {
     "abuseipdb": ("abuseipdb_risk_score",),
-    "virustotal": ("virustotal_risk_score", "vt_file_risk_score"),
+    "virustotal": (
+        "virustotal_risk_score",
+        "vt_file_risk_score",
+        "vt_url_risk_score",
+        "vt_domain_risk_score",
+    ),
     "greynoise": ("greynoise_risk_score",),
     "shodan": ("shodan_risk_score",),
 }
@@ -152,13 +204,7 @@ def _classify_ttl(
     ioc_type: str,
     data: Mapping[str, object],
 ) -> timedelta:
-    """Return the TTL to apply to a freshly written cache row.
-
-    A row is malicious iff its provider's risk_score field is present
-    in `data` and ≥ RISK_SCORE_MALICIOUS_THRESHOLD. Malicious rows
-    decay over OpenCTI-default windows (60/90/180d by ioc_type);
-    everything else falls into the 7-day benign tier.
-    """
+    """Return the TTL to apply to a freshly written cache row."""
     fields = _RISK_SCORE_FIELDS.get(provider, ())
     score: float | None = None
     for field in fields:
@@ -172,28 +218,15 @@ def _classify_ttl(
         return timedelta(days=CACHE_TTL_BENIGN_DAYS)
     if ioc_type == IOC_TYPE_HASH:
         return timedelta(days=CACHE_TTL_MALICIOUS_HASH_DAYS)
+    if ioc_type == IOC_TYPE_URL:
+        return timedelta(days=CACHE_TTL_MALICIOUS_URL_DAYS)
     if ioc_type == IOC_TYPE_DOMAIN:
         return timedelta(days=CACHE_TTL_MALICIOUS_DOMAIN_DAYS)
     return timedelta(days=CACHE_TTL_MALICIOUS_IP_DAYS)
 
 
 def _init_cache(db_path: Path) -> sqlite3.Connection:
-    """Initialise the SQLite enrichment cache.
-
-    Schema versions handled by the auto-migration:
-      * v2 — legacy single-``key`` column. Drop and recreate.
-      * v3 — composite PK ``(provider, ioc_type, ioc_value)`` but no
-        ``expires_at``; flat 7-day TTL. Drop and recreate so the new
-        tiered policy applies cleanly. Up to ~7 days of cache loss;
-        providers refill on the next run (Shodan's 100/month free
-        tier is the only painful one — see docs/pipeline.md).
-      * v4 — current: composite PK plus per-row ``expires_at``.
-
-    ``expires_at`` is nullable so the read path can survive rows
-    written before the write path was switched over; the SQL comparison
-    ``expires_at > NOW()`` returns NULL for them, which is treated as
-    expired — exactly what we want for unmigrated rows.
-    """
+    """Initialise the SQLite enrichment cache (schema v4)."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
@@ -243,17 +276,7 @@ def _get_cached(
     ioc_type: str,
     ioc_value: str,
 ) -> EnrichmentResult | None:
-    """Return the cached result for (provider, ioc_type, ioc_value), or None.
-
-    Freshness is decided per-row by the ``expires_at`` column set at
-    write time (see ``_classify_ttl``). Rows with NULL ``expires_at``
-    — only possible for entries written before the write path was
-    switched over — are excluded by the SQL comparison (NULL > anything
-    is NULL, which is falsy), so they read as misses and get re-queried.
-
-    Malformed cached rows (data JSON that no longer deserialises) are
-    also treated as a miss so one bad row cannot poison a whole batch.
-    """
+    """Return the cached result for (provider, ioc_type, ioc_value), or None."""
     now_iso = datetime.now(tz=UTC).isoformat()
     row = conn.execute(
         "SELECT data, queried_at FROM cache "
@@ -282,12 +305,7 @@ def _set_cached(
     ioc_value: str,
     result: EnrichmentResult,
 ) -> None:
-    """Store an enrichment result keyed by (provider, ioc_type, ioc_value).
-
-    ``expires_at`` is derived per-row from the result's own data via
-    ``_classify_ttl``: malicious rows (provider risk_score ≥ threshold)
-    get the long ioc_type-specific window, everything else gets 7 days.
-    """
+    """Store an enrichment result keyed by (provider, ioc_type, ioc_value)."""
     expires_at = result.queried_at + _classify_ttl(provider, ioc_type, result.data)
     conn.execute(
         "INSERT OR REPLACE INTO cache "
@@ -305,18 +323,48 @@ def _set_cached(
     conn.commit()
 
 
+def load_enrichment_cache_lookup(
+    cache_db_path: Path = CACHE_DB_PATH,
+    provider: str = "virustotal",
+) -> dict[tuple[str, str], dict[str, str | int | float | bool | None]]:
+    """Read active cached enrichment records keyed by ``(ioc_type, ioc_value)``.
+
+    Used at the IO edge by ``transform/runner.py`` to hydrate VT/GTI verdicts
+    for durable outbound IOCs (C2 IPs, stager URLs, stager domains, hashes)
+    into the ``extracted_iocs`` gold table without adding extra silver tables.
+    """
+    if not cache_db_path.exists():
+        return {}
+    now_iso = datetime.now(tz=UTC).isoformat()
+    lookup: dict[tuple[str, str], dict[str, str | int | float | bool | None]] = {}
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{cache_db_path}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT ioc_type, ioc_value, data FROM cache "
+            "WHERE provider = ? AND (expires_at IS NULL OR expires_at > ?)",
+            (provider, now_iso),
+        ).fetchall()
+        for ioc_type, ioc_value, data_json in rows:
+            try:
+                parsed = json.loads(data_json)
+            except (ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(parsed, dict):
+                lookup[(str(ioc_type), str(ioc_value))] = parsed
+    except sqlite3.Error as exc:
+        logger.warning("cache_lookup_read_failed", path=str(cache_db_path), exc_repr=repr(exc))
+    finally:
+        if conn is not None:
+            conn.close()
+    return lookup
+
+
 # -- Error handling ----------------------------------------------------------
 
 
 ErrorAccumulator = dict[tuple[str, str], EnrichmentError]
 
-# Query-string parameters whose values must never reach disk. Some providers
-# (notably Shodan) take the API key as a URL query parameter, and httpx's
-# HTTPStatusError stringifies the full request URL verbatim into its message
-# — which would then land in /var/lib/lantana/datalake/enrichment_errors.json
-# in cleartext, get read by the alerter, and potentially Discord-embedded.
-# Headers-based auth (AbuseIPDB / VirusTotal / GreyNoise) is unaffected;
-# headers never appear in the error string.
 _SENSITIVE_QUERY_PARAMS = ("key", "api_key", "apikey", "license_key", "token", "access_token")
 _SENSITIVE_QUERY_RE = re.compile(
     r"([?&])(" + "|".join(_SENSITIVE_QUERY_PARAMS) + r")=[^&\s'\"]+",
@@ -324,25 +372,19 @@ _SENSITIVE_QUERY_RE = re.compile(
 )
 
 
-def _sanitize_error_message(message: str) -> str:
-    """Strip API keys from URL query strings in error messages.
-
-    Returns the message with `key=<value>` (and similar sensitive
-    parameter names) replaced by `key=REDACTED`. Anchored to `?` or `&`
-    so it never matches the same substring inside a JSON body, free
-    text, or path segment.
-    """
-    return _SENSITIVE_QUERY_RE.sub(r"\1\2=REDACTED", message)
+def _sanitize_error_message(
+    message: str,
+    redact_config: RedactionConfig | None = None,
+) -> str:
+    """Strip API keys from URL query strings AND scrub infra IPs/hostnames."""
+    sanitized = _SENSITIVE_QUERY_RE.sub(r"\1\2=REDACTED", message)
+    if redact_config is not None:
+        sanitized = scrub_infra_strings(sanitized, redact_config)
+    return sanitized
 
 
 def _classify_http_error(status_code: int) -> str:
-    """Map HTTP status code to a structured error type label.
-
-    `auth_failed` (401/403) is the only one operators must act on — it
-    means a vault key is broken. `not_found` is normal for IP lookups
-    and is logged at debug level. `rate_limit` and `server_error` are
-    expected throttling/transient signals.
-    """
+    """Map HTTP status code to a structured error type label."""
     if status_code == 429:
         return "rate_limit"
     if status_code in (401, 403):
@@ -369,14 +411,10 @@ def _record_error(
     provider: str,
     error_type: str,
     message: str,
+    redact_config: RedactionConfig | None = None,
 ) -> None:
-    """Accumulate an error, incrementing count for repeated (provider, error_type).
-
-    The message is run through ``_sanitize_error_message`` before storage
-    so that API keys embedded in request URLs (Shodan query-string auth)
-    never reach the enrichment_errors.json file.
-    """
-    safe_message = _sanitize_error_message(message)
+    """Accumulate an error after scrubbing secrets and infrastructure strings."""
+    safe_message = _sanitize_error_message(message, redact_config=redact_config)
     key = (provider, error_type)
     if key in errors:
         errors[key].count += 1
@@ -413,19 +451,15 @@ def _write_error_summary(
             f.write(line + "\n")
 
 
-# -- Provider state (cross-run skip + IP subsampling) ------------------------
+# -- Provider state & behavioral priority ranking ----------------------------
 
 
 ProviderState = dict[str, dict[str, str]]
+IpPriorityTuple = tuple[int, int, int, int, int, int]
 
 
 def _load_provider_state(path: Path) -> ProviderState:
-    """Load the persisted provider-state file, or return an empty dict.
-
-    The state file is best-effort: a malformed or missing file is treated
-    as an empty state so an operator manually editing it cannot bomb a
-    run.
-    """
+    """Load the persisted provider-state file, or return an empty dict."""
     if not path.exists():
         return {}
     try:
@@ -435,7 +469,6 @@ def _load_provider_state(path: Path) -> ProviderState:
         return {}
     if not isinstance(loaded, dict):
         return {}
-    # Narrow object → ProviderState shape, dropping anything malformed.
     result: ProviderState = {}
     for provider, entry in loaded.items():
         if isinstance(provider, str) and isinstance(entry, dict):
@@ -458,14 +491,7 @@ def _should_skip_provider(
     state: ProviderState,
     target_date: date,
 ) -> bool:
-    """Return True if the provider's skip-window from its last rate-limit
-    trip has not yet elapsed.
-
-    Behaviour:
-      * No policy for this provider → never skip.
-      * No prior trip recorded → never skip.
-      * Last trip + skip_window_days > target_date → skip.
-    """
+    """Return True if the provider's skip-window from its last rate-limit trip has not elapsed."""
     policy = _PROVIDER_POLICY.get(provider_name, {})
     window_days = policy.get("skip_window_days")
     if window_days is None:
@@ -481,18 +507,7 @@ def _should_skip_provider(
 
 
 def _compute_ip_event_counts(dfs: dict[str, pl.DataFrame]) -> dict[str, int]:
-    """Count events per source IP across all bronze datasets.
-
-    Used to pick the highest-signal IPs when a provider's quota forces
-    subsampling. ``src_ip`` is the canonical bronze column populated by
-    Vector for every dataset that has IPs at all (cowrie, suricata,
-    nftables); datasets without it contribute zero rows to the count.
-
-    Implementation note: iterates raw Python rather than calling
-    ``value_counts()`` because polars' value_counts is not order-stable
-    between calls — pairing two separate column extractions misaligns IPs
-    with their counts.
-    """
+    """Count events per source IP across all bronze datasets."""
     counts: dict[str, int] = {}
     for df in dfs.values():
         if df.is_empty() or "src_ip" not in df.columns:
@@ -502,19 +517,78 @@ def _compute_ip_event_counts(dfs: dict[str, pl.DataFrame]) -> dict[str, int]:
     return counts
 
 
+def _compute_ip_priority(
+    dfs: dict[str, pl.DataFrame],
+    c2_ips: set[str] | None = None,
+) -> dict[str, IpPriorityTuple]:
+    """Rank every observed IP by behavioral signal before API lookup.
+
+    Tuple ordering (descending):
+      ``(is_c2_ip, downloads, commands, auth_attempts, findings, total_events)``
+    Ensures scarce API quotas (AbuseIPDB, GreyNoise, Shodan, VT) spend calls on
+    interactive attackers and outbound C2 infrastructure instead of alphabetically
+    low port scanners.
+    """
+    c2_set = c2_ips or set()
+    stats: dict[str, list[int]] = {}
+
+    def _slot(ip: str) -> list[int]:
+        entry = stats.get(ip)
+        if entry is None:
+            entry = [1 if ip in c2_set else 0, 0, 0, 0, 0, 0]
+            stats[ip] = entry
+        return entry
+
+    for ip in c2_set:
+        _slot(ip)
+
+    for dataset, df in dfs.items():
+        if df.is_empty() or "src_ip" not in df.columns:
+            continue
+        cols = ["src_ip"]
+        for opt in ("eventid", "event_type", "credential_username", "ftp_command"):
+            if opt in df.columns:
+                cols.append(opt)
+        for row in df.select(cols).iter_rows(named=True):
+            raw_ip = row.get("src_ip")
+            if not raw_ip:
+                continue
+            slot = _slot(str(raw_ip))
+            slot[5] += 1  # total_events
+            eventid = str(row.get("eventid") or "")
+            event_type = str(row.get("event_type") or "")
+            if eventid in ("cowrie.session.file_download", "cowrie.session.file_upload"):
+                slot[1] += 1  # downloads
+            elif eventid.startswith("cowrie.command") or row.get("ftp_command"):
+                slot[2] += 1  # commands
+            elif eventid.startswith("cowrie.login") or row.get("credential_username"):
+                slot[3] += 1  # auth_attempts
+            elif dataset == "suricata" and event_type == "alert":
+                slot[4] += 1  # findings
+
+    return {ip: (s[0], s[1], s[2], s[3], s[4], s[5]) for ip, s in stats.items()}
+
+
 def _select_ips_for_provider(
     provider_name: str,
     ip_list: list[str],
     event_counts: dict[str, int],
+    priority_map: Mapping[str, IpPriorityTuple] | None = None,
 ) -> list[str]:
-    """Apply per-provider subsampling.
-
-    If the provider has ``subsample_top_n`` set, return the top-N IPs by
-    event count (descending); tie-break alphabetical for determinism.
-    Otherwise return the full sorted list unchanged.
-    """
+    """Order IPs by behavioral priority (or event counts) and apply per-provider cap."""
     policy = _PROVIDER_POLICY.get(provider_name, {})
     top_n = policy.get("subsample_top_n")
+
+    if priority_map is not None:
+        ordered = sorted(
+            ip_list,
+            key=lambda ip: (
+                tuple(-v for v in priority_map.get(ip, (0, 0, 0, 0, 0, event_counts.get(ip, 0)))),
+                ip,
+            ),
+        )
+        return ordered[:top_n] if top_n is not None else ordered
+
     if top_n is None or len(ip_list) <= top_n:
         return ip_list
     return sorted(
@@ -534,12 +608,22 @@ async def _query_provider(
     ioc_type: str,
     ioc_value: str,
 ) -> EnrichmentResult:
-    """Dispatch to enrich_ip / enrich_hash based on ioc_type."""
+    """Dispatch to enrich_ip / enrich_hash / enrich_url / enrich_domain."""
     if ioc_type == IOC_TYPE_HASH:
         if not isinstance(provider, VirusTotalProvider):
             msg = f"hash enrichment is VirusTotal-only, got {type(provider).__name__}"
             raise TypeError(msg)
         return await provider.enrich_hash(ioc_value)
+    if ioc_type == IOC_TYPE_URL:
+        if not isinstance(provider, VirusTotalProvider):
+            msg = f"url enrichment is VirusTotal-only, got {type(provider).__name__}"
+            raise TypeError(msg)
+        return await provider.enrich_url(ioc_value)
+    if ioc_type == IOC_TYPE_DOMAIN:
+        if not isinstance(provider, VirusTotalProvider):
+            msg = f"domain enrichment is VirusTotal-only, got {type(provider).__name__}"
+            raise TypeError(msg)
+        return await provider.enrich_domain(ioc_value)
     return await provider.enrich_ip(ioc_value)
 
 
@@ -550,17 +634,25 @@ async def _enrich_iocs_with_provider(
     iocs: list[str],
     cache: sqlite3.Connection,
     errors: ErrorAccumulator,
+    *,
+    rate_limiter: _AsyncRateLimiter | None = None,
+    max_fresh_requests: int | None = None,
+    redact_config: RedactionConfig | None = None,
 ) -> tuple[list[EnrichmentResult], int]:
-    """For one (provider, ioc_type) pair, enrich each IOC cache-first.
+    """For one (provider, ioc_type) pair, enrich each IOC cache-first with rate pacing.
 
-    Returns (combined results including cache hits, cache_hit_count).
+    Returns ``(combined results including cache hits, cache_hit_count)``.
+    Cache hits never consume rate-limiter tokens or fresh-request budget.
     """
-    log_field = "ip" if ioc_type == IOC_TYPE_IP else "sha256"
+    log_field = ioc_type if ioc_type in (IOC_TYPE_IP, IOC_TYPE_URL, IOC_TYPE_DOMAIN) else "sha256"
+    limiter = rate_limiter if rate_limiter is not None else _build_rate_limiter(provider)
     results: list[EnrichmentResult] = []
     cache_hits = 0
+    fresh_attempts = 0
     consecutive_rate_limits = 0
     cumulative_rate_limits = 0
     auth_failures = 0
+
     for index, value in enumerate(iocs):
         cached = _get_cached(cache, provider_name, ioc_type, value)
         if cached is not None:
@@ -568,6 +660,15 @@ async def _enrich_iocs_with_provider(
             cache_hits += 1
             consecutive_rate_limits = 0
             continue
+        if max_fresh_requests is not None and fresh_attempts >= max_fresh_requests:
+            logger.info(
+                "provider_budget_reached",
+                provider=provider_name,
+                ioc_type=ioc_type,
+                budget=max_fresh_requests,
+                skipped=len(iocs) - index,
+            )
+            break
         if consecutive_rate_limits >= CIRCUIT_BREAKER_RATE_LIMIT_THRESHOLD:
             logger.warning(
                 "provider_short_circuited",
@@ -597,6 +698,11 @@ async def _enrich_iocs_with_provider(
                 skipped=len(iocs) - index,
             )
             break
+
+        if limiter is not None:
+            await limiter.acquire()
+        fresh_attempts += 1
+
         try:
             result = await _query_provider(provider, ioc_type, value)
             _set_cached(cache, provider_name, ioc_type, value, result)
@@ -604,7 +710,7 @@ async def _enrich_iocs_with_provider(
             consecutive_rate_limits = 0
         except httpx.HTTPStatusError as exc:
             etype = _classify_http_error(exc.response.status_code)
-            _record_error(errors, provider_name, etype, str(exc))
+            _record_error(errors, provider_name, etype, str(exc), redact_config=redact_config)
             _log_failure(etype, provider=provider_name, **{log_field: value})
             if etype == "rate_limit":
                 consecutive_rate_limits += 1
@@ -614,13 +720,31 @@ async def _enrich_iocs_with_provider(
             else:
                 consecutive_rate_limits = 0
         except httpx.TimeoutException:
-            _record_error(errors, provider_name, "timeout", "request timed out")
+            _record_error(
+                errors,
+                provider_name,
+                "timeout",
+                "request timed out",
+                redact_config=redact_config,
+            )
             _log_failure("timeout", provider=provider_name, **{log_field: value})
         except httpx.ConnectError as exc:
-            _record_error(errors, provider_name, "network_error", str(exc))
+            _record_error(
+                errors,
+                provider_name,
+                "network_error",
+                str(exc),
+                redact_config=redact_config,
+            )
             _log_failure("network_error", provider=provider_name, **{log_field: value})
         except Exception as exc:
-            _record_error(errors, provider_name, "unknown", repr(exc))
+            _record_error(
+                errors,
+                provider_name,
+                "unknown",
+                repr(exc),
+                redact_config=redact_config,
+            )
             _log_failure(
                 "unknown",
                 provider=provider_name,
@@ -633,7 +757,7 @@ async def _enrich_iocs_with_provider(
 def _build_lookup(
     results: list[EnrichmentResult],
 ) -> dict[str, dict[str, str | int | float | bool | None]]:
-    """Collapse a flat list of EnrichmentResult into a `value → merged data` dict."""
+    """Collapse a flat list of EnrichmentResult into a ``value -> merged data`` dict."""
     lookup: dict[str, dict[str, str | int | float | bool | None]] = {}
     for result in results:
         if result.ip not in lookup:
@@ -647,20 +771,22 @@ def _merge_lookup(
     join_col: str,
     lookup: dict[str, dict[str, str | int | float | bool | None]],
 ) -> pl.DataFrame:
-    """Left-join enrichment columns onto `df` keyed by `join_col`."""
+    """Left-join enrichment columns onto ``df`` keyed by ``join_col``."""
     if df.is_empty() or not lookup or join_col not in df.columns:
         return df
     records = [{"_enrich_key": value, **data} for value, data in lookup.items()]
     enrich_df = pl.DataFrame(records)
+    # Drop any already-present non-key enrichment columns from enrich_df? No,
+    # avoid duplicate column name collisions (e.g. vt_status from both IP & hash)
+    # by keeping existing columns on the left when already present.
+    overlap = [c for c in enrich_df.columns if c != "_enrich_key" and c in df.columns]
+    if overlap:
+        enrich_df = enrich_df.drop(overlap)
+    if len(enrich_df.columns) <= 1:
+        return df
     return df.join(enrich_df, left_on=join_col, right_on="_enrich_key", how="left")
 
 
-# Phase D.1 invariant: silver always carries all four IP-side
-# <provider>_risk_score columns so gold's mean_horizontal composite has
-# the same inputs every day. When a provider produces zero results
-# (skipped via _should_skip_provider, quota exhausted with no successes,
-# or unconfigured), _merge_lookup leaves the column absent — this helper
-# backfills typed-null columns so downstream consumers see a stable schema.
 _IP_RISK_SCORE_COLUMNS: tuple[str, ...] = (
     "abuseipdb_risk_score",
     "virustotal_risk_score",
@@ -677,6 +803,22 @@ def _ensure_ip_score_columns(df: pl.DataFrame) -> pl.DataFrame:
     if not missing:
         return df
     return df.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+
+
+def _infer_default_server(dfs: dict[str, pl.DataFrame]) -> str:
+    """Infer sensor hostname from dionaea bronze first, falling back to any loaded dataset."""
+    ordered = ["dionaea", *[k for k in dfs if k != "dionaea"]]
+    for name in ordered:
+        df = dfs.get(name)
+        if df is not None and not df.is_empty() and "server" in df.columns:
+            non_null = [
+                str(s).strip()
+                for s in df.get_column("server").drop_nulls().to_list()
+                if str(s).strip()
+            ]
+            if non_null:
+                return non_null[0]
+    return "unknown"
 
 
 # -- Orchestration -----------------------------------------------------------
@@ -697,25 +839,41 @@ async def run_enrichment(
         infrastructure_ips=reporting.redact.infrastructure_ips,
         infrastructure_cidrs=reporting.redact.infrastructure_cidrs,
         pseudonym_map=reporting.redact.pseudonym_map,
+        infrastructure_hostnames=reporting.redact.infrastructure_hostnames,
     )
 
     cache = _init_cache(cache_db_path)
     errors: ErrorAccumulator = {}
-
-    # Aggregated counters for the end-of-run summary. Filled in as Phases
-    # B and C progress so operators get one structlog line per run with
-    # the full picture instead of having to grep for every dataset and
-    # provider event.
     silver_rows: dict[str, int] = {}
     provider_stats: dict[str, dict[str, int]] = {}
 
-    # GreyNoise is skipped when the vault key is absent (None); an empty
-    # string keeps it enabled in its unauthenticated Community-API mode.
-    providers: dict[str, _ProviderType] = {
-        "abuseipdb": AbuseIPDBProvider(secrets.abuseipdb),
-        "shodan": ShodanProvider(secrets.shodan),
-        "virustotal": VirusTotalProvider(secrets.virustotal),
-    }
+    # Instantiate only configured providers — missing/empty keys skip cleanly
+    # without firing 401 auth errors.
+    providers: dict[str, _ProviderType] = {}
+    if secrets.abuseipdb and secrets.abuseipdb.strip():
+        providers["abuseipdb"] = AbuseIPDBProvider(secrets.abuseipdb.strip())
+    else:
+        logger.info("provider_disabled", provider="abuseipdb", reason="not_configured")
+
+    if secrets.shodan and secrets.shodan.strip():
+        providers["shodan"] = ShodanProvider(secrets.shodan.strip())
+    else:
+        logger.info("provider_disabled", provider="shodan", reason="not_configured")
+
+    vt_key = (secrets.gti or "").strip() if secrets.gti_enabled and secrets.gti else ""
+    if vt_key:
+        providers["virustotal"] = VirusTotalProvider(vt_key, gti_enabled=True)
+    elif secrets.virustotal and secrets.virustotal.strip():
+        if secrets.gti_enabled:
+            providers["virustotal"] = VirusTotalProvider(
+                secrets.virustotal.strip(),
+                gti_enabled=True,
+            )
+        else:
+            providers["virustotal"] = VirusTotalProvider(secrets.virustotal.strip())
+    else:
+        logger.info("provider_disabled", provider="virustotal", reason="not_configured")
+
     if secrets.greynoise is not None:
         providers["greynoise"] = GreyNoiseProvider(secrets.greynoise)
     else:
@@ -731,19 +889,18 @@ async def run_enrichment(
                 continue
             dfs[dataset] = df
 
-        # Phase A.1: synthesise dionaea file-activity rows from the binaries
-        # directory. dionaea's log_json ihandler never emits hash events, so
-        # every SMB/FTP/HTTP-captured binary would otherwise be invisible to
-        # silver → gold → brief. Diagonal-relaxed concat tolerates the
-        # schema delta (synthetic rows lack credential_* / src_ip / dst_ip;
-        # bronze rows lack shasum / binary_file_name).
-        default_server = "unknown"
-        if "dionaea" in dfs and "server" in dfs["dionaea"].columns:
-            non_null_servers = dfs["dionaea"].get_column("server").drop_nulls().to_list()
-            if non_null_servers:
-                default_server = str(non_null_servers[0])
+        # Phase A.1: synthesise fallback dionaea file-activity rows from disk
+        # only for hashes not already attributed in bronze by lantana_json.
+        default_server = _infer_default_server(dfs)
+        attributed_dionaea_hashes = (
+            extract_hashes_from_bronze(dfs["dionaea"]) if "dionaea" in dfs else set()
+        )
         binary_events = extract_dionaea_binary_events(
-            sensor_dir, target_date, default_server=default_server
+            sensor_dir,
+            target_date,
+            default_server=default_server,
+            default_operation=reporting.operation.name,
+            exclude_hashes=attributed_dionaea_hashes,
         )
         if binary_events:
             synth_df = pl.DataFrame(binary_events)
@@ -765,80 +922,142 @@ async def run_enrichment(
             return
 
         raw_ips: set[str] = set()
-        for ds_df in dfs.values():
-            raw_ips.update(extract_ips(ds_df))
-        unique_ips = filter_internal_ips(raw_ips, redact_config)
-        if len(raw_ips) != len(unique_ips):
-            logger.info("internal_ips_filtered", count=len(raw_ips) - len(unique_ips))
-        logger.info(
-            "unique_iocs_found",
-            ioc_type=IOC_TYPE_IP,
-            count=len(unique_ips),
-        )
-
+        outbound_urls: set[str] = set()
+        outbound_c2_ips: set[str] = set()
         unique_hashes: set[str] = set()
         for ds_df in dfs.values():
+            raw_ips.update(extract_ips(ds_df))
             unique_hashes.update(extract_hashes_from_bronze(ds_df))
-        unique_hashes.update(extract_hashes_from_disk(sensor_dir))
-        logger.info(
-            "unique_iocs_found",
-            ioc_type=IOC_TYPE_HASH,
-            count=len(unique_hashes),
-        )
+            outbound_urls.update(extract_outbound_urls(ds_df, redact_config))
+            outbound_c2_ips.update(extract_outbound_c2_ips(ds_df, redact_config))
 
-        # Phase B: enrich each IOC type once, across the relevant providers.
-        # Two pre-flight steps before the loop:
-        #   1. Load persisted provider state (cross-run rate-limit memory)
-        #   2. Compute IP→event-count for subsampling on tiny-quota providers
-        #
-        # IOC-type ordering: hashes BEFORE IPs. VirusTotal's free tier
-        # (500 calls/day) is shared across its `/files/{hash}` and
-        # `/ip_addresses/{ip}` endpoints, and op_alpha sees roughly 30x
-        # more unique IPs (~5 000) than unique hashes (~175) per day.
-        # Querying IPs first burned the entire quota before the hash loop
-        # ever fired — observed every day from 2026-06-11 onwards: VT IP
-        # `enriched=500` followed immediately by VT hash `enriched=0`
-        # because the first five hash calls 429'd and tripped the
-        # circuit-breaker. Hashes are the higher-value signal (malware
-        # family, AV consensus) so they get first claim on the quota.
+        unique_ips = filter_internal_ips(raw_ips, redact_config)
+        stager_domains = extract_stager_domains(outbound_urls, redact_config)
+        unique_hashes.update(extract_hashes_from_disk(sensor_dir, target_date=target_date))
+
+        if len(raw_ips) != len(unique_ips):
+            logger.info("internal_ips_filtered", count=len(raw_ips) - len(unique_ips))
+        logger.info("unique_iocs_found", ioc_type=IOC_TYPE_IP, count=len(unique_ips))
+        logger.info("unique_iocs_found", ioc_type=IOC_TYPE_HASH, count=len(unique_hashes))
+        if outbound_c2_ips or outbound_urls or stager_domains:
+            logger.info(
+                "durable_iocs_found",
+                c2_ips=len(outbound_c2_ips),
+                stager_urls=len(outbound_urls),
+                stager_domains=len(stager_domains),
+            )
+
+        # Phase B: enrich each IOC type once with behavioral priority ranking
         provider_state = _load_provider_state(provider_state_path)
         event_counts = _compute_ip_event_counts(dfs)
-        full_ip_list = sorted(unique_ips)
+        priority_map = _compute_ip_priority(dfs, c2_ips=outbound_c2_ips)
+        all_target_ips = sorted(unique_ips | outbound_c2_ips)
 
         hash_results: list[EnrichmentResult] = []
-        if unique_hashes:
-            vt_provider = providers["virustotal"]
-            hash_results, hash_hits = await _enrich_iocs_with_provider(
-                "virustotal",
-                vt_provider,
+        url_results: list[EnrichmentResult] = []
+        ip_results: list[EnrichmentResult] = []
+
+        # Phase B.1: Unified VirusTotal / GTI priority queue
+        # Order: hashes -> outbound C2 IPs -> post-auth stager URLs -> stager domains -> inbound IPs
+        vt_provider = providers.get("virustotal")
+        vt_c2_done: set[str] = set()
+        if vt_provider is not None and not _should_skip_provider(
+            "virustotal", provider_state, target_date
+        ):
+            vt_gti = bool(getattr(vt_provider, "gti_enabled", False))
+            vt_budget: int | None = None if vt_gti else VT_FREE_DAILY_REQUEST_BUDGET
+            vt_limiter = _build_rate_limiter(vt_provider)
+
+            def _vt_tripped() -> bool:
+                return ("virustotal", "rate_limit") in errors or (
+                    "virustotal",
+                    "auth_failed",
+                ) in errors
+
+            async def _run_vt_stage(
+                ioc_type: str,
+                items: list[str],
+                stat_key: str,
+            ) -> list[EnrichmentResult]:
+                nonlocal vt_budget
+                if not items or _vt_tripped() or (vt_budget is not None and vt_budget <= 0):
+                    return []
+                stage_results, stage_hits = await _enrich_iocs_with_provider(
+                    "virustotal",
+                    vt_provider,
+                    ioc_type,
+                    items,
+                    cache,
+                    errors,
+                    rate_limiter=vt_limiter,
+                    max_fresh_requests=vt_budget,
+                    redact_config=redact_config,
+                )
+                fresh = len(stage_results) - stage_hits
+                if vt_budget is not None:
+                    vt_budget = max(0, vt_budget - fresh)
+                provider_stats[stat_key] = {
+                    "enriched": len(stage_results),
+                    "fresh": fresh,
+                    "cache_hits": stage_hits,
+                }
+                logger.info(
+                    "provider_done",
+                    provider="virustotal",
+                    ioc_type=ioc_type,
+                    enriched=len(stage_results),
+                    fresh=fresh,
+                    cache_hits=stage_hits,
+                )
+                return stage_results
+
+            hash_results = await _run_vt_stage(
                 IOC_TYPE_HASH,
                 sorted(unique_hashes),
-                cache,
-                errors,
+                f"virustotal:{IOC_TYPE_HASH}",
             )
-            provider_stats[f"virustotal:{IOC_TYPE_HASH}"] = {
-                "enriched": len(hash_results),
-                "fresh": len(hash_results) - hash_hits,
-                "cache_hits": hash_hits,
-            }
-            logger.info(
-                "provider_done",
-                provider="virustotal",
-                ioc_type=IOC_TYPE_HASH,
-                enriched=len(hash_results),
-                fresh=len(hash_results) - hash_hits,
-                cache_hits=hash_hits,
+            c2_sorted = sorted(outbound_c2_ips)
+            if c2_sorted:
+                c2_vt_results = await _run_vt_stage(
+                    IOC_TYPE_IP,
+                    c2_sorted,
+                    "virustotal:c2_ip",
+                )
+                ip_results.extend(c2_vt_results)
+                vt_c2_done.update(c2_sorted)
+            url_results = await _run_vt_stage(
+                IOC_TYPE_URL,
+                sorted(outbound_urls),
+                f"virustotal:{IOC_TYPE_URL}",
             )
-            # Same provider_state bookkeeping the IP loop does below: any
-            # 429 from VT's hash endpoint signals shared-quota exhaustion,
-            # which also matters for the IP loop and for next-run skip.
+            await _run_vt_stage(
+                IOC_TYPE_DOMAIN,
+                sorted(stager_domains),
+                f"virustotal:{IOC_TYPE_DOMAIN}",
+            )
+
+            inbound_vt_ips = _select_ips_for_provider(
+                "virustotal",
+                [ip for ip in all_target_ips if ip not in vt_c2_done],
+                event_counts,
+                priority_map=priority_map,
+            )
+            inbound_vt_results = await _run_vt_stage(
+                IOC_TYPE_IP,
+                inbound_vt_ips,
+                f"virustotal:{IOC_TYPE_IP}",
+            )
+            ip_results.extend(inbound_vt_results)
+
             if ("virustotal", "rate_limit") in errors:
                 provider_state.setdefault("virustotal", {})["last_rate_limited"] = (
                     target_date.isoformat()
                 )
 
-        ip_results: list[EnrichmentResult] = []
+        # Phase B.2: Remaining IP providers (AbuseIPDB, Shodan, GreyNoise), behavioral-ranked
         for name, provider in providers.items():
+            if name == "virustotal":
+                continue
             if _should_skip_provider(name, provider_state, target_date):
                 last = provider_state.get(name, {}).get("last_rate_limited", "?")
                 logger.info(
@@ -855,13 +1074,18 @@ async def run_enrichment(
                 }
                 continue
 
-            selected_ips = _select_ips_for_provider(name, full_ip_list, event_counts)
-            if len(selected_ips) != len(full_ip_list):
+            selected_ips = _select_ips_for_provider(
+                name,
+                all_target_ips,
+                event_counts,
+                priority_map=priority_map,
+            )
+            if len(selected_ips) != len(all_target_ips):
                 logger.info(
                     "provider_subsampled",
                     provider=name,
                     selected=len(selected_ips),
-                    total=len(full_ip_list),
+                    total=len(all_target_ips),
                 )
 
             results, hits = await _enrich_iocs_with_provider(
@@ -871,6 +1095,7 @@ async def run_enrichment(
                 selected_ips,
                 cache,
                 errors,
+                redact_config=redact_config,
             )
             ip_results.extend(results)
             provider_stats[f"{name}:{IOC_TYPE_IP}"] = {
@@ -887,33 +1112,22 @@ async def run_enrichment(
                 cache_hits=hits,
             )
 
-            # Persist rate-limit trip date so future runs can short-circuit
-            # this provider until its quota window has elapsed. Any
-            # rate_limit error at all this run is sufficient signal — even
-            # one means the cache is exhausted enough that further calls
-            # are likely to fail.
             if (name, "rate_limit") in errors:
                 provider_state.setdefault(name, {})["last_rate_limited"] = target_date.isoformat()
 
         ip_lookup = _build_lookup(ip_results)
         hash_lookup = _build_lookup(hash_results)
+        url_lookup = _build_lookup(url_results)
 
         # Phase C: per-dataset merge + normalise + redact + write.
-        # Each dataset is wrapped in try/except so a failure in one dataset's
-        # normaliser (e.g. unparsed bronze, schema drift, polars error) doesn't
-        # cancel the silver writes for the others. Today's op_alpha runs hit
-        # this twice in one day (suricata struct, nftables raw-message) — one
-        # dataset's defect should never torpedo the rest.
         for dataset, df in dfs.items():
             try:
                 enriched_df = _merge_lookup(df, "src_ip", ip_lookup)
                 enriched_df = _ensure_ip_score_columns(enriched_df)
-                # Hash merge: cowrie has bronze shasum on file_download/file_upload
-                # rows; dionaea has it on synthetic dionaea.binary.captured rows
-                # injected upstream. _merge_lookup is a no-op when ``shasum`` is
-                # absent, so this is safe to call for every dataset.
                 if dataset in ("cowrie", "dionaea"):
                     enriched_df = _merge_lookup(enriched_df, "shasum", hash_lookup)
+                if dataset == "cowrie" and url_lookup:
+                    enriched_df = _merge_lookup(enriched_df, "url", url_lookup)
 
                 normalized_df = normalize_dataset(enriched_df, dataset)
                 if normalized_df.is_empty():
@@ -924,9 +1138,6 @@ async def run_enrichment(
                     )
                     continue
 
-                # Drop outbound-response noise where the honeypot itself appears
-                # as source (Layer 1 Vector filters drop internal-prefix and WAN
-                # sources at ingest; this provides Layer 2 defense-in-depth).
                 row_count_before = normalized_df.height
                 cleaned_df = drop_infrastructure_source_rows(normalized_df, redact_config)
                 dropped = row_count_before - cleaned_df.height
@@ -940,7 +1151,12 @@ async def run_enrichment(
                 validate_no_leaks(redacted_df, redact_config)
 
                 if "server" in redacted_df.columns:
-                    redacted_df = redacted_df.with_columns(pl.col("server").fill_null("unknown"))
+                    redacted_df = redacted_df.with_columns(
+                        pl.when(pl.col("server").is_null() | (pl.col("server").cast(pl.Utf8) == ""))
+                        .then(pl.lit("unknown"))
+                        .otherwise(pl.col("server").cast(pl.Utf8))
+                        .alias("server")
+                    )
                 servers = (
                     redacted_df.get_column("server").unique().to_list()
                     if "server" in redacted_df.columns
@@ -962,7 +1178,13 @@ async def run_enrichment(
                     dataset=dataset,
                     exc_repr=repr(exc),
                 )
-                _record_error(errors, "pipeline", "dataset_processing_failed", repr(exc))
+                _record_error(
+                    errors,
+                    "pipeline",
+                    "dataset_processing_failed",
+                    repr(exc),
+                    redact_config=redact_config,
+                )
 
         _save_provider_state(provider_state_path, provider_state)
         logger.info(

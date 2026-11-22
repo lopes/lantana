@@ -1,0 +1,26 @@
+# /etc/systemd/system/lantana-nic-offload.service
+# Managed by Ansible
+# Disables NIC offloads on the WAN interface before Suricata starts so
+# AF_PACKET sees valid wire checksums and uncoalesced frames.
+
+[Unit]
+Description=Disable WAN NIC offloads for Suricata AF_PACKET capture
+After=network-online.target
+Wants=network-online.target
+Before=suricata.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ExecStart=-/usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} tx off
+ExecStart=-/usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} gro off
+ExecStart=-/usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} gso off
+ExecStart=-/usr/sbin/ethtool -K {{ network.honeywall.wan.interface }} tso off
+
+[Install]
+WantedBy=multi-user.target

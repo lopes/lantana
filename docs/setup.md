@@ -259,15 +259,18 @@ If you re-deploy often, point `ANSIBLE_VAULT_PASSWORD_FILE` at a 0600-mode file 
 - `type` is `apikey` or `webhook`
 - `service` is the lowercase provider name (`virustotal`, `shodan`, `discord`, ...)
 
-The same keys appear unchanged in the rendered `/etc/lantana/collector/secrets.json` on the collector — that file is just the decrypted view of the vault, not a separate schema. See [Vault ↔ secrets.json nomenclature](/docs/pipeline.md#vault--secretsjson-nomenclature) for the reasoning.
+The same keys appear unchanged in the rendered `/etc/lantana/collector/secrets.json` on the collector — that file is just the decrypted view of the vault, not a separate schema. See [Vault ↔ secrets.json nomenclature](/docs/pipeline.md#73-vault--secretsjson-nomenclature) for the reasoning.
 
 ### What goes in the template
 
 ```yaml
-# Required — no free public endpoint
+# Optional enrichment providers — omit or leave blank to skip cleanly (zero 401s)
 vault_apikey_virustotal: "..."
 vault_apikey_shodan:     "..."
 vault_apikey_abuseipdb:  "..."
+
+# Opt-in commercial Google Threat Intelligence (requires gti_enabled: true in main.yml)
+# vault_apikey_gti:      "..."
 
 # Optional — public Community endpoint exists (see auth modes below)
 vault_apikey_greynoise:  ""
@@ -287,12 +290,13 @@ vault_webhook_discord:   "https://discord.com/api/webhooks/..."
 
 | Provider | Vault line missing | Vault line `""` | Vault line `"<key>"` |
 |---|---|---|---|
-| `virustotal` / `shodan` / `abuseipdb` | misconfiguration — provider runs with empty key, gets 401 | same | authenticated |
+| `virustotal` / `shodan` / `abuseipdb` | provider skipped (`provider_disabled` log) | provider skipped | authenticated |
+| `gti` (commercial) | disabled | disabled | authenticated only when `gti_enabled: true` is set |
 | `greynoise` | provider skipped (`provider_disabled` log) | community endpoint, anonymous (50/week) | community endpoint, key in header (higher rate limit) |
 | `maxmind` | MMDB download skipped at deploy — Vector emits no `.geo.*` fields | same as missing | MMDBs downloaded + refreshed monthly |
 | `discord` | reports generated locally only | same | webhook delivers daily brief |
 
-So the only way to disable GreyNoise is to **omit the line entirely** — empty string keeps it enabled in unauthenticated community mode.
+So the only way to disable GreyNoise is to **omit the line entirely** — empty string keeps it enabled in unauthenticated community mode. All other HTTP providers skip cleanly when missing or empty.
 
 ### References
 
@@ -328,7 +332,7 @@ This is where most operations succeed or fail. The narrative is the deception st
 ### Workflow
 
 1. **Decide the archetype** (one sentence): sector + geography + hosting story + admin skill level. Example: *"German light-manufacturing SMB, on-prem migration to a budget EU VPS, mid-skill DevOps generalist."*
-2. **Invoke the `scaffold-narrative` skill** in Claude Code (opened in this repo) with that sentence as input. Trigger it explicitly with `/scaffold-narrative …` or just describe the persona in plain English — the skill auto-triggers on phrases like "scaffold a narrative," "generate narrative.yml," or "create a persona for op_<name>." It produces a complete `narrative.yml` consistent with the archetype plus a list of fields worth reviewing.
+2. **Invoke the `scaffold-narrative` skill** (`.agents/skills/scaffold-narrative/SKILL.md`) in your coding agent opened in this repo with that sentence as input. Trigger it explicitly with `/scaffold-narrative …` or describe the persona in plain English — it produces a complete `narrative.yml` consistent with the archetype plus a list of fields worth reviewing.
 3. **Review the output** against the schema below. Check the era / OS / service alignment by hand even when the skill gets it right — this is the file most worth understanding.
 4. **Paste into** `inventories/op_<name>/group_vars/all/narrative.yml`.
 
@@ -423,11 +427,11 @@ The platform runs itself from here. Pipeline jobs are systemd `oneshot` services
 | Time (UTC) | Job | What it does |
 |---|---|---|
 | Continuous | Vector | Reads honeypot logs, enriches with GeoIP, writes bronze NDJSON |
-| 00:15 daily | `lantana-prune` | Enforces 180-day retention; emergency prune at >80% disk |
-| 00:30 daily | `lantana-grant-read` (cron) | Grants `nectar` read access to Cowrie `downloads/` and Dionaea `binaries/` |
-| 01:00 daily | `lantana-enrich` | Bronze → silver: IOC extraction, API enrichment, OCSF normalisation, redaction, Parquet |
-| 05:30 daily | `lantana-transform` | Silver → gold: computes the 6 aggregated gold Parquet tables (STIX 2.1 bundles are generated on demand from gold) |
-| 06:00 daily | `lantana-report` | Merged daily flow (absorbed the retired `lantana-alert.timer`): enrichment-error severity classification drives the embed colour, full intel brief attached; always posts |
+| 00:10 daily | `lantana-grant-read` (cron) | Refreshes symlink-safe `u:nectar:rwX` POSIX ACLs on Cowrie & Dionaea scratch dirs |
+| 00:15 daily | `lantana-prune` | Enforces 14d verified Bronze, 180d Silver/Gold, 14d sensor scratch; 3d emergency prune at >80% disk |
+| 01:00 daily | `lantana-enrich` | Bronze → silver: IOC extraction, optional API enrichment, OCSF normalisation, redaction, atomic Parquet |
+| 05:30 daily | `lantana-transform` | Silver → gold: computes the 7 aggregated gold Parquet tables (incl. `extracted_iocs`) |
+| 06:00 daily | `lantana-report` | Merged daily flow: dead-man's-switch liveness, live disk %, error severity, full intel brief attached; always posts |
 | 02:30 (1st of month) | `lantana-geoip-update` (cron) | Refreshes MaxMind City + ASN databases |
 
 **Day one** — bronze accumulates from live traffic. Enrichment has nothing to process yet (it runs against yesterday's data).
@@ -467,7 +471,8 @@ Two common follow-ups:
 | Deploy honeypots | `ansible-playbook -i inventories/op_<name>/inventory.yml playbooks/deploy_honeypots.yml --ask-vault-pass` |
 | Validate stack | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-single-node.yml -vvv --ask-vault-pass` |
 | Validate sensor runtime | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-sensor-runtime.yml --ask-vault-pass` (run ~30 s after `deploy_honeypots.yml`) |
+| Validate active canaries | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-canaries.yml --ask-vault-pass` |
 | Validate pipeline cycle | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass` |
-| Dashboard tunnel | `ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>` → on sensor: `sudo -u nectar XDG_CACHE_HOME=/tmp /opt/lantana/pipeline/venv/bin/lantana-dashboard` → browse to <http://localhost:8501> |
-| Export STIX bundle | Dashboard → STIX Export page → pick date → **Generate** → **Download** (`.json`) |
+| Dashboard tunnel | `ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>` → on collector: `sudo -u nectar /opt/lantana/pipeline/venv/bin/lantana-dashboard` → browse to <http://localhost:8501> |
+| Export STIX bundle | Vigil Dashboard → Intel & Export (`/intel`) → pick date/window → **Download STIX 2.1 Bundle** (`.json`) |
 | Baseline snapshot | `scripts/backup-vps.sh <host> <user> <key> <port> ./backups/<op_name>/baseline` |

@@ -86,10 +86,37 @@ def test_load_secrets_with_discord_webhook(tmp_path: Path) -> None:
     assert config.discord_webhook == "https://discord.com/api/webhooks/123/abc"
 
 
-def test_load_secrets_missing_key(tmp_path: Path) -> None:
-    """Missing required API key raises validation error."""
+def test_load_secrets_all_provider_keys_optional(tmp_path: Path) -> None:
+    """All enrichment provider API keys are optional (zero-key mode works)."""
+    path = tmp_path / "empty.json"
+    path.write_text("{}", encoding="utf-8")
+    config = load_secrets(path)
+    assert config.virustotal is None
+    assert config.shodan is None
+    assert config.abuseipdb is None
+    assert config.greynoise is None
+    assert config.gti is None
+    assert config.gti_enabled is False
+    assert config.maxmind is None
+    assert config.discord_webhook == ""
+
+
+def test_load_secrets_gti_opt_in(tmp_path: Path) -> None:
+    """Optional GTI key and toggle parse cleanly."""
+    path = tmp_path / "gti.json"
+    path.write_text(
+        json.dumps({"vault_apikey_gti": "SYNTHETIC_TEST_GTI_KEY_000000", "gti_enabled": True}),
+        encoding="utf-8",
+    )
+    config = load_secrets(path)
+    assert config.gti == "SYNTHETIC_TEST_GTI_KEY_000000"
+    assert config.gti_enabled is True
+
+
+def test_load_secrets_invalid_type_raises_validation_error(tmp_path: Path) -> None:
+    """Malformed field types still fail Pydantic validation."""
     path = tmp_path / "bad.json"
-    path.write_text('{"vault_apikey_virustotal": "x"}', encoding="utf-8")
+    path.write_text('{"gti_enabled": "not-a-bool"}', encoding="utf-8")
     with pytest.raises(ValidationError):
         load_secrets(path)
 

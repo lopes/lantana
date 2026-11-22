@@ -11,17 +11,24 @@ enrichment_tables:
     path: /var/lib/lantana/collector/geoip/GeoLite2-ASN.mmdb
 {% endif %}
 
+{% if lantana.mode != "single" %}
+
 sources:
   receive_from_edges:
     type: vector
     address: "{{ network.collectors.collector_01.ipv4.split('/')[0] }}:{{ network.collectors.collector_01.port }}"
     version: "2"
+{% endif %}
 
 transforms:
   enrich_geo:
     type: remap
     inputs:
+{% if lantana.mode == "single" %}
+      - "filter_*"
+{% else %}
       - receive_from_edges
+{% endif %}
     source: |-
       .dataset = replace(to_string(.dataset) ?? "unknown", r'[^a-zA-Z0-9_-]', "_")
       .server = replace(to_string(.server) ?? "unknown", r'[^a-zA-Z0-9_-]', "_")

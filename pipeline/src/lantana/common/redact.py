@@ -1,38 +1,39 @@
-"""OPSEC redaction: strip infrastructure IPs from shared outputs.
+"""OPSEC redaction: strip infrastructure IPs and hostnames from shared outputs.
 
 Layer 2 safeguard. Vector (Layer 1) drops internal-source noise.
 This module handles two distinct concerns at silver-write time:
 
 * **IP-typed columns** (``src_endpoint_ip`` / ``dst_endpoint_ip`` / …) hold
   exactly one IP per row. They are pseudonymized via exact-match swap and
-  CIDR-validated to guarantee no infrastructure address survives.
+  CIDR-validated (including compressed/expanded IPv6 equivalence) to guarantee
+  no infrastructure address survives.
 * **Attacker-content columns** (``unmapped_password`` /
-  ``actor_process_cmd_line`` / ``message`` / …) hold arbitrary strings the
-  attacker controls. The honeypot WAN IP can land in any of them — an
-  attacker who tries ``ssh root@<wan>`` with the WAN IP as the password
-  attempt puts it in ``unmapped_password``; an nftables log line preserved
-  in ``message`` carries it as ``DST=<wan>``. We substring-replace known
-  infra IPs with their pseudonyms here so published intel (gold's
-  ``top_passwords``, the daily brief, STIX bundles) cannot leak the WAN
-  address. These columns are NOT CIDR-validated — attacker passwords
-  legitimately contain arbitrary RFC1918 / loopback / IP-shaped strings.
+  ``actor_process_cmd_line`` / ``message`` / Suricata ``payload*`` / …) hold
+  arbitrary strings the attacker controls. The honeypot WAN IP, non-dotted
+  ISP PTR encodings (``203_0_113_97``, ``203-0-113-97``, ``97.ip-203-0-113``),
+  expanded IPv6, or configured VPS hostnames/FQDNs can land in any of them.
+  We replace all derived variants longest-first so published intel cannot leak
+  operator identity, without CIDR-validating attacker noise.
 """
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import re
 from functools import reduce
 
 import polars as pl
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RedactionConfig(BaseModel):
-    """Configuration for infrastructure IP redaction."""
+    """Unified OPSEC configuration for infrastructure IP & hostname redaction."""
 
-    infrastructure_ips: list[str]
-    infrastructure_cidrs: list[str]
-    pseudonym_map: dict[str, str]
+    infrastructure_ips: list[str] = Field(default_factory=list)
+    infrastructure_cidrs: list[str] = Field(default_factory=list)
+    pseudonym_map: dict[str, str] = Field(default_factory=dict)
+    infrastructure_hostnames: list[str] = Field(default_factory=list)
 
 
 # Columns that may contain destination/infrastructure IPs
@@ -48,23 +49,15 @@ DST_IP_COLUMNS: list[str] = [
 # Columns that should contain ATTACKER source IPs, never the operation's own
 # infrastructure. Suricata captures both directions of every flow, so outbound
 # response packets from the honeypot itself end up with `src_ip = <our WAN>`.
-# Vector's Layer-1 source filters drop both internal `network.prefixes.*`
-# CIDRs and WAN-source events at ingest; `drop_infrastructure_source_rows`
-# serves as Layer-2 defense-in-depth in case any upstream filter is bypassed
-# or replayed from raw archives.
 SRC_IP_COLUMNS: list[str] = [
     "src_ip",
     "src_endpoint_ip",
     "source.ip",
 ]
 
-# Attacker-controlled string fields. These can hold arbitrary content,
-# including IP-shaped strings that have nothing to do with our infrastructure
-# (e.g. attacker uses 10.x.x.x as a password). We substring-replace known
-# infrastructure IPs in these columns so they cannot leak into published intel,
-# but we do NOT CIDR-validate them — false positives there are how cowrie
-# silver for 2026-05-20 got dropped (an attacker tried the WAN IP itself
-# as a password, validate_no_leaks aborted the whole batch).
+# Attacker-controlled string fields (including Suricata alert payloads/bodies).
+# Substring-scrubbed against all derived WAN/infra IP encodings and configured
+# infrastructure hostnames, but NOT CIDR-validated.
 ATTACKER_CONTENT_COLUMNS: list[str] = [
     "user_name",
     "unmapped_password",
@@ -78,7 +71,156 @@ ATTACKER_CONTENT_COLUMNS: list[str] = [
     "finding_category",
     "finding_action",
     "message",
+    "payload",
+    "payload-printable",
+    "payload_printable",
+    "packet",
+    "http-body",
+    "http-body-printable",
+    "http_body",
+    "http_body_printable",
+    "http_body_preview",
+    "http_uri",
+    "http_host",
+    "http_user_agent",
+    "http_content_type",
+    "src_hostname",
+    "sql_command",
+    "ftp_command",
+    "binary_file_name",
+    "download_url",
 ]
+
+
+def _unwrap_ip(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Unwrap IPv4-mapped IPv6 addresses (``::ffff:a.b.c.d``) to their IPv4 address."""
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
+
+
+def _parse_infra_ips(
+    ips: list[str],
+) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Parse valid IP literals into canonical ipaddress objects (unwrapping ::ffff:)."""
+    parsed: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for ip_str in ips:
+        try:
+            parsed.add(_unwrap_ip(ipaddress.ip_address(ip_str.strip())))
+        except ValueError:
+            continue
+    return parsed
+
+
+def _parse_cidrs(
+    cidrs: list[str],
+) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse CIDR strings into ip_network objects (strict=False tolerates host bits)."""
+    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for cidr in cidrs:
+        try:
+            nets.append(ipaddress.ip_network(cidr.strip(), strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
+def derive_ip_variants(ip_str: str) -> list[str]:
+    """Derive literal + non-dotted / PTR / expanded encodings of an infrastructure IP.
+
+    Covers:
+    - IPv4 ``a.b.c.d``: dotted, underscore (``a_b_c_d``), dash (``a-b-c-d``),
+      reversed dotted (``d.c.b.a``), reversed dash (``d-c-b-a``), and ISP PTR
+      label (``d.ip-a-b-c``).
+    - IPv6: compressed, fully expanded (39 chars), and dash-delimited variants.
+    """
+    cleaned = ip_str.strip()
+    if not cleaned:
+        return []
+    variants: list[str] = [cleaned]
+    try:
+        addr = _unwrap_ip(ipaddress.ip_address(cleaned))
+    except ValueError:
+        return variants
+
+    if isinstance(addr, ipaddress.IPv4Address):
+        dotted = str(addr)
+        octets = dotted.split(".")
+        rev = list(reversed(octets))
+        packed = addr.packed
+        hex_hi = f"{(packed[0] << 8) | packed[1]:x}"
+        hex_lo = f"{(packed[2] << 8) | packed[3]:x}"
+        mapped_v6 = ipaddress.IPv6Address(f"::ffff:{dotted}")
+        candidates = [
+            dotted,
+            f"::ffff:{dotted}",
+            f"::ffff:{hex_hi}:{hex_lo}",
+            mapped_v6.exploded,
+            "_".join(octets),
+            "-".join(octets),
+            ".".join(rev),
+            "-".join(rev),
+            f"{octets[3]}.ip-{octets[0]}-{octets[1]}-{octets[2]}",
+        ]
+    else:
+        compressed = addr.compressed
+        exploded = addr.exploded
+        candidates = [
+            compressed,
+            exploded,
+            compressed.replace(":", "-"),
+            exploded.replace(":", "-"),
+        ]
+
+    for candidate in candidates:
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def build_content_replacement_map(config: RedactionConfig) -> dict[str, str]:
+    """Build mapping of all infra IP variants -> pseudonym for substring scrubbing."""
+    mapping: dict[str, str] = {}
+    # Start with configured pseudonym_map entries so explicit labels take precedence
+    for real_ip, pseudonym in config.pseudonym_map.items():
+        if not real_ip:
+            continue
+        for variant in derive_ip_variants(real_ip):
+            mapping.setdefault(variant, pseudonym)
+
+    # Ensure every infrastructure_ip has at least a fallback pseudonym
+    for infra_ip in config.infrastructure_ips:
+        if not infra_ip:
+            continue
+        pseudonym = config.pseudonym_map.get(infra_ip, "redacted-infra")
+        for variant in derive_ip_variants(infra_ip):
+            mapping.setdefault(variant, pseudonym)
+
+    return mapping
+
+
+def scrub_infra_strings(text: str, config: RedactionConfig) -> str:
+    """Scrub all configured infra IP variants and hostnames from an arbitrary string.
+
+    Used by error-message sanitizers (``enrichment_errors.json`` / Discord) and
+    tests so raw WAN IPs or hostnames cannot escape via exception text.
+    """
+    if not text:
+        return text
+    result = text
+    replacements = build_content_replacement_map(config)
+    for variant, pseudonym in sorted(replacements.items(), key=lambda kv: len(kv[0]), reverse=True):
+        safe_replacement = pseudonym.replace("\\", "\\\\")
+        result = re.sub(re.escape(variant), safe_replacement, result, flags=re.IGNORECASE)
+    for hostname in sorted(
+        {h.strip() for h in config.infrastructure_hostnames if h and h.strip()},
+        key=len,
+        reverse=True,
+    ):
+        result = re.sub(re.escape(hostname), "honeypot-host", result, flags=re.IGNORECASE)
+    return result
 
 
 def drop_infrastructure_source_rows(
@@ -87,27 +229,17 @@ def drop_infrastructure_source_rows(
 ) -> pl.DataFrame:
     """Drop rows whose source IP is one of the operation's own addresses.
 
-    These events are noise — outbound packets the honeypot generated in
-    response to attackers — and silver should only contain attacker
-    behaviour. Without this filter, `validate_no_leaks` catches the
-    infrastructure IP in `src_endpoint_ip` and aborts the whole run.
-
-    Checks both exact-match against `config.infrastructure_ips` AND CIDR
-    membership against `config.infrastructure_cidrs`. The CIDR check is
-    required because the Linux kernel writes IPv6 in fully-expanded form
-    (e.g. ``fd99:0010:0050:0099:0000:0000:0000:0100``) while
-    `infrastructure_ips` stores the compressed form (``fd99:10:50:99::100``).
-    Both forms parse to the same address under `ipaddress.ip_address()`, so
-    CIDR membership handles the format mismatch without requiring the config
-    to enumerate every expanded variant.
+    Checks exact string match, canonical parsed-IP equivalence (catching
+    expanded IPv6 WAN addresses not covered by a CIDR), and CIDR membership.
     """
     if df.is_empty():
         return df
 
     infra_set = set(config.infrastructure_ips)
-    cidr_nets = [ipaddress.ip_network(cidr) for cidr in config.infrastructure_cidrs]
+    parsed_infra = _parse_infra_ips(config.infrastructure_ips)
+    cidr_nets = _parse_cidrs(config.infrastructure_cidrs)
 
-    if not infra_set and not cidr_nets:
+    if not infra_set and not parsed_infra and not cidr_nets:
         return df
 
     src_columns_present = [col for col in SRC_IP_COLUMNS if col in df.columns]
@@ -118,10 +250,10 @@ def drop_infrastructure_source_rows(
         if val in infra_set:
             return True
         try:
-            addr = ipaddress.ip_address(val)
-            return any(addr in net for net in cidr_nets)
+            addr = _unwrap_ip(ipaddress.ip_address(val.strip()))
         except ValueError:
             return False
+        return addr in parsed_infra or any(addr in net for net in cidr_nets)
 
     keep_mask: pl.Expr = pl.lit(value=True)
     for col in src_columns_present:
@@ -141,21 +273,29 @@ def _exact_match_redact_expr(col_name: str, pseudonym_map: dict[str, str]) -> pl
     return expr.alias(col_name)
 
 
-def _substring_redact_expr(col_name: str, pseudonym_map: dict[str, str]) -> pl.Expr:
-    """Build a polars expression that substring-replaces infra IPs in a column.
+def _substring_redact_expr(
+    col_name: str,
+    replacements: dict[str, str],
+    hostnames: list[str],
+) -> pl.Expr:
+    """Build a polars expression scrubbing infra IP variants and hostnames.
 
-    Used for attacker-controlled content where the IP can appear embedded
-    inside a larger string (e.g. ``message`` carrying a kernel-log line that
-    still has ``DST=<wan>``, or a download URL with the WAN IP in the host).
-    ``str.replace_all`` operates on a literal string, no regex needed.
-    Sorted longest-key-first so a shorter prefix (e.g. ``10.50.99.1``) never
-    corrupts a longer address sharing that prefix (``10.50.99.100``).
+    Sorted longest-key-first so shorter prefixes (e.g. ``10.50.99.1``) never
+    corrupt longer addresses sharing that prefix (``10.50.99.100``).
+    Hostnames are matched case-insensitively.
     """
     expr = pl.col(col_name)
-    for real_ip, pseudonym in sorted(
-        pseudonym_map.items(), key=lambda kv: len(kv[0]), reverse=True
+    for variant, pseudonym in sorted(replacements.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if any(c.isalpha() for c in variant):
+            expr = expr.str.replace_all(f"(?i){re.escape(variant)}", pseudonym)
+        else:
+            expr = expr.str.replace_all(variant, pseudonym, literal=True)
+    for hostname in sorted(
+        {h.strip() for h in hostnames if h and h.strip()},
+        key=len,
+        reverse=True,
     ):
-        expr = expr.str.replace_all(real_ip, pseudonym, literal=True)
+        expr = expr.str.replace_all(f"(?i){re.escape(hostname)}", "honeypot-host")
     return expr.alias(col_name)
 
 
@@ -178,7 +318,7 @@ def _build_dst_replacement_map(
         if not isinstance(val, str) or val in effective_map:
             continue
         try:
-            addr = ipaddress.ip_address(val)
+            addr = _unwrap_ip(ipaddress.ip_address(val.strip()))
         except ValueError:
             continue
         if addr in parsed_pseudonyms:
@@ -192,7 +332,7 @@ def redact_infrastructure_ips(
     df: pl.DataFrame,
     config: RedactionConfig,
 ) -> pl.DataFrame:
-    """Pseudonymize known infrastructure IPs across IP-typed and content columns.
+    """Pseudonymize known infrastructure IPs and hostnames across IP and content columns.
 
     Two passes:
 
@@ -200,13 +340,9 @@ def redact_infrastructure_ips(
        expanded/compressed IPv6 normalization and CIDR fallback to
        ``"redacted-infra"``.
     2. **Attacker-content columns** (``ATTACKER_CONTENT_COLUMNS``) —
-       substring replacement (longest-prefix-first), because the WAN address
-       can be embedded in arbitrary attacker-supplied text (kernel-log
-       messages preserved in ``message``, malicious download URLs, commands,
-       or the WAN IP itself used as a password attempt).
-
-    Source-IP columns are intentionally NOT redacted here:
-    ``drop_infrastructure_source_rows`` removes the rows entirely upstream.
+       longest-first substring replacement across dotted, non-dotted
+       (underscore/dash/PTR), expanded IPv6 variants, and configured
+       ``infrastructure_hostnames``.
     """
     if df.is_empty():
         return df
@@ -222,18 +358,13 @@ def redact_infrastructure_ips(
     parsed_pseudonyms: dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str] = {}
     for real_ip, pseudonym in config.pseudonym_map.items():
         try:
-            parsed_pseudonyms[ipaddress.ip_address(real_ip)] = pseudonym
+            parsed_pseudonyms[_unwrap_ip(ipaddress.ip_address(real_ip.strip()))] = pseudonym
         except ValueError:
             continue
 
-    parsed_infra: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
-    for ip_str in config.infrastructure_ips:
-        try:
-            parsed_infra.add(ipaddress.ip_address(ip_str))
-        except ValueError:
-            continue
-
-    cidr_nets = [ipaddress.ip_network(cidr) for cidr in config.infrastructure_cidrs]
+    parsed_infra = _parse_infra_ips(config.infrastructure_ips)
+    cidr_nets = _parse_cidrs(config.infrastructure_cidrs)
+    content_replacements = build_content_replacement_map(config)
 
     def _apply_dst(frame: pl.DataFrame, col_name: str) -> pl.DataFrame:
         effective_map = _build_dst_replacement_map(
@@ -247,7 +378,13 @@ def redact_infrastructure_ips(
         return frame.with_columns(_exact_match_redact_expr(col_name, effective_map))
 
     def _apply_content(frame: pl.DataFrame, col_name: str) -> pl.DataFrame:
-        return frame.with_columns(_substring_redact_expr(col_name, config.pseudonym_map))
+        return frame.with_columns(
+            _substring_redact_expr(
+                col_name,
+                content_replacements,
+                config.infrastructure_hostnames,
+            )
+        )
 
     df = reduce(_apply_dst, dst_columns, df)
     return reduce(_apply_content, content_columns, df)
@@ -256,23 +393,20 @@ def redact_infrastructure_ips(
 def validate_no_leaks(df: pl.DataFrame, config: RedactionConfig) -> bool:
     """Assert that zero infrastructure IPs remain in IP-typed columns.
 
-    Scoped deliberately to the columns we redact as IP-bearing
-    (``DST_IP_COLUMNS`` + ``SRC_IP_COLUMNS``). Attacker-content columns
-    (``unmapped_password``, ``actor_process_cmd_line``, ``message``, …) are
-    NOT validated here — they may legitimately hold IP-shaped strings the
-    attacker supplied (passwords like ``192.168.1.1``, embedded URLs, etc.).
-    Known infrastructure IPs in those columns are pseudonymized by
-    ``redact_infrastructure_ips`` above, so the OPSEC promise — no operation
-    address in shareable output — still holds without false-positiving on
-    attacker noise.
+    Checks exact string match, canonical parsed-IP equivalence (catching
+    expanded IPv6 WAN addresses), and CIDR membership.
 
-    Raises ``ValueError`` if a leak is found.
+    OPSEC invariant: the ``ValueError`` message NEVER includes the raw leaked
+    IP or CIDR string — only the column name, affected row count, and a short
+    SHA-256 prefix — so an uncaught validation error recorded in
+    ``enrichment_errors.json`` or posted to Discord cannot leak the WAN IP.
     """
     if df.is_empty():
         return True
 
     ip_set = set(config.infrastructure_ips)
-    cidr_nets = [ipaddress.ip_network(cidr) for cidr in config.infrastructure_cidrs]
+    parsed_infra = _parse_infra_ips(config.infrastructure_ips)
+    cidr_nets = _parse_cidrs(config.infrastructure_cidrs)
 
     ip_cols = [
         col
@@ -281,20 +415,25 @@ def validate_no_leaks(df: pl.DataFrame, config: RedactionConfig) -> bool:
     ]
 
     for col_name in ip_cols:
-        unique_vals = df.get_column(col_name).drop_nulls().unique().to_list()
+        series = df.get_column(col_name).drop_nulls()
+        unique_vals = series.unique().to_list()
         for val in unique_vals:
             if not isinstance(val, str):
                 continue
-            if val in ip_set:
-                msg = f"Infrastructure IP leak: {val} found in column '{col_name}'"
+            leaked = val in ip_set
+            if not leaked:
+                try:
+                    addr = _unwrap_ip(ipaddress.ip_address(val.strip()))
+                except ValueError:
+                    continue  # Not an IP literal — pseudonym or junk, skip.
+                leaked = addr in parsed_infra or any(addr in net for net in cidr_nets)
+            if leaked:
+                digest = hashlib.sha256(val.encode("utf-8")).hexdigest()[:12]
+                row_count = int((series == val).sum())
+                msg = (
+                    f"Infrastructure IP leak in column '{col_name}' "
+                    f"({row_count} row(s), sha256={digest})"
+                )
                 raise ValueError(msg)
-            try:
-                addr = ipaddress.ip_address(val)
-            except ValueError:
-                continue  # Not an IP literal — pseudonym or junk, skip.
-            for net in cidr_nets:
-                if addr in net:
-                    msg = f"Infrastructure IP leak: {val} (in {net}) found in column '{col_name}'"
-                    raise ValueError(msg)
 
     return True

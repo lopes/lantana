@@ -34,5 +34,5 @@ transforms:
       # bronze, since silver would then have the WAN IP in src_endpoint_ip —
       # the exact OPSEC leak the redaction layers exist to prevent.
       source: |-
-        src = to_string(.src_ip) ?? ""
-        src != "" && !starts_with(src, "127.") && !starts_with(downcase(src), "::ffff:127.") && src != "::1" && !starts_with(downcase(src), "fe80:") && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}" && src != "{{ network.honeywall.wan.ipv6.split('/')[0] }}"
+        src = replace(downcase(to_string(.src_ip) ?? ""), r'^::ffff:', "")
+        src != "" && !(ip_cidr_contains("127.0.0.0/8", src) ?? false) && !(ip_cidr_contains("::1/128", src) ?? false) && !(ip_cidr_contains("10.0.0.0/8", src) ?? false) && !(ip_cidr_contains("172.16.0.0/12", src) ?? false) && !(ip_cidr_contains("192.168.0.0/16", src) ?? false) && !(ip_cidr_contains("169.254.0.0/16", src) ?? false) && !(ip_cidr_contains("fe80::/10", src) ?? false) && !(ip_cidr_contains("fc00::/7", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && !(ip_cidr_contains("{{ network.honeywall.wan.ipv4.split('/')[0] }}/32", src) ?? false) && !(ip_cidr_contains("{{ network.honeywall.wan.ipv6.split('/')[0] }}/128", src) ?? false)

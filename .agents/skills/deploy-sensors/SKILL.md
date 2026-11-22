@@ -2,67 +2,62 @@
 name: deploy-sensors
 description: >-
   Deployment and validation discipline for Lantana Ansible roles, Vector VRL
-  merged-tree validation, Cowrie and Dionaea rootless Podman Quadlet containers,
-  and post-deploy runtime verification playbooks. Load before editing Ansible
-  roles, Vector configs, Quadlet templates, or running sensor deployments.
+  merged-tree validation, self-owned Cowrie and Dionaea rootless Podman Quadlet
+  containers, and post-deploy runtime verification playbooks. Load before editing
+  Ansible roles, Vector configs, Quadlet templates, or running sensor deployments.
 ---
 
 # Lantana Sensor, Vector & Quadlet Deployment Discipline (`deploy-sensors`)
 
-Use this skill whenever editing or deploying Ansible roles (`config/ansible/roles/`), Vector configurations (`/etc/vector/`), Cowrie/Dionaea Quadlet `.container.j2` templates, or running sensor validation playbooks.
+Use this skill whenever editing or deploying Ansible roles (`config/ansible/roles/`), Vector configurations (`/etc/vector/`), `containers/{cowrie,dionaea}/`, Quadlet `.container.j2` templates, or running sensor validation playbooks.
 
 ---
 
 ## 1. Vector Deployment Discipline (Merged-Tree Validation)
 
-Vector configs span multiple files: `/etc/vector/vector.yaml` (main, with the keepalive blackhole sink) plus every `conf.d/*.yaml` (honeypot pipelines, firewall, receiver). Vector loads them as a single merged tree at startup, but `vector validate <file>` on a single `conf.d` file fails on `"No sinks defined"` — sinks live in `forward-honeywall.yaml` / `forward-sensor.yaml`, while sources and transforms live elsewhere.
+Vector loads `/etc/vector/vector.yaml` plus every `/etc/vector/conf.d/*.yaml` as one merged graph. Validating a single `conf.d` file fails with `"No sinks defined"`.
 
-A broken VRL fragment renders fine via Ansible's `template` module, the `Restart Vector` task succeeds (systemd starts the process), then Vector exits `78/CONFIG`, systemd's restart-on-failure policy kicks in, and you get a crashloop with zero source ingestion.
-
-**Mandatory rule: Every Ansible role that renders a Vector config must `notify:` the merged-tree validate handler BEFORE the Vector restart fires.** The handler lives once in `roles/base/handlers/main.yml`:
-
-```yaml
-- name: "Validate Vector config tree"
-  become: true
-  ansible.builtin.shell: |
-    set -e
-    extra_files=$(find /etc/vector/conf.d -maxdepth 1 -name '*.yaml' 2>/dev/null || true)
-    vector validate --no-environment /etc/vector/vector.yaml $extra_files
-  changed_when: false
-```
-
-- `find` enumerates `conf.d` files rather than relying on a shell glob because on a **fresh install** the handler can fire from the base role before any `conf.d/*.yaml` has been templated (leaving `/etc/vector/conf.d/*.yaml` literal and crashing Vector with `78/CONFIG`).
-- Order `notify: "Validate Vector config tree"` immediately after the render task and before `"Restart Vector"`.
+- **Single-node routing (v1.5):** `transforms.enrich_geo.inputs` subscribes directly to `["filter_*"]` in memory; `forward-honeywall.yaml` and `forward-sensor.yaml` are absent on single-node (retained on multi-node).
+- **Mandatory rule:** Every Ansible role rendering a Vector config must `notify: "Validate Vector config tree"` (`roles/base/handlers/main.yml`, enumerating `conf.d/*.yaml` via `find`) **before** `"Restart Vector"`.
+- **Standard Layer-1 OPSEC filter:** Strip `^::ffff:` once and drop loopback, RFC 1918, link-local, ULA, internal prefixes, and WAN IPv4/IPv6 addresses before ingestion.
 
 ---
 
-## 2. Honeypot Container & Quadlet Invariants (Cowrie & Dionaea)
+## 2. Self-Owned Pinned Honeypot Containers & Quadlets (v1.5)
 
-Several Cowrie and Dionaea decisions are load-bearing — reverting any of them causes silent failures (status `133`, zero bound ports, or lost TTY command logs). Full details live in `docs/honeypots.md` and `docs/troubleshooting.md`:
+Both sensors run from self-owned, CI-verified GHCR images built from pinned upstream commit SHAs (`.github/workflows/build-{cowrie,dionaea}.yml`):
 
-1. **Dionaea image is pinned to `docker.io/dinotools/dionaea:nightly`, never `:latest`:** `:latest` was frozen on 2020-11-30 with a half-empty config tree; `:nightly` is the actively rebuilt 0.11.0 tag.
-2. **Per-service directory overlay (`services-enabled/<svc>.yaml`), not single-file:** Driven by `roles/dionaea/defaults/main.yml::dionaea_service_catalog` (single source of truth for per-service YAMLs, Quadlet `PublishPort` lines, nftables DNAT rules, and `validate-single-node.yml` port assertions).
-3. **All Dionaea service YAML content must be 7-bit ASCII:** The dinotools image runs Python 3.6 + PyYAML, which falls back to ASCII without a BOM. Any non-ASCII byte (em-dash `—`, arrow `→`, smart quote) triggers `UnicodeDecodeError` and aborts the entire service-registration loop (zero ports bind). Use `--` and `->`.
-4. **Five capabilities must stay added in Dionaea's Quadlet:** Drop all, then add `NET_BIND_SERVICE`, `SETUID`, `SETGID` (without these, entrypoint `-u dionaea -g dionaea` exits `133` silently), `CHOWN`, and `FOWNER`.
-5. **`ReadOnly=true` is incompatible with Dionaea:** The entrypoint seeds configs into `/opt/dionaea/etc/dionaea/`. Keep `DIONAEA_FORCE_INIT_CONF=1` and `DIONAEA_FORCE_INIT_DATA=1` set so bind-mounts don't defeat the entrypoint's `test ! -d` seed check.
-6. **SIP is intentionally absent from v1.0.0:** Hits an unfixable SQLite ownership race between supervisor (UID 0) and worker (`dionaea`). Keep `templates/services-enabled/sip.yaml.j2` dormant.
-7. **Cowrie health check must use `HealthCmd=CMD python3 /healthcheck.py` (never `CMD-SHELL` or JSON array):** The Cowrie image has no `sh` or `nc`, and Podman 5.4.2 Quadlet misparses JSON arrays as a single-element string. Verify with `podman inspect sensor-cowrie --format "{{json .Config.Healthcheck.Test}}"` (must show `["CMD","python3","/healthcheck.py"]`).
-8. **Cowrie ownership flows via `UserNS=keep-id:uid=999,gid=999`, never `,U`:** `,U` only chowns at initial volume creation and fails silently when upstream bumps container UIDs.
-9. **Dionaea ownership flows from the entrypoint, never `,U` or `UserNS=keep-id`:** Dionaea runs a two-user runtime (supervisor UID 0, worker UID 1000). `,U` races the entrypoint by re-chowning files back to container root (`stigma`), leaving the worker unable to open `dionaea.json`.
+1. **Cowrie (`ghcr.io/lopes/lantana-cowrie:v1.5`):**
+   - Built from pinned `cowrie/cowrie` SHA (`containers/cowrie/Containerfile`) on distroless Debian 13 with repo-constant `UID 999 / GID 999`.
+   - Ownership flows strictly via `UserNS=keep-id:uid=999,gid=999` (never `,U`).
+   - Health check uses `HealthCmd=CMD python3 /healthcheck.py` (never `CMD-SHELL` or JSON array) + `HealthOnFailure=kill`, `StartLimitIntervalSec=0`, `RestartSec=10s`.
+2. **Dionaea (`ghcr.io/lopes/lantana-dionaea:v1.5`):**
+   - Built from pinned `DinoTools/dionaea` SHA (`containers/dionaea/Containerfile`) with repo-constant `UID 1000 / GID 1000`.
+   - Bakes `/opt/dionaea/etc/dionaea/dionaea.cfg` (`processors=filter_emu`, permanently disabling `bistreams`), patches `http.py` (`patch_http.py`) for structured HTTP/POST payload capture without `http-*.tmp` leaks, ships `lantana_json.py` (HTTP + MSSQL/MySQL + per-session SHA-256 `dionaea.binary.captured`), and uses a non-destructive `entrypoint.sh` (no `cp -a`, preserving host POSIX ACLs).
+   - Driven by `roles/dionaea/defaults/main.yml::dionaea_service_catalog`; all Dionaea `.cfg`/`.yaml`/`.py` files must be **7-bit ASCII** (embedded Python 3.6 + PyYAML).
+   - Runs strictly non-root (`USER 1000:1000`) with `UserNS=keep-id:uid=1000,gid=1000`, `DropCapability=ALL`, `Sysctl=net.ipv4.ip_unprivileged_port_start=0`, `ReadOnly=true`, and `VolatileTmp=true`; never use `,U`.
+   - Health check uses app-layer `HealthCmd=CMD python3 /healthcheck.py` (HTTP `GET /` -> `HTTP/1.`, fallback FTP `220`) + `HealthOnFailure=kill`, `StartLimitIntervalSec=0`, `RestartSec=10s`.
+   - Logrotate runs under `su stigma stigma` and restarts `dionaea.service` in `postrotate` (matching Cowrie) to avoid `copytruncate` sparse-null holes.
+3. **One-way POSIX ACL boundary:**
+   - `u:vector:rX` (default + recursive) on `0750` log dirs (`/var/log/lantana/sensor/{cowrie,dionaea}` and `/var/log/lantana/honeywall/suricata`).
+   - `u:nectar:rwX` (default + recursive, refreshed `00:10 UTC` via `/usr/local/sbin/lantana-grant-read`) on sensor scratch dirs (`cowrie/{downloads,tty}`, `dionaea/{binaries,bistreams,tmp}`) so `nectar` (`lantana-prune`) deletes 14d artifacts safely with `O_NOFOLLOW` + `dir_fd` while `stigma` stays locked out (`EACCES`) of datalake/collector.
+4. **Honeywall hardening:**
+   - `acl` and `ethtool` installed via `roles/base/tasks/main.yml`.
+   - Suricata runs non-root (`suricata:suricata` systemd drop-in), disables NIC offloads (`lantana-nic-offload.service`), disables `pcap-log` & `file-store` by default, and drops `ltn0` on single-node. Always pass `-l /tmp` when validating with root-run `suricata -T` so a `root:root` `eve.json` is never created before non-root `suricata.service` starts.
+   - `nftables` uses per-source dynamic meters with `level info` + `/etc/sysctl.d/99-lantana-console.conf` (`kernel.printk = 4 4 1 4`) so firewall drops never spam KVM `/dev/tty0`.
 
 ---
 
 ## 3. Post-Deploy Validation Playbooks
 
-Always verify deployments mechanically from `config/ansible/`:
+Always run all three mechanical playbooks from `config/ansible/`:
 
-1. **Base host & units (`validate-single-node.yml`):**
-   ```bash
-   ansible-playbook -i inventories/op_single/inventory.yml tests/validate-single-node.yml -vvv
-   ```
-   Asserts users, network, firewall, log directories, and the four `lantana-*.timer` + five `.service` units.
-2. **Sensor runtime & bronze freshness (`validate-sensor-runtime.yml`, after ~30 s settle window):**
-   ```bash
-   ansible-playbook -i inventories/op_single/inventory.yml tests/validate-sensor-runtime.yml -vvv
-   ```
-   Asserts Cowrie/Dionaea Quadlet ownership (`UserNS=keep-id` for Cowrie, no `,U` for either), container health/restart counts, zero log-plugin tracebacks since `StartedAt`, open write FDs on `cowrie.json` / `dionaea.json`, fresh bronze NDJSON (`sensor_freshness_window_seconds`, default 120 s), and zero orphan-UID files.
+```bash
+ansible-playbook -i inventories/<op>/inventory.yml tests/validate-single-node.yml
+ansible-playbook -i inventories/<op>/inventory.yml tests/validate-canaries.yml
+ansible-playbook -i inventories/<op>/inventory.yml tests/validate-sensor-runtime.yml
+```
+
+- `validate-single-node.yml`: base packages (`acl`, `ethtool`), non-root Suricata, offloads off, `kernel.printk == "4 4 1 4"`, no single-node forwarders, zero PCAPs/file-store, timers/units.
+- `validate-canaries.yml`: Vector 1-in-1-out + loopback/RFC1918/WAN drop canary + external `SSH-2.0-Go` -> Suricata `sid:9000004` + zero `TCPv4 invalid checksum` alerts.
+- `validate-sensor-runtime.yml`: container health, zero log-plugin tracebacks, open JSON log FDs, fresh Bronze NDJSON, zero orphan UIDs.

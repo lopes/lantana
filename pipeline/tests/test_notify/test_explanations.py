@@ -19,7 +19,7 @@ class TestWhatWhyHow:
     def test_tooltip_format(self) -> None:
         triplet = WhatWhyHow(what="x.", why="y.", how="z.")
         tooltip = triplet.tooltip()
-        # Plain text, no underscores (Streamlit's help= is rendered as-is).
+        # Plain text, no markdown underscores (rendered directly in help drawers).
         assert not tooltip.startswith("_")
         assert "What: x." in tooltip
         assert "Why: y." in tooltip

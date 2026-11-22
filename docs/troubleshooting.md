@@ -55,39 +55,25 @@ sudo -u $CONTAINER_USER $CONTAINER_ENV journalctl --user -u cowrie.service -f
 
 When debugging volume mounts in the `.container` files, verify the correct flags are applied based on the use case:
 
-- `UserNS=keep-id`: Maps the user running the container to the exact same UID inside the container. Essential for honeypots that write logs directly to host-mounted directories.
+- `UserNS=keep-id:uid=<N>,gid=<N>`: Maps the host sensor user (`stigma`) to the container's worker UID (`999` for Cowrie) so host-mounted logs and artifacts stay cleanly owned by `stigma`.
 - `:Z`: SELinux/AppArmor private container security label. Prevents cross-container data leakage.
-- `:U`: Podman automatically `chown`s the source directory on the host to match the container's internal UID/GID.
+- **Avoid `,U` on Lantana sensor bind mounts:** `,U` recursively `chown`s the host directory at container start, which races Dionaea's entrypoint and wipes host POSIX ACLs (`u:vector:rX`, `u:nectar:rwX`). Both Cowrie and Dionaea omit `,U` intentionally — see [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints).
 
 ---
 
 ## Dionaea Sensor
 
-The dinotools/dionaea image has several startup quirks that produce
-silent or near-silent failures. The container will be `healthy` per
-Podman's healthcheck (which only checks process liveness via `pgrep`)
-even when dionaea has bound zero ports. See [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints)
-for the deployment invariants this section troubleshoots.
+Lantana v1.5 runs our self-owned pinned image `ghcr.io/lopes/lantana-dionaea:v1.5` (with baked `dionaea.cfg`, `lantana_json`, `patch_http.py`, non-destructive `entrypoint.sh`, and app-layer `healthcheck.py` + `HealthOnFailure=kill`). The checks below help diagnose capability, ASCII YAML, or ownership issues if a host drifts. See [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints) for the load-bearing invariants.
 
-### Symptom: Exit status 133 immediately, no log content
+### Symptom: Dionaea fails to bind privileged ports (`21`, `80`, `135`, `445`) or exits on startup
 
-dionaea launched and died within ~100ms. The container shows
-`status=exited (133)` in `systemctl --user status dionaea.service`,
-the container itself is already gone (auto-rm) so `podman logs` says
-"no such container", and neither `dionaea.log` nor `dionaea-errors.log`
-exist on disk.
-
-Most likely cause: a missing capability. The bundled entrypoint runs
-`dionaea -u dionaea -g dionaea` which calls `setuid()`/`setgid()` to
-drop privileges; without `CAP_SETUID` / `CAP_SETGID` the call fails
-and dionaea exits silently with 133. Confirm by checking the Quadlet:
+Lantana v1.5 runs `ghcr.io/lopes/lantana-dionaea:v1.5` strictly non-root as `USER 1000:1000` with `DropCapability=ALL`, `UserNS=keep-id:uid=1000,gid=1000`, and `Sysctl=net.ipv4.ip_unprivileged_port_start=0`. Confirm the Quadlet carries both keys:
 
 ```bash
-grep -A2 AddCapability /etc/containers/systemd/users/2001/dionaea.container
+grep -E '^(UserNS|DropCapability|Sysctl)=' /etc/containers/systemd/users/2001/dionaea.container
 ```
 
-Should show `NET_BIND_SERVICE SETUID SETGID CHOWN FOWNER`. If
-anything is missing — re-deploy the dionaea role.
+Should show `UserNS=keep-id:uid=1000,gid=1000`, `DropCapability=ALL`, and `Sysctl=net.ipv4.ip_unprivileged_port_start=0`. If an older host still runs a legacy root-entrypoint image (`exit 133`), pull or rebuild the v1.5 image and re-deploy the `dionaea` role.
 
 ### Symptom: dionaea runs but binds zero ports
 
@@ -131,54 +117,47 @@ sqlite3.OperationalError: attempt to write a readonly database
 ```
 
 `:memory:` doesn't fix it (other on-disk state in the SIP module hits
-the same race). SIP is intentionally not in the v1.0.0 catalog for
+the same race). SIP is intentionally omitted from the current catalog for
 this reason — see [`honeypots.md`](/docs/honeypots.md#dionaea). If you see
 this error for any *other* service, the same root cause applies and
 the same `:memory:` / drop-from-catalog escape hatches are your
 options.
 
-### Symptom: log_json silent fail — bronze receives zero events for days
+### Symptom: `lantana_json` (or legacy `log_json`) silent fail — bronze receives zero events
 
-`dionaea.json` stops being written after a container restart, but the container is `active (running)`, no `enrichment_errors.json` entries fire, and the daily Discord brief stays green because the pipeline reads `enrichment_skip_empty dataset=dionaea` as "no work" rather than "broken sensor". Captured-binary collection in `binaries/` keeps working — only the JSON event sink is dead.
+`dionaea.json` stops being written after a container restart, though the container is `active (running)` (note: v1.5's app-layer `healthcheck.py` + `HealthOnFailure=kill` and the daily brief's stateless D-1/D-2 dead-man's-switch now surface this automatically).
 
-Trigger: a container start where the existing `dionaea.json` on the host is owned by host stigma (i.e. container UID 0) instead of the dionaea worker (UID 1000 inside = host 100999). The worker calls `open(file, "w")`, which requires write permission on the existing file; permission is denied; the log_json ihandler is disabled for the lifetime of the process. Dionaea's C-level `dionaea.log` and `dionaea-errors.log` fail the same way.
+Trigger: a container start where an existing `dionaea.json` on the host is owned by a UID other than `stigma` (for example after a manual root edit, an upgrade from a legacy subuid `100999` container, or a stale `,U` flag). Because v1.5 maps `USER 1000:1000` to host `stigma` via `UserNS=keep-id:uid=1000,gid=1000`, any non-`stigma` log file cannot be reopened for append/write, disabling the JSON ihandler for the process lifetime.
 
-The historical `,U` flag on the bind-mount volumes was the recurring trigger: at every container start, `,U` chowned the source tree to the container's `User=` (root → host stigma), racing the entrypoint's own chown of those dirs to `dionaea:dionaea`. The entrypoint only chowns directories, not files inside them — so the log file ended up stigma-owned, breaking the worker's reopen. The Quadlet no longer uses `,U`; the entrypoint is now the single source of truth for ownership.
-
-Confirm the failure mode:
+The historical `,U` flag on bind mounts was the recurring trigger. Lantana no longer uses `,U`, and our self-owned unprivileged `entrypoint.sh` preserves host POSIX ACLs (`u:vector:rX` / `u:nectar:rwX`). If an older host hits this state:
 
 ```bash
 # 1. Log file timestamps stuck at the last container start.
 sudo stat /var/log/lantana/sensor/dionaea/dionaea.json
-# Compare mtime against the container's started-at — if they match, no writes since.
 
-# 2. The journal carries the failure (buffered, sometimes only flushed on restart).
+# 2. Check the user journal for ihandler errors.
 sudo journalctl _SYSTEMD_USER_UNIT=dionaea.service --since='<container-restart-time>' \
-    | grep -E 'log_json|Could not open|Unable to open|Permission denied'
+    | grep -E 'lantana_json|log_json|Could not open|Unable to open|Permission denied'
 
-# 3. The dionaea worker has no log-file FD open.
+# 3. Verify the dionaea worker holds a write FD on dionaea.json.
 DPID=$(sudo pgrep -f '/opt/dionaea/bin/dionaea' | head -1)
 sudo ls -la /proc/$DPID/fd/ | grep -E 'dionaea\.json|dionaea\.log|dionaea-errors'
-# Expect: zero rows when broken; one row per file when healthy.
 ```
 
 Recovery:
 
 ```bash
-# 1. Delete the wrongly-owned log file. The rotated history (.1, .2.gz, ...)
-#    is harmless and can stay — only the live target must be removed so the
-#    worker recreates it fresh under its own UID.
+# 1. Remove the wrongly-owned live log file.
 sudo rm /var/log/lantana/sensor/dionaea/dionaea.json
 
-# 2. Restart the container. log_json reinitialises and worker creates the
-#    file at correct ownership.
+# 2. Restart the container so lantana_json recreates it as stigma (container UID 1000).
 sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user restart dionaea.service
 
-# 3. Verify the worker now holds the json FD and the file is growing.
+# 3. Re-apply Vector's read-only POSIX ACL and verify the FD.
+sudo setfacl -R -P -m u:vector:rX /var/log/lantana/sensor/dionaea
 sleep 5
 DPID=$(sudo pgrep -f '/opt/dionaea/bin/dionaea' | head -1)
 sudo ls -la /proc/$DPID/fd/ | grep dionaea.json
-sudo stat /var/log/lantana/sensor/dionaea/dionaea.json
 ```
 
 A live FTP probe (`curl -v --user anonymous:test ftp://<host>/`) from outside the operation's network should produce a `ftpd` event in `dionaea.json` within 1-2 seconds. If it does and Vector is healthy, bronze NDJSON will be appended shortly after.
@@ -199,8 +178,9 @@ sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user start dionaea.ser
 ```
 
 The re-deploy re-renders the `wwwroot/index.html` page (otherwise the
-HTTP service has no root to serve) and the entrypoint's `init_lib`
-re-seeds state dirs from the image's `template/lib/`.
+HTTP service has no root to serve) and `entrypoint.sh` recreates the
+writable runtime subdirectories cleanly under `dionaea:dionaea` while
+preserving host POSIX ACLs.
 
 ### Diagnostic recipe: which ports are actually bound
 
@@ -220,7 +200,7 @@ are unusual and worth pasting into a bug report.
 
 ## Cowrie Sensor
 
-The `cowrie/cowrie:latest` image is a rolling tag and has historically bumped the in-container `cowrie` user UID across rebuilds (998 → 999 around 2026-06-08). Lantana handles UID drift declaratively via `UserNS=keep-id:uid=999,gid=999` in the Quadlet (see CLAUDE.md "Honeypot deployment discipline"), but the mapping only works if the host-side bind-mount contents are already owned by `stigma`. Two failure modes flow from this — the second is the silent one and the more painful.
+Lantana v1.5 pins our self-owned `ghcr.io/lopes/lantana-cowrie:v1.5` image (`UID=999`, `GID=999`) with `UserNS=keep-id:uid=999,gid=999` in the Quadlet (see [`deploy-sensors`](/.agents/skills/deploy-sensors/SKILL.md)). Historical rolling tags (`cowrie/cowrie:latest`) bumped the in-container UID (`998 -> 999`), breaking mounts whose host files were not owned by `stigma`. Two failure modes flow from ownership drift — the second is silent:
 
 ### Symptom: cowrie accepts logins but logs zero `cowrie.command.*` events
 
@@ -298,23 +278,28 @@ Then, monitor the flow in real-time to see exactly which chain is dropping or ac
 sudo nft monitor trace
 ```
 
-### Debugging Dual-Stack
+### Debugging Dual-Stack & Console Log Noise
 
 Ensure your rules use the `inet` family to cover both IPv4 and IPv6. If IPv6 is failing, verify your rules aren't explicitly matching `ip daddr` (IPv4 only) instead of `ip6 daddr` or generic port matches. The same applies to `saddr` matches — `ip saddr` won't trigger on IPv6 source addresses.
+
+All nftables log rules use `level info` paired with `/etc/sysctl.d/99-lantana-console.conf` (`kernel.printk = 4 4 1 4`) so scanner floods never lock up VPS KVM/serial consoles, while dynamic per-IP `meter` limits keep rsyslog volume bounded.
 
 ---
 
 ## Suricata Intrusion Detection
 
-Suricata monitors the honeypot interfaces to provide out-of-band detection and telemetry enrichment.
+Suricata monitors the honeypot interfaces to provide out-of-band detection and telemetry enrichment. It runs **non-root** (`User=suricata`, `Group=suricata` via systemd drop-in with `CAP_NET_RAW`/`CAP_NET_ADMIN`/`CAP_SYS_NICE`), disables WAN NIC offloads (`gro`/`lro`/`tso`/`gso`/`tx`/`rx`) via `lantana-nic-offload.service` (`ethtool`) to eliminate invalid-checksum false positives (`sid:2200074`), and disables `pcap-log` and `file-store` by default.
 
 ### Validating Configuration Syntax
 
-Before restarting Suricata, always test the YAML configuration and rule syntax:
+Before restarting Suricata, always test the YAML configuration and rule syntax with **`-l /tmp`**:
 
 ```sh
-sudo suricata -T -c /etc/suricata/suricata.yaml
+sudo suricata -T -c /etc/suricata/suricata.yaml -l /tmp
 ```
+
+> [!WARNING]
+> Never omit `-l /tmp` when running `suricata -T` as `root`. Without `-l /tmp`, Suricata creates `/var/log/lantana/honeywall/suricata/eve.json` owned by `root:root`, causing the non-root `suricata.service` (`User=suricata`) to fail with `Permission denied` on `eve-log` and emit zero alerts. If that happens, fix ownership with `sudo chown -R suricata:suricata /var/log/lantana/honeywall/suricata && sudo systemctl restart suricata`.
 
 ### Live Reloading Rules
 
@@ -340,7 +325,7 @@ The `outputs[].eve-log.types` block in `roles/suricata/templates/suricata.yaml.j
 **What's kept and why:**
 
 - **`alert`** — the only event type the pipeline consumes today. `models/normalize.py` dispatches `event_type == "alert"` to OCSF Detection Finding (2004) with `alert_signature`, `alert_signature_id`, `alert_severity`, `alert_category`, `alert_action` flattened into silver. `transform/metrics.py` filters silver to `class_uid == CLASS_DETECTION_FINDING` to compute the detection findings gold table.
-- **`flow`** — retained for a planned behavioural-engagement metric. Carries fields nftables logs cannot provide: `app_proto` (Suricata's application-protocol classification — useful for understanding what attackers tried on non-honeypotted ports), `bytes_toserver` / `bytes_toclient` (volume discriminator between casual scanners and active engagement), `state` (clean-close vs. RST vs. timeout), and `community_id` (deterministic 5-tuple hash for cross-tool correlation). No gold consumer wired today; intended for v1.1+.
+- **`flow`** — retained for planned behavioural-engagement analytics. Carries fields nftables logs cannot provide: `app_proto` (Suricata's application-protocol classification — useful for understanding what attackers tried on non-honeypotted ports), `bytes_toserver` / `bytes_toclient` (volume discriminator between casual scanners and active engagement), `state` (clean-close vs. RST vs. timeout), and `community_id` (deterministic 5-tuple hash for cross-tool correlation). No gold consumer wired yet.
 
 **Why everything else is dropped:**
 
@@ -443,7 +428,7 @@ ssh -o PubkeyAuthentication=no -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
 
 ## Third-Party Integrations
 
-Lantana's enrichment depends on four HTTP APIs (AbuseIPDB, Shodan, VirusTotal, GreyNoise) and one local MMDB dataset (MaxMind GeoLite2). When silver Parquet shows missing enrichment columns or the dashboard's geographic map is empty, this section is where you start. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](/docs/integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](/docs/pipeline.md#31-bronze-to-silver-daily-enrichment).
+Lantana's enrichment depends on four optional HTTP APIs (AbuseIPDB, Shodan, VirusTotal / GTI, GreyNoise) and one local MMDB dataset (MaxMind GeoLite2). Start with Vigil's **System Health (`/health`)** view for an at-a-glance summary of configured vs unconfigured keys, last-run errors, cooldown skip-windows, and on-disk GeoLite2 MMDB checks before dropping to CLI probes or `jq`. For the full integration catalog (endpoints, auth, free-tier limits, field extraction), see [`integrations.md`](/docs/integrations.md); for the role enrichment plays in the bronze → silver pipeline, see [`pipeline.md`](/docs/pipeline.md#31-bronze-to-silver-daily-enrichment).
 
 ### Probe scripts
 
@@ -462,17 +447,17 @@ The enrichment runner treats a few HTTP responses as **not errors** because they
 
 | Response | Provider | Pipeline behaviour |
 |---|---|---|
-| `404` | GreyNoise | IP isn't in the dataset → row gets `greynoise_classification: "unknown"` and false booleans. Common for residential botnets. |
-| `404` | Shodan    | IP was never scanned → row gets empty `shodan_*` fields. Common for the same reason. |
-| `404` | VirusTotal (IP) | Never indexed → row gets zero counts. Less common but possible. |
-| `404` | VirusTotal (hash) | Fresh malware not yet seen by any AV → zero counts. Common for first-day captures. |
-| `200` with `abuseConfidenceScore: 0` | AbuseIPDB | No abuse reports → row populated with clean fields. The default state. |
+| `404` | GreyNoise | IP isn't in the dataset → `greynoise_classification: "unknown"`, false booleans, and **`greynoise_risk_score: None`** (never dilutes other providers). |
+| `404` | Shodan    | IP was never scanned → empty `shodan_*` fields and **`shodan_risk_score: None`**. |
+| `404` | VirusTotal (IP / domain) | Never indexed → `vt_status: "not_found"`, zero counts, and **`virustotal_risk_score: None`**. |
+| `404` | VirusTotal (hash / URL) | Fresh sample/URL not yet seen → `vt_status: "not_found"`, zero counts, and **`vt_file_risk_score` / `vt_url_risk_score: None`**. |
+| `200` with `abuseConfidenceScore: 0` | AbuseIPDB | No abuse reports → row populated with clean fields (`abuseipdb_risk_score: 0.0`). |
 
-So "missing fields" in silver Parquet is the **normal** state for the vast majority of attacker IPs. It only indicates a problem when columns are missing for ALL rows — that suggests provider misconfiguration.
+So `null` enrichment risk scores in silver Parquet are the **normal** state for unindexed attacker IPs. It only indicates a problem when columns are missing for ALL rows — check whether the provider key was intentionally omitted (`provider_disabled`) or misconfigured (`auth_failed`).
 
 ### "Provider returned an error" — diagnosing
 
-The runner appends one JSON summary line per `(provider, error_type)` pair per run to `/var/lib/lantana/datalake/enrichment_errors.json` (NDJSON, opened in append mode so historical runs remain inspectable). Inspect:
+The runner appends one JSON summary line per `(provider, error_type)` pair per run to `/var/lib/lantana/datalake/enrichment_errors.json` (NDJSON, trimmed to 180 days by `lantana-prune`). Inspect:
 
 ```bash
 sudo -u nectar jq . /var/lib/lantana/datalake/enrichment_errors.json | tail -50
@@ -482,25 +467,25 @@ Actual `error_type` values written by the runner (`_classify_http_error` + trans
 
 | `error_type` | Cause | Action |
 |---|---|---|
-| `rate_limit` | HTTP `429` — provider quota window exhausted | Not retried (`is_retryable_http_error` excludes 429 so `consecutive = 5` / `cumulative = 30` circuit breakers trip immediately). Retry after the provider window resets (cache covers ≥7 days, longer for malicious IOCs — see CLAUDE.md → Enrichment cache lifecycle). |
+| `rate_limit` | HTTP `429` — provider quota window exhausted | Not retried (`is_retryable_http_error` excludes 429 so `consecutive = 5` / `cumulative = 30` circuit breakers trip immediately). Retry after the provider window resets (cache covers 7d benign / 60–180d malicious — see [`docs/pipeline.md`](/docs/pipeline.md#31-bronze-to-silver-daily-enrichment)). |
 | `auth_failed` | HTTP `401` / `403` — bad or revoked API key | Re-check `vault_apikey_<service>` and re-run `deploy_single.yml` with the `collector` tag. Fails fast on first hit (`CIRCUIT_BREAKER_AUTH_FAILED_THRESHOLD = 1`). |
 | `not_found` | HTTP `404` uncaught at provider layer | Logged at debug level (routine "IOC not in upstream dataset"). |
-| `http_error` | Other HTTP `4xx` (e.g. `400` bad request / missing param) | Fails fast without retry. Check the upstream API docs linked in `integrations.md` for contract changes. |
+| `http_4xx` | Other HTTP `4xx` (e.g. `400` bad request / missing param) | Fails fast without retry. Check the upstream API docs linked in `integrations.md` for contract changes. |
 | `server_error` | HTTP `5xx` — provider-side outage | Retried 3× with exponential backoff before recording. Confirm with `probe-enrichment.py --provider <name>` and wait out upstream recovery. |
 | `timeout` | `httpx.TimeoutException` — request or connect timeout | Transient. Retried 3× with exponential backoff before recording; if sustained, check collector egress rules. |
 | `network_error` | `httpx.RequestError` / transport error (DNS, TLS, reset) | Retried 3× with exponential backoff before recording; verify outbound connectivity from the collector. |
 | `unexpected_error` | Unhandled exception catch-all (records `repr(exc)`) | Read the `message` field in `enrichment_errors.json` — includes the exception class name (e.g. JSON parse error or unexpected payload shape). |
 
-The runner is designed so that **one provider failing never blocks the others**: each provider's enrichment is independent, and a `RetryError` after exhausted retries on provider A still leaves providers B–E with full data for the same IP. Per-IP errors don't block other IPs either.
+The runner is designed so that **one provider failing never blocks the others**: each provider's enrichment is independent, and an exhausted retry exception on provider A still leaves the remaining providers with full data for the same IP. Per-IP errors don't block other IPs either.
 
 ### MaxMind silent failure (`.geo.*` fields empty)
 
-If the dashboard's geographic page is empty or all attackers show "unknown country":
+If Vigil's `/attackers#geo-origins` section shows the **MaxMind GeoLite2 Not Populated** warning banner (or `/health` shows MaxMind as `Not Configured` / `Error`):
 
 1. **Check the vault has the key.** `ansible-vault view inventories/op_<name>/group_vars/all/vault.yml | grep maxmind`. If `vault_apikey_maxmind` is missing or empty, Ansible silently skipped the MMDB download — that's by design but it's the most common cause.
 2. **Check the MMDBs exist on the collector.** `ls -la /var/lib/lantana/collector/geoip/` should show two ~70 MB and ~10 MB files dated within the last month.
 3. **Verify Vector can read them.** `sudo -u vector cat /var/lib/lantana/collector/geoip/GeoLite2-City.mmdb | head -c 16 | xxd` — first bytes should not be all zeros.
-4. **Run the probe.** `cd pipeline && uv run python ../scripts/probe-mmdb.py --ip 8.8.8.8` should print the City + ASN records and the `.geo.*` block.
+4. **Run the probe.** `cd pipeline && uv run python ../scripts/probe-mmdb.py --ip 203.0.113.7` (or substitute a known public resolver IP to inspect populated records) should print the City + ASN records and the `.geo.*` block.
 
 If step 4 succeeds but bronze NDJSON still has empty `.geo.*` fields, Vector's enrichment-tables block didn't reload after the MMDB refresh. `sudo systemctl restart vector` and check the next day's bronze.
 

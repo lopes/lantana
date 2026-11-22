@@ -92,11 +92,11 @@ def _fmt_provider_risk(row: dict[str, Any]) -> str:
 
 
 def _fmt_risk_breakdown(row: dict[str, Any]) -> str:
-    """`{composite} = ({enrichment}+{behavioral})/2` — risk decomposition.
+    """``{composite} (E={enrichment}, B={behavioral})`` — risk decomposition.
 
     Lets the analyst answer "what drove this score?" without leaving the
-    report. Defaults gracefully when sub-scores are absent (e.g. old gold
-    partitions written before Phase D.2)."""
+    report. Defaults gracefully when sub-scores are absent (e.g. legacy gold).
+    """
     composite = row.get("risk_score")
     enrichment = row.get("enrichment_risk_score")
     behavioral = row.get("behavioral_risk_score")
@@ -106,7 +106,7 @@ def _fmt_risk_breakdown(row: dict[str, Any]) -> str:
         return f"{composite:.1f}"
     e_str = f"{enrichment:.0f}" if enrichment is not None else "—"
     b_str = f"{behavioral:.0f}" if behavioral is not None else "—"
-    return f"{composite:.1f} ({e_str}+{b_str})/2"
+    return f"{composite:.1f} (E={e_str}, B={b_str})"
 
 
 def _url_tail(url: str, max_len: int = 60) -> str:
@@ -220,7 +220,10 @@ def _build_vt_hash_lookup(
     return lookup
 
 
-def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
+def _render_pipeline_health(
+    buckets: ErrorBuckets,
+    disk_usage_pct: float | None = None,
+) -> list[str]:
     """Render the Pipeline Health markdown section from a three-tier bucket.
 
     Always emits a section header so the operator can verify the pipeline
@@ -235,6 +238,9 @@ def _render_pipeline_health(buckets: ErrorBuckets) -> list[str]:
     caption = _section_caption("Pipeline Health")
     if caption:
         lines.append(caption + "\n")
+
+    if disk_usage_pct is not None:
+        lines.append(f"**Usable Disk:** {disk_usage_pct:.1f}%\n")
 
     if buckets.is_clean and not buckets.info:
         lines.append("✅ No issues during the previous pipeline cycle.\n")
@@ -293,28 +299,34 @@ def generate_daily_brief(
     timing: list[StepTiming] | None = None,
     silver: pl.DataFrame | None = None,
     tlp: str | None = None,
+    disk_usage_pct: float | None = None,
 ) -> str:
     """Generate a Markdown daily intelligence brief from gold tables."""
-    if summary.is_empty():
-        return f"# Daily Brief — {target_date.isoformat()}\n\nNo data available for this date.\n"
-
-    row = summary.row(0, named=True)
     lines: list[str] = []
 
     # Header
     lines.append(f"# Daily Brief — {target_date.isoformat()}")
     lines.append(f"**Operation:** {operation_name}\n")
 
-    # Pipeline health — operators want this above the data so a critical
-    # failure isn't buried below the daily metrics.
+    # Pipeline health — always rendered above data (including on empty days!)
+    # so critical starvation, disk exhaustion, or sensor outages are never hidden.
     if buckets is not None:
-        lines.extend(_render_pipeline_health(buckets))
+        lines.extend(_render_pipeline_health(buckets, disk_usage_pct=disk_usage_pct))
+    elif disk_usage_pct is not None:
+        lines.append("## Pipeline Health\n")
+        lines.append(f"**Usable Disk:** {disk_usage_pct:.1f}%\n")
 
-    # Pipeline timing — sits next to health since both are ops-self-checks.
+    # Pipeline timing — sits next to health since both are ops self-checks.
     if timing is not None:
         from lantana.notify.timing import render_timing_section
 
         lines.extend(render_timing_section(timing))
+
+    if summary.is_empty():
+        lines.append("No data available for this date.\n")
+        return "\n".join(lines) + "\n"
+
+    row = summary.row(0, named=True)
 
     # Key metrics
     lines.append("## Key Metrics\n")
@@ -392,7 +404,7 @@ def generate_daily_brief(
         lines.append("")
 
     # Top attackers (by composite risk_score). The "Risk" column shows the
-    # composite + the (enrichment+behavioral)/2 decomposition; "A/V/S/G"
+    # monotonic behavioral-anchored composite + E/B breakdown; "A/V/S/G"
     # surfaces each provider's contribution at a glance so an analyst can
     # see which signal drove the score (or notice when only behavioral
     # signals are firing).
@@ -419,25 +431,31 @@ def generate_daily_brief(
             )
         lines.append("")
         lines.append(
-            "_Risk legend: `composite (enrichment+behavioral)/2`. "
+            "_Risk legend: `composite (E=enrichment, B=behavioral)`. "
             "A/V/S/G = AbuseIPDB/VirusTotal/Shodan/GreyNoise per-provider "
             "risk (0..100, `-` = provider didn't contribute)._"
         )
         lines.append("")
 
-    # Threat actor attribution
+    # Threat actor attribution — strictly exclude benign scanners (Censys,
+    # Shadowserver, Driftnet) and RIOT infrastructure.
     if not reputation.is_empty() and "greynoise_name" in reputation.columns:
-        named = reputation.filter(
+        actor_mask = (
             pl.col("greynoise_name").is_not_null()
             & (pl.col("greynoise_name") != "")
             & (pl.col("greynoise_name") != "unknown")
         )
+        if "greynoise_class" in reputation.columns:
+            actor_mask = actor_mask & (pl.col("greynoise_class") == "malicious")
+        if "greynoise_riot" in reputation.columns:
+            actor_mask = actor_mask & ~pl.col("greynoise_riot").fill_null(False)
+        named = reputation.filter(actor_mask)
         if named.height > 0:
             lines.append("## Threat Actor Attribution\n")
             caption = _section_caption("Threat Actor Attribution")
             if caption:
                 lines.append(caption + "\n")
-            lines.append("IPs with known threat actor labels (GreyNoise):\n")
+            lines.append("IPs with malicious threat actor labels (GreyNoise):\n")
             lines.append("| Rank | Actor | IP | Classification |")
             lines.append("|------|-------|----|---------------|")
             for rank, r in enumerate(named.head(TOP_N).iter_rows(named=True), start=1):
@@ -545,7 +563,7 @@ def generate_daily_brief(
                 "_VT Detections = number of AV engines flagging the file. "
                 "VT Risk = bucketed 0..100 score from `compute_file_risk_score`. "
                 "Family from VT's popular_threat_name (fallback: suggested_threat_label). "
-                "Full SHA256s appear in the IOC inventory below._"
+                "Full SHA256s and vhash clusters appear in the Vigil dashboard (/intel)._"
             )
             lines.append("")
 
@@ -659,42 +677,43 @@ def generate_embed_summary(
     progression: pl.DataFrame,
     buckets: ErrorBuckets | None = None,
     timing: list[StepTiming] | None = None,
+    disk_usage_pct: float | None = None,
 ) -> str:
     """Generate a short Discord embed summary (< 4096 chars).
 
     This is the embed description; the full report is attached as a file.
-    When ``buckets`` is provided, a 1-line health summary is appended so the
-    operator sees pipeline status without opening the attachment. When
-    ``timing`` is provided, a 1-line per-step duration summary is appended
-    too.
+    Always surfaces health, disk usage, and timing even when gold is empty.
     """
-    if summary.is_empty():
-        return f"No data available for {target_date.isoformat()}."
-
-    row = summary.row(0, named=True)
     parts: list[str] = []
 
-    parts.append(
-        f"**{row['total_events']:,}** events from **{row['unique_source_ips']:,}** unique IPs"
-    )
-    parts.append(
-        f"Auth: {row['auth_successes']}/{row['auth_attempts']} success "
-        f"| Commands: {row['commands_executed']} "
-        f"| Findings: {row['findings_detected']}"
-    )
+    if summary.is_empty():
+        parts.append(f"No data available for {target_date.isoformat()}.")
+    else:
+        row = summary.row(0, named=True)
+        parts.append(
+            f"**{row['total_events']:,}** events from **{row['unique_source_ips']:,}** unique IPs"
+        )
+        parts.append(
+            f"Auth: {row['auth_successes']}/{row['auth_attempts']} success "
+            f"| Commands: {row['commands_executed']} "
+            f"| Findings: {row['findings_detected']}"
+        )
 
-    if not progression.is_empty():
-        stage_counts = []
-        for stage, label in [(4, "interactive"), (3, "auth'd"), (2, "cred"), (1, "scan")]:
-            n = progression.filter(pl.col("max_stage") >= stage).height
-            if n > 0:
-                stage_counts.append(f"{n} {label}")
-        if stage_counts:
-            parts.append(f"Stages: {' | '.join(stage_counts)}")
+        if not progression.is_empty():
+            stage_counts = []
+            for stage, label in [(4, "interactive"), (3, "auth'd"), (2, "cred"), (1, "scan")]:
+                n = progression.filter(pl.col("max_stage") >= stage).height
+                if n > 0:
+                    stage_counts.append(f"{n} {label}")
+            if stage_counts:
+                parts.append(f"Stages: {' | '.join(stage_counts)}")
 
-        auto = progression.filter(pl.col("is_automated")).height
-        if auto > 0:
-            parts.append(f"Automated bots: {auto}")
+            auto = progression.filter(pl.col("is_automated")).height
+            if auto > 0:
+                parts.append(f"Automated bots: {auto}")
+
+    if disk_usage_pct is not None:
+        parts.append(f"Disk: {disk_usage_pct:.1f}% usable")
 
     if buckets is not None:
         parts.append(_health_one_liner(buckets))
@@ -706,7 +725,8 @@ def generate_embed_summary(
         if timing_line is not None:
             parts.append(timing_line)
 
-    parts.append("\nFull report attached.")
+    if not summary.is_empty() or buckets is not None or timing is not None:
+        parts.append("\nFull report attached.")
     return "\n".join(parts)
 
 

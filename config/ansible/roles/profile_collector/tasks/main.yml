@@ -57,6 +57,15 @@
     - /var/lib/lantana/datalake/gold
   tags: [collector]
 
+- name: "Ensure collector can prune Vector-created Bronze partitions via POSIX ACL"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    setfacl -R -P -m u:{{ system.users.collector.name }}:rwX,u:vector:rwX /var/lib/lantana/datalake/bronze
+    setfacl -d -m u:{{ system.users.collector.name }}:rwX,u:vector:rwX /var/lib/lantana/datalake/bronze
+  changed_when: false
+  tags: [collector, vector]
+
 # --- SECRETS FILE ---
 - name: "Deploy API credentials template"
   become: true
@@ -165,7 +174,7 @@
   tags: [collector, pipeline]
 
 # --- PIPELINE SYSTEMD TIMERS ---
-# Schedule: prune 00:15, enrich 01:00, transform 04:00, report 06:00 (UTC).
+# Schedule: prune 00:15, enrich 01:00, transform 05:30, report 06:00 (UTC).
 - name: "Deploy pipeline systemd service units"
   become: true
   ansible.builtin.template:
@@ -176,7 +185,7 @@
     mode: "0644"
   loop:
     - { binary: "lantana-prune",
-        description: "Lantana datalake prune (180d retention + disk monitoring)" }
+        description: "Lantana prune (14d verified bronze & sensor scratch, 180d silver/gold)" }
     - { binary: "lantana-enrich",
         description: "Lantana enrichment (bronze→silver)" }
     - { binary: "lantana-transform",
@@ -201,14 +210,14 @@
     mode: "0644"
   loop:
     - { binary: "lantana-prune",
-        description: "Lantana datalake prune (180d retention + disk monitoring)",
+        description: "Lantana prune (14d verified bronze & sensor scratch, 180d silver/gold)",
         calendar: "*-*-* 00:15:00" }
     - { binary: "lantana-enrich",
         description: "Lantana enrichment (bronze→silver)",
         calendar: "*-*-* 01:00:00" }
     - { binary: "lantana-transform",
         description: "Lantana transform (silver→gold)",
-        calendar: "*-*-* 04:00:00" }
+        calendar: "*-*-* 05:30:00" }
     - { binary: "lantana-report",
         description: "Lantana daily intel report (Discord, always posts)",
         calendar: "*-*-* 06:00:00" }

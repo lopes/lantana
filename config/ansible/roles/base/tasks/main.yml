@@ -23,7 +23,9 @@
   become: true
   ansible.builtin.apt:
     name:
+      - acl
       - cron
+      - ethtool
       - git
       - logrotate
       - rsyslog

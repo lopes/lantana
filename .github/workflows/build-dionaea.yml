@@ -1,0 +1,217 @@
+---
+name: Build Dionaea Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "containers/dionaea/**"
+      - "config/ansible/roles/dionaea/**"
+      - ".github/workflows/build-dionaea.yml"
+  pull_request:
+    paths:
+      - "containers/dionaea/**"
+      - "config/ansible/roles/dionaea/**"
+      - ".github/workflows/build-dionaea.yml"
+  schedule:
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-dionaea-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/lopes/lantana-dionaea
+  CHANNEL_TAG: v1.5
+  DIONAEA_REF: 4e459f1b672a5b4c1e8335c0bff1b93738019215
+
+jobs:
+  build-and-verify:
+    name: Build & smoke-test lantana-dionaea
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      epoch: ${{ steps.meta.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Compute upstream short SHA
+        id: meta
+        run: |
+          echo "short_sha=${DIONAEA_REF:0:12}" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Build local candidate image
+        uses: docker/build-push-action@v6
+        with:
+          context: containers/dionaea
+          file: containers/dionaea/Containerfile
+          load: true
+          tags: lantana-dionaea:ci-test
+          build-args: |
+            DIONAEA_REF=${{ env.DIONAEA_REF }}
+            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.epoch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test UID/GID, bistreams disabled, healthcheck, and lantana_json HTTP POST capture
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /bin/sh lantana-dionaea:ci-test -c \
+            'id -u | grep -qx 1000 && id -g | grep -qx 1000 && id -u dionaea | grep -qx 1000 && id -g dionaea | grep -qx 1000 && grep -qx "processors=filter_emu" /opt/dionaea/etc/dionaea/dionaea.cfg'
+
+          TMPDIR=$(mktemp -d)
+          mkdir -p "$TMPDIR/services" "$TMPDIR/ihandlers" "$TMPDIR/log" "$TMPDIR/lib/binaries" "$TMPDIR/lib/wwwroot" "$TMPDIR/lib/tmp"
+          echo "<html>ok</html>" > "$TMPDIR/lib/wwwroot/index.html"
+          cat > "$TMPDIR/services/http.yaml" <<'EOF'
+          - name: http
+            config:
+              root: /opt/dionaea/var/lib/dionaea/wwwroot
+              ports:
+                - 80
+              max_request_size: 32768
+              global_headers:
+                - ["Server", "nginx/1.22.1"]
+          EOF
+          cat > "$TMPDIR/ihandlers/lantana_json.yaml" <<'EOF'
+          - name: lantana_json
+            config:
+              handlers:
+                - file:///opt/dionaea/var/log/dionaea/dionaea.json
+          EOF
+          cat > "$TMPDIR/ihandlers/store.yaml" <<'EOF'
+          - name: store
+            config:
+              path: "/opt/dionaea/var/lib/dionaea/binaries"
+          EOF
+
+          # Match baked USER 1000:1000 on bind-mounted writable directories
+          # (on Debian/Podman hosts this flows via UserNS=keep-id:uid=1000,gid=1000).
+          chmod 0755 "$TMPDIR/log" "$TMPDIR/lib"
+          sudo chown -R 1000:1000 "$TMPDIR/log" "$TMPDIR/lib"
+
+          CID=$(docker run -d --rm \
+            --read-only --tmpfs /tmp \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --sysctl net.ipv4.ip_unprivileged_port_start=0 \
+            -v "$PWD/config/ansible/roles/dionaea/files/healthcheck.py:/healthcheck.py:ro" \
+            -v "$TMPDIR/services:/opt/dionaea/etc/dionaea/services-enabled:ro" \
+            -v "$TMPDIR/ihandlers:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro" \
+            -v "$TMPDIR/log:/opt/dionaea/var/log/dionaea:rw" \
+            -v "$TMPDIR/lib:/opt/dionaea/var/lib/dionaea:rw" \
+            lantana-dionaea:ci-test)
+          trap 'docker stop "$CID" >/dev/null 2>&1 || true; sudo rm -rf "$TMPDIR"' EXIT
+
+          for i in $(seq 1 20); do
+            if docker exec "$CID" python3 /healthcheck.py; then
+              echo "Dionaea healthcheck passed on attempt $i"
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              docker logs "$CID" || true
+              ls -la "$TMPDIR/log" || true
+              cat "$TMPDIR/log/dionaea-errors.log" "$TMPDIR/log/dionaea.log" 2>/dev/null || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Send synthetic HTTP POST probe inside container and verify lantana_json output
+          docker exec "$CID" python3 -c '
+          import socket
+          body = b"{\"method\":\"tools/call\",\"params\":{\"name\":\"ci_probe\"}}"
+          req = (
+              b"POST /mcp?probe=1 HTTP/1.0\r\n"
+              b"Host: example.com\r\n"
+              b"User-Agent: LantanaCIProbe/1.5\r\n"
+              b"Content-Type: application/json\r\n"
+              + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+              + body
+          )
+          s = socket.create_connection(("127.0.0.1", 80), timeout=3)
+          s.sendall(req)
+          s.recv(4096)
+          s.close()
+          '
+          sleep 2
+
+          python3 - "$TMPDIR/log/dionaea.json" <<'PY'
+          import json, sys
+          lines = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+          posts = [r for r in lines if r.get("http_method") == "POST"]
+          assert posts, f"No HTTP POST captured in {lines}"
+          p = posts[-1]
+          assert p.get("http_uri") == "/mcp?probe=1", p
+          assert p.get("http_user_agent") == "LantanaCIProbe/1.5", p
+          assert "tools/call" in (p.get("http_body_preview") or ""), p
+          assert str(p.get("timestamp", "")).endswith("Z"), p
+          print("Dionaea lantana_json POST capture OK:", p)
+          PY
+
+          if [ ! -f "$TMPDIR/log/dionaea.log" ] || [ ! -f "$TMPDIR/log/dionaea-errors.log" ]; then
+            echo "ERROR: dionaea.log or dionaea-errors.log was not created!"
+            ls -la "$TMPDIR/log"
+            docker logs "$CID" || true
+            exit 1
+          fi
+          if docker logs "$CID" 2>&1 | grep -qE "Could not open logfile|Permission denied"; then
+            echo "ERROR: Dionaea logged file permission errors on startup!"
+            docker logs "$CID"
+            exit 1
+          fi
+          if [ -d "$TMPDIR/lib/bistreams" ] && [ -n "$(ls -A "$TMPDIR/lib/bistreams" 2>/dev/null)" ]; then
+            echo "ERROR: bistreams directory is non-empty!"
+            exit 1
+          fi
+          if grep -qi "Traceback" "$TMPDIR/log/dionaea-errors.log" 2>/dev/null; then
+            cat "$TMPDIR/log/dionaea-errors.log"
+            exit 1
+          fi
+
+  publish:
+    name: Publish verified lantana-dionaea to GHCR
+    needs: build-and-verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push verified image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: containers/dionaea
+          file: containers/dionaea/Containerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.CHANNEL_TAG }}
+            ${{ env.IMAGE_NAME }}:${{ needs.build-and-verify.outputs.short_sha }}
+          build-args: |
+            DIONAEA_REF=${{ env.DIONAEA_REF }}
+            SOURCE_DATE_EPOCH=${{ needs.build-and-verify.outputs.epoch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

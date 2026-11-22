@@ -1,20 +1,16 @@
 # Honeypots
 
-Lantana ships two honeypots in v1.0.0: **Cowrie** (SSH + Telnet) and **Dionaea**
-(SMB, FTP, HTTP, MSSQL, MySQL, EPMAP/DCERPC). Both run as rootless
-Podman containers under the `stigma` user (UID 2001), are configured via
-Ansible roles under `config/ansible/roles/`, and ship event NDJSON to
-the collector via Vector.
+Lantana v1.5 ships two honeypots: **Cowrie** (SSH + Telnet) and **Dionaea**
+(SMB, FTP, HTTP, MSSQL, MySQL, EPMAP/DCERPC). Both run from **self-owned, pinned GHCR container images** as rootless Podman containers under the `stigma` user (UID 2001), are configured via Ansible roles under `config/ansible/roles/`, and ship event NDJSON to the collector via Vector.
 
-This document covers what each honeypot exposes by default and how to
-disable a specific protocol post-deploy.
+This document covers the image sourcing strategy, per-honeypot defaults and runtime constraints, and how to disable a specific protocol post-deploy.
 
 ## Design principle: all services enabled by default
 
 Every protocol a honeypot supports is enabled on every deploy. There is
 intentionally no inventory-level toggle for individual sub-services —
 exposing each protocol as a per-operation knob would create N×M states
-to validate, and v1.0.0 prioritises a simple, predictable surface over
+to validate, and Lantana prioritises a simple, predictable surface over
 fine-grained tuning.
 
 **Disabling a sub-service is a manual on-server operation.** The
@@ -24,42 +20,42 @@ again will re-render the canonical config and restart the container,
 reverting any local edits. That is intended: a re-deploy is the
 authoritative source of truth.
 
-If a protocol needs to be permanently off for a given operation, the
-right move is to edit the honeypot's Ansible role/template and accept
-that the change applies to every host using that role.
+If a protocol needs to be permanently off for a given operation, edit the
+honeypot's Ansible role/template and accept that the change applies to
+every host using that role.
 
-## Known limitations (v1.0.0)
+## Known limitations
 
-These are documented constraints in the v1.0.0 honeypot surface — not bugs. Each has a deferred fix tracked for a future cut. Full rationale is in the per-honeypot sections below.
+- **Dionaea SIP is intentionally absent.** The upstream SIP module's privilege-drop sequence creates an ownership race on `accounts.sqlite`. `templates/services-enabled/sip.yaml.j2` stays in the repo if a future build resolves it.
+- **Dionaea MSSQL version string is hardcoded upstream.** The MSSQL responder reports a fixed TDS version regardless of `narrative.services.mssql.version`. Connections and `sql_command` bodies still capture cleanly.
 
-- **Dionaea SIP is intentionally absent.** The dinotools image's privilege-drop model creates an unfixable ownership race on the SIP module's `accounts.sqlite`. The `templates/services-enabled/sip.yaml.j2` file is preserved in the repo so a future image fix lets us re-enable SIP without re-implementing the template. See [Dionaea → Default protocol surface](#default-protocol-surface-1) for details.
-- **Dionaea MSSQL version string is hardcoded upstream.** The MSSQL responder reports a fixed version regardless of `narrative.services.mssql.version`. Tracked for v1.1, blocked on an upstream patch. See the [MSSQL row of the Dionaea protocol table](#default-protocol-surface-1).
-- **Dionaea download URL + per-session `src_ip` attribution stop at the dionaea bus.** Captured payloads land in `/var/lib/lantana/sensor/dionaea/binaries/` and **do** flow through SHA-256 hashing (`00:30 UTC` `lantana-grant-read` cron + `extract_dionaea_binary_events()` in `enrichment/ioc.py`), synthetic `dionaea.binary.captured` silver events (`models/normalize.py`), VirusTotal hash enrichment (`vt_file_*`), gold aggregation, the daily brief, and STIX 2.1 file indicators. However, the download URL and per-session `src_ip` attribution never reach `dionaea.json`; surfacing those needs a small custom ihandler tracked on the [README Roadmap](/README.md#roadmap).
-- **Dionaea MSSQL / MySQL command bodies stop at the dionaea bus.** Same upstream constraint — the bundled `log_json` ihandler emits connection lifecycle + credentials only. Tracked on the Roadmap.
-- **~~Dionaea binary SHA-256 hash integration.~~** Implemented: a daily `00:30 UTC` `lantana-grant-read` cron (`roles/dionaea/tasks/main.yml`) relaxes permissions on `/var/lib/lantana/sensor/dionaea/binaries/`, `extract_dionaea_binary_events()` computes SHA-256 hashes on disk and injects synthetic `dionaea.binary.captured` rows into silver (`models/normalize.py`), and VirusTotal enriches every unique hash into `vt_file_*`. The only remaining upstream limitation is per-session `src_ip` attribution on binary captures.
-- **~~Dionaea restart breaks log_json on existing containers.~~** Fixed 2026-06-11 by removing the `,U` flag from the dionaea Quadlet volumes. The root cause was a race between `,U` (which Podman re-applies on every container start, chowning the bind-mount source to the container `User=`) and the dionaea entrypoint's own chown of its log/lib dirs to `dionaea:dionaea`. Without `,U`, the entrypoint is the single source of ownership truth and restarts are clean. Recovery for any host still in the broken state is one `rm` + restart; recipe in [troubleshooting.md → Dionaea Sensor → log_json silent fail](/docs/troubleshooting.md#symptom-log_json-silent-fail--bronze-receives-zero-events-for-days).
+*(Resolved in v1.5: Dionaea download URL + per-session `src_ip` attribution, MSSQL/MySQL `sql_command` capture, structured HTTP/POST payload capture without `http-*.tmp` leaks, disabled `bistreams` disk bloat, and self-owned pinned GHCR images eliminating rolling-tag UID drift.)*
 
 ## Image sourcing strategy
 
-Both honeypots run from rolling upstream tags: cowrie pulls `docker.io/cowrie/cowrie:latest`, dionaea pulls `docker.io/dinotools/dionaea:nightly` (NOT `:latest` for dionaea — that tag is frozen at 0.11.0 from 2020-11-30 and ships a half-empty config tree). Rolling tags get us free security updates and protocol fixes from upstream without operator effort.
+Both honeypots run from **self-owned pinned images** built in this repository (`containers/cowrie/` and `containers/dionaea/`) from pinned upstream git commits and published to GitHub Container Registry by `.github/workflows/build-{cowrie,dionaea}.yml`:
 
-**The tradeoff is operational risk during image rebases.** Two incidents on 2026-06-08 → 2026-06-10 traced back to upstream image changes silently flowing in:
+| Honeypot | Default image (`defaults/main.yml`) | Pinned upstream ref | In-container UID/GID |
+|---|---|---|---|
+| Cowrie | `ghcr.io/lopes/lantana-cowrie:v1.5` (`cowrie_image`) | `cowrie/cowrie` `v3.1.7` (`8e36327f...`) | `999:999` (`UserNS=keep-id:uid=999,gid=999`) |
+| Dionaea | `ghcr.io/lopes/lantana-dionaea:v1.5` (`dionaea_image`) | `DinoTools/dionaea` (`4e459f1b...`) | `1000:1000` (`UserNS=keep-id:uid=1000,gid=1000`) |
 
-- Cowrie's in-image `cowrie` user UID shifted 998 → 999 across a rebuild. The Quadlet's `,U` volume flag chowned the bind-mount source to the OLD UID once at first volume init and never refreshed, so the new container couldn't write its TTY transcripts. Result: four days of zero `cowrie.command.input` events captured (auth still worked, commands aborted silently before logging).
-- Dionaea's two-user runtime model (root supervisor + dionaea worker) interacted badly with `,U`: every container restart re-raced the entrypoint's chown, leaving the worker unable to reopen its JSON log. Result: seven days of zero dionaea events to bronze.
+**Why self-owned images?** Rolling third-party tags (`cowrie/cowrie:latest`, `dinotools/dionaea:nightly`) silently broke production twice in Operation Alpha when upstream shifted UIDs (`998 -> 999`) or changed entrypoint ownership behaviour. Owning the Containerfiles turns in-container UIDs into repo constants, moves upstream rebases into explicit PRs gated by `validate-sensor-runtime.yml`, and lets us ship three clean Dionaea extensions:
 
-Both are now patched at the Quadlet level: cowrie uses `UserNS=keep-id:uid=999,gid=999` to map the rootless host user (`stigma`) onto the in-image cowrie user, removing the need for `,U`. Dionaea has `,U` dropped entirely, letting the entrypoint own ownership. Detection-and-recovery recipes for both are in [troubleshooting.md](/docs/troubleshooting.md).
+1. **Baked `/opt/dionaea/etc/dionaea/dionaea.cfg`** setting `processors=filter_emu` (eliminating multi-gigabyte `bistreams/` growth).
+2. **`patch_http.py`** patching Dionaea's `http.py` so JSON/non-form POST bodies (e.g. `/v1/chat/completions`, `/mcp`) are captured safely without `cgi.FieldStorage` crashes or leaked `http-*.tmp` files in `binaries/`.
+3. **`lantana_json.py` ihandler** replacing upstream `log_json`, emitting UTC `Z` timestamps, structured HTTP request/POST fields, MSSQL/MySQL `sql_command` bodies, and attributed `dionaea.binary.captured` events (carrying `src_ip`, SHA-256 `shasum`, and `download_url`) on `dionaea.download.complete.{unique,again}`.
+4. **Non-destructive `entrypoint.sh`** that preserves host POSIX ACLs (`u:vector:rX` on logs, `u:nectar:rwX` on scratch dirs) across container restarts instead of wiping them with `cp -a`.
 
-**The longer-term fix is to stop relying on third-party rolling tags entirely.** Building our own images from a pinned upstream git ref would let us treat the in-container UID/GID as a repo-owned constant, eliminate the operational risk during rebases, and decouple our release cadence from upstream's. Tracked at [TODO.md → Self-built honeypot images](/TODO.md#self-built-honeypot-images-effort-medium). Until that lands, every upstream rebase is an operational risk that may surface only days later via the runner-kill-blind-spot path — silent sensor failure looks identical to a quiet attack day from the pipeline's perspective.
-
-**Operational discipline for the current state:** after any deploy that recreates a sensor container, run the post-deploy probes in [validation.md §0.2](/docs/validation.md#02-active-protocol-smoke-tests) within 15 minutes. A working SSH/FTP/SMB probe that doesn't land in bronze means an image change has shifted something underneath.
+Operators can override `cowrie_image` or `dionaea_image` per inventory (e.g. `localhost/lantana-dionaea:v1.5` for local/staging builds).
 
 ## Cowrie
 
-Container image: `docker.io/cowrie/cowrie:latest`.
-Quadlet unit:   `sensor-cowrie` (managed via `/etc/containers/systemd/users/2001/cowrie.container`).
-Config file:    `/etc/lantana/sensor/cowrie/cowrie.cfg` (rendered by Ansible
-                from `roles/cowrie/templates/cowrie.cfg.j2`).
+- **Container image:** `ghcr.io/lopes/lantana-cowrie:v1.5` (override via `cowrie_image`).
+- **Quadlet unit:** `sensor-cowrie` (`/etc/containers/systemd/users/2001/cowrie.container`).
+- **Config file:** `/etc/lantana/sensor/cowrie/cowrie.cfg` (rendered from `roles/cowrie/templates/cowrie.cfg.j2`).
+- **Health check:** `HealthCmd=CMD python3 /healthcheck.py` (never `CMD-SHELL` or JSON array) with `HealthOnFailure=kill`.
+- **Ownership:** `UserNS=keep-id:uid=999,gid=999` (never `,U`). Host bind-mount directories stay owned by `stigma`, with `u:vector:rX` on logs and `u:nectar:rwX` on `downloads/` and `tty/`.
 
 ### Default protocol surface
 
@@ -68,21 +64,11 @@ Config file:    `/etc/lantana/sensor/cowrie/cowrie.cfg` (rendered by Ansible
 | SSH      | 22            | 2222           | 22 → sensor:2222 |
 | Telnet   | 23            | 2223           | 23 → sensor:2223 |
 
-Both protocols are governed by `enabled = true` flags in `cowrie.cfg`:
-
-```ini
-[ssh]
-enabled = true
-...
-
-[telnet]
-enabled = true
-...
-```
+Both protocols are governed by `enabled = true` flags in `cowrie.cfg`.
 
 ### Disabling SSH or Telnet on a running honeypot
 
-SSH to the VPS as the `lantana` admin user, then:
+SSH to the host as the `lantana` admin user, then:
 
 ```bash
 # Edit the rendered config — flip enabled = true to false for the
@@ -98,139 +84,45 @@ sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 \
   systemctl --user status cowrie.service
 ```
 
-The honeywall's nftables DNAT for the now-disabled port stays in
-place — packets still get DNATted to the sensor, but Cowrie will
-reject the connection at the application layer. To stop accepting
-the packet at the firewall too, also remove the matching line from
-`/etc/lantana/honeywall/nftables/sensors/cowrie.nft` and reload
-nftables:
-
-```bash
-sudo $EDITOR /etc/lantana/honeywall/nftables/sensors/cowrie.nft
-sudo systemctl reload nftables
-```
-
-Either change is reverted on the next `deploy_honeypots.yml` run.
+To stop accepting the packet at the firewall too, remove the matching line from `/etc/lantana/honeywall/nftables/sensors/cowrie.nft` and reload nftables (`sudo systemctl reload nftables`). Either change reverts on the next `deploy_honeypots.yml` run.
 
 ## Dionaea
 
-Container image: `docker.io/dinotools/dionaea:nightly`.
-Quadlet unit:   `sensor-dionaea` (managed via `/etc/containers/systemd/users/2001/dionaea.container`).
-Config layout:  `/etc/lantana/sensor/dionaea/services-enabled/<svc>.yaml` (one file
-                per protocol; bind-mounted read-only over the container's
-                `/opt/dionaea/etc/dionaea/services-enabled/` directory). Dionaea's
-                bundled `dionaea.cfg` globs every `*.yaml` in that directory at
-                startup. A parallel `ihandlers-enabled/` directory holds incident
-                handler configs (we ship only `log_json.yaml` — it streams every
-                attacker connection to NDJSON for the Vector → bronze pipeline).
+- **Container image:** `ghcr.io/lopes/lantana-dionaea:v1.5` (override via `dionaea_image`).
+- **Quadlet unit:** `sensor-dionaea` (`/etc/containers/systemd/users/2001/dionaea.container`).
+- **Config layout:** `/etc/lantana/sensor/dionaea/services-enabled/<svc>.yaml` (one file per protocol in `dionaea_service_catalog`) and `/etc/lantana/sensor/dionaea/ihandlers-enabled/` (`lantana_json.yaml` + `store.yaml`), both bind-mounted read-only over `/opt/dionaea/etc/dionaea/{services,ihandlers}-enabled/`.
+- **Health check:** application-layer `/etc/lantana/sensor/dionaea/healthcheck.py` (opens a real HTTP `GET /` expecting `HTTP/1.`, falling back to FTP `220` or MySQL handshake probes on the first enabled service) with `HealthOnFailure=kill` so silent libev deadlocks auto-restart.
 
 ### Container model and constraints
 
-Five non-obvious choices are load-bearing. Future template changes
-must keep them intact or dionaea will silently exit on startup with
-no log lines.
+Four invariants remain load-bearing in `roles/dionaea/`:
 
-1. **Image tag: `:nightly`, not `:latest`.** `docker.io/dinotools/dionaea:latest`
-   is frozen at the 2020-11-30 0.11.0 release and has not been rebuilt
-   since. Its config tree is half-empty — many of the layout assumptions
-   you'd make from reading the upstream source don't hold. `:nightly`
-   is rebuilt daily by the upstream CI from the same 0.11.0 source plus
-   current OS-package security fixes. Always pull `:nightly`.
-
-2. **Per-service directory overlay, not a single-file overlay.** The
-   image's bundled `/opt/dionaea/etc/dionaea/dionaea.cfg` (INI format)
-   is what dionaea reads at startup. It globs `services-enabled/*.yaml`
-   and `ihandlers-enabled/*.yaml`. Mounting a single `dionaea.yaml`
-   anywhere does nothing — dionaea never reads that path. Lantana's
-   Quadlet bind-mounts our `services-enabled/` and `ihandlers-enabled/`
-   directories `:ro` over the bundled ones, replacing the image's
-   default 16 services with our 6 and the default 6 ihandlers with just
-   `log_json` (which is what the Vector pipeline consumes).
-
-3. **`Environment=DIONAEA_FORCE_INIT_CONF=1` + `DIONAEA_FORCE_INIT_DATA=1`
-   are required.** The image's entrypoint script seeds `dionaea.cfg`
-   from `template/etc/` only if `/opt/dionaea/etc/dionaea/` doesn't
-   exist. Our bind-mounts of `services-enabled/` and `ihandlers-enabled/`
-   cause Podman to auto-create the parent dir, defeating that check.
-   The two `FORCE_INIT` env vars override the check and force the seed
-   to run every boot.
-
-4. **Five specific capabilities must stay added.** The Quadlet starts
-   from `DropCapability=ALL`, then adds back exactly what the bundled
-   entrypoint needs:
-   - `NET_BIND_SERVICE` — dionaea binds privileged ports (21, 80, 135,
-     445) inside the container.
-   - `SETUID` + `SETGID` — the entrypoint invokes
-     `dionaea -u dionaea -g dionaea`, which calls `setuid()`/`setgid()`
-     to drop from container-root to the `dionaea` user before binding
-     non-privileged ports.
-   - `CHOWN` + `FOWNER` — `init_lib`'s `cp -a` preserves ownership when
-     seeding state dirs; without these the warnings flood stderr and
-     downstream tasks misread the noise as failure.
-
-   Without `SETUID`/`SETGID`, dionaea exits silently with status 133
-   immediately after the `Starting dionaea ...` line, no traceback, no
-   error log. That's the canary for a missing capability.
-
-5. **`ReadOnly=true` is incompatible with this image.** The entrypoint
-   has to write the seeded `dionaea.cfg` (and other config fixtures)
-   into `/opt/dionaea/etc/dionaea/`. With `ReadOnly=true` enabled, the
-   seed fails silently and dionaea launches with no config. Lantana's
-   Quadlet does NOT set `ReadOnly=true` on the dionaea container;
-   `DropCapability=ALL` + the explicit five-cap allowlist + rootless
-   user namespace + `NoNewPrivileges=true` carry the containment load
-   instead.
-
-### ASCII-only constraint in service yamls
-
-The image runs Python 3.6, whose `PyYAML` falls back to the ASCII
-codec when reading files without a UTF-8 BOM. Any non-ASCII byte in
-a `services-enabled/*.yaml` or `ihandlers-enabled/*.yaml` file
-(em-dashes, arrows, smart quotes) triggers
-`UnicodeDecodeError` deep inside `yaml.safe_load`, which causes the
-*entire* service-registration loop to abort — not just the one bad
-file. Effect: zero services bind, no clean error reaches stderr.
-
-**All comment text and string values in `templates/services-enabled/*.yaml.j2`
-and `templates/ihandlers-enabled/*.yaml.j2` must be 7-bit ASCII.** Use
-`--` instead of `—`, `->` instead of `→`, straight quotes only. The
-templates in `dionaea.container.j2` and `dionaea.nft.j2` are not
-affected because systemd-Quadlet and nftables both handle UTF-8 fine.
+1. **Per-service and ihandler directory overlays.** The image bakes `/opt/dionaea/etc/dionaea/dionaea.cfg` (`processors=filter_emu`). Ansible mounts `services-enabled/` and `ihandlers-enabled/` `:ro` over the bundled directories so only our 6 catalog services and `lantana_json` + `store` ihandlers load.
+2. **Strictly unprivileged with zero capabilities.** The image sets `USER 1000:1000` and the Quadlet enforces `DropCapability=ALL`, `NoNewPrivileges=true`, `ReadOnly=true`, and `VolatileTmp=true`. Setting `Sysctl=net.ipv4.ip_unprivileged_port_start=0` inside the container's isolated network namespace allows Dionaea to bind ports `21, 80, 135, 445` directly as `UID 1000` without `NET_BIND_SERVICE` or root-to-dionaea `SETUID`/`SETGID`/`CHOWN`.
+3. **`UserNS=keep-id:uid=1000,gid=1000` (never `,U`).** Container `UID 1000:1000` maps directly to host `stigma:stigma` (matching Cowrie's `keep-id` model). Non-destructive `entrypoint.sh` refuses symlinks and creates runtime subdirs without stripping host POSIX ACLs (`u:vector:rX` on logs, `u:nectar:rwX` via `lantana-grant-read` on `binaries/`, `bistreams/`, `tmp/`).
+4. **7-bit ASCII only in service and ihandler YAMLs.** `templates/services-enabled/*.yaml.j2` and `templates/ihandlers-enabled/*.yaml.j2` must stay pure 7-bit ASCII (enforced at deploy time by Ansible's `validate:` check). Use `--`, `->`, and straight quotes only.
 
 ### Default protocol surface
 
-The full set of services Lantana enables in Dionaea is defined in
-`config/ansible/roles/dionaea/defaults/main.yml` under
-`dionaea_service_catalog`. As of v1.0.0:
+Defined in `config/ansible/roles/dionaea/defaults/main.yml` under `dionaea_service_catalog`:
 
 | Protocol | WAN port | Host/sensor published port | Container port | Notes |
 |----------|----------|----------------------------|----------------|-------|
 | FTP      | 21       | 8021                       | 21             | Banner from `narrative.services.ftp.banner` |
-| HTTP     | 80       | 8080                       | 80             | `Server:` header from `narrative.services.http.server_header`; serves the wwwroot persona page |
+| HTTP     | 80       | 8080                       | 80             | `Server:` header from `narrative.services.http.server_header`; `patch_http.py` + `lantana_json` capture POST/JSON payloads cleanly |
 | EPMAP    | 135      | 8135                       | 135            | DCE/RPC endpoint mapper; no persona fields |
 | SMB      | 445      | 8445                       | 445            | Workgroup / native OS / native LAN manager / server name from narrative |
-| MSSQL    | 1433     | 8433                       | 1433           | Version string is hardcoded in the upstream module (v1.1 TODO) |
-| MySQL    | 3306     | 8306                       | 3306           | Server version from `narrative.services.mysql.version` |
+| MSSQL    | 1433     | 8433                       | 1433           | Captures `sql_command` via `lantana_json`; version string remains hardcoded upstream |
+| MySQL    | 3306     | 8306                       | 3306           | Server version from `narrative.services.mysql.version`; captures `sql_command` via `lantana_json` |
 
-Dionaea has no native SSH (22) or Telnet (23) listener — those ports
-belong exclusively to Cowrie.
-
-**SIP intentionally disabled in v1.0.0.** The dinotools image's
-privilege-drop model creates an unfixable ownership race on the SIP
-module's `accounts.sqlite` (the root supervisor opens the file first,
-the dionaea-user worker can't write to it post-drop). The
-`templates/services-enabled/sip.yaml.j2` file is kept in the repo so a
-future image fix lets us re-enable SIP by re-adding the catalog entry
-in `roles/dionaea/defaults/main.yml`.
+Dionaea has no native SSH (22) or Telnet (23) listener — those belong exclusively to Cowrie.
 
 ### Disabling a Dionaea sub-service on a running honeypot
 
-Each service is a single YAML file under
-`/etc/lantana/sensor/dionaea/services-enabled/`. To disable a service,
-delete or rename its file and restart the container:
+Each service is a single YAML file under `/etc/lantana/sensor/dionaea/services-enabled/`. To disable a service temporarily:
 
 ```bash
-# Example: disable the EPMAP (DCE/RPC endpoint mapper) listener.
+# Example: disable the EPMAP listener.
 sudo mv /etc/lantana/sensor/dionaea/services-enabled/epmap.yaml \
         /etc/lantana/sensor/dionaea/services-enabled/epmap.yaml.disabled
 
@@ -239,43 +131,17 @@ sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 \
   systemctl --user restart dionaea.service
 ```
 
-As with Cowrie, the honeywall's nftables DNAT for the now-disabled port
-stays in place. Packets reach the sensor but get rejected by the
-container's network stack (nothing's listening on the published port).
-To clean up at the firewall too:
-
-```bash
-sudo $EDITOR /etc/lantana/honeywall/nftables/sensors/dionaea.nft
-sudo systemctl reload nftables
-```
-
-Both changes are reverted on the next `deploy_honeypots.yml` run.
+To drop it at the firewall too, edit `/etc/lantana/honeywall/nftables/sensors/dionaea.nft` and run `sudo systemctl reload nftables`. Both revert on the next `deploy_honeypots.yml` run.
 
 ### Adding a new protocol permanently
 
-Per-operation manual edits are not the right tool for "we want this
-protocol off for every deploy of op_X" or "we want a new protocol
-turned on." For those, edit the role:
-
-- **Dionaea:** add (or remove) a catalog entry in
-  `config/ansible/roles/dionaea/defaults/main.yml`, and drop a matching
-  `templates/services-enabled/<svc>.yaml.j2` if adding. The Quadlet, nftables
-  rules, and the validation playbook all derive from the catalog and
-  pick up the change automatically.
-- **Cowrie:** Cowrie's protocol surface is set by the upstream image
-  and toggled via `cowrie.cfg.j2`. Edit the template and re-deploy.
+- **Dionaea:** add (or remove) a catalog entry in `config/ansible/roles/dionaea/defaults/main.yml` and drop a matching ASCII-only `templates/services-enabled/<svc>.yaml.j2`. The Quadlet, nftables rules, and validation playbooks derive from the catalog automatically.
+- **Cowrie:** edit `roles/cowrie/templates/cowrie.cfg.j2` and re-deploy.
 
 ## Validation
 
-After any deploy, `tests/validate-single-node.yml` asserts:
+After any deploy, run the three post-deploy validation playbooks from `config/ansible/`:
 
-1. Each honeypot listed in `sensor_honeypots` has its user-systemd
-   `<honeypot>.service` reporting `active`.
-2. Cowrie's TCP ports (2222, 2223) are listening on the sensor IP.
-3. Dionaea's TCP ports (every `pub_port` in the catalog) are listening
-   on the sensor IP.
-
-If an operator has manually disabled a sub-service post-deploy, the
-matching port-listening assertion will fail. That failure is the
-intended signal that the host has drifted from the deployed baseline
-and the next `deploy_honeypots.yml` run will revert the local change.
+1. `tests/validate-single-node.yml` — asserts users, SSH, `ltn0`, nftables meters, NIC offloads, Suricata non-root user, logrotate, timers, and active honeypot ports.
+2. `tests/validate-sensor-runtime.yml` — asserts Quadlet invariants, container health (`healthy`), zero plugin tracebacks, worker log FDs, and fresh Bronze NDJSON.
+3. `tests/validate-canaries.yml` — injects active synthetic probes proving Vector 1-in-1-out delivery, Layer-1 edge filtering, and Suricata `sid:9000004` detection with zero invalid-checksum alerts.

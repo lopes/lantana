@@ -1,12 +1,11 @@
 [project]
 name = "lantana-pipeline"
-version = "1.0.1"
+version = "1.5.0"
 description = "Lantana honeypot data enrichment, analysis, and intelligence pipeline"
 requires-python = ">=3.13"
 dependencies = [
     "polars>=2.0.0",
     "httpx>=0.27",
-    "streamlit>=1.66.1",
     "pydantic>=2.13.4",
     "tenacity>=9.0",
     "structlog>=26.1.0",
@@ -41,12 +40,13 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "TCH", "RUF"]
 
 [tool.mypy]
 python_version = "3.13"
+mypy_path = "typings"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["stix2", "plotly", "plotly.*"]
+module = ["stix2"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -85,7 +85,96 @@
           - "'table inet lantana_filter' in nft_check.stdout"
           - "'chain input' in nft_check.stdout"
           - "'table ip lantana_nat' in nft_check.stdout"
-        fail_msg: "Critical firewall tables are missing."
+          - "'set drop_log_v4' in nft_check.stdout"
+          - "'set drop_log_v6' in nft_check.stdout"
+        fail_msg: "Critical firewall tables or per-source rate-limit sets are missing."
+
+    - name: "Check kernel.printk suppresses info-level nftables KVM console spam"
+      ansible.builtin.command: sysctl -n kernel.printk
+      register: printk_check
+      changed_when: false
+
+    - name: "Assert kernel.printk console loglevel is 4 or lower"
+      ansible.builtin.assert:
+        that:
+          - "(printk_check.stdout.split()[0] | int) <= 4"
+        fail_msg: >-
+          kernel.printk console loglevel is {{ printk_check.stdout }} (expected <= 4
+          so level-info nftables drops do not flood KVM /dev/tty0).
+
+    # ---------------------------------------------------------
+    # VECTOR & SURICATA SERVICES
+    # ---------------------------------------------------------
+    - name: "Check core honeywall/collector services are active"
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      loop:
+        - vector.service
+        - suricata.service
+        - lantana-nic-offload.service
+      register: core_services_check
+      changed_when: false
+      failed_when: core_services_check.rc != 0 or core_services_check.stdout.strip() != "active"
+
+    - name: "Assert single-node Vector forwarders are absent (direct in-memory routing)"
+      ansible.builtin.stat:
+        path: "/etc/vector/conf.d/{{ item }}"
+      loop:
+        - forward-honeywall.yaml
+        - forward-sensor.yaml
+      register: forwarder_check
+
+    - name: "Fail if duplicate single-node forwarder configs exist"
+      ansible.builtin.assert:
+        that: "not item.stat.exists"
+        fail_msg: >-
+          {{ item.item }} must not exist in single-node mode; receive.yaml routes
+          filter_* directly to enrich_geo in memory.
+      loop: "{{ forwarder_check.results }}"
+
+    - name: "Verify Suricata runs as non-root suricata user"
+      ansible.builtin.shell: |
+        set -eu
+        pid="$(systemctl show suricata.service --property=MainPID --value)"
+        [ -n "$pid" ] && [ "$pid" != "0" ]
+        ps -p "$pid" -o user=
+      register: suricata_user_check
+      changed_when: false
+
+    - name: "Assert Suricata process owner is suricata"
+      ansible.builtin.assert:
+        that:
+          - "suricata_user_check.stdout.strip() == 'suricata'"
+        fail_msg: "Suricata is not running as user 'suricata': {{ suricata_user_check.stdout }}"
+
+    - name: "Check WAN NIC offload state via ethtool"
+      ansible.builtin.command: "/usr/sbin/ethtool -k {{ network.honeywall.wan.interface }}"
+      register: wan_ethtool_check
+      changed_when: false
+
+    - name: "Assert toggleable WAN TX checksum offload is disabled for Suricata"
+      ansible.builtin.assert:
+        that:
+          - >-
+            ('tx-checksumming: off' in wan_ethtool_check.stdout) or
+            ('tx-checksumming: on [fixed]' in wan_ethtool_check.stdout)
+        fail_msg: >-
+          WAN interface {{ network.honeywall.wan.interface }} still has toggleable TX
+          checksumming enabled; Suricata will reject outbound SYN-ACK checksums.
+
+    - name: "Check unconsumed Suricata PCAP and file-store artifacts are absent"
+      ansible.builtin.find:
+        paths:
+          - /var/log/lantana/honeywall/suricata
+          - /var/lib/lantana/honeywall/suricata/files
+        patterns:
+          - "log.pcap*"
+        recurse: true
+      register: suricata_pcap_check
+
+    - name: "Assert zero Suricata PCAP files exist when disabled"
+      ansible.builtin.assert:
+        that: "suricata_pcap_check.matched == 0"
+        fail_msg: "Found {{ suricata_pcap_check.matched }} unexpected Suricata PCAP file(s)."
 
     # ---------------------------------------------------------
     # FILESYSTEM
@@ -114,10 +203,11 @@
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
-        # Must match what firewall/auth roles deploy
+        # Must match what firewall/auth/suricata/sensor roles deploy
         - /etc/lantana/logrotate.d/00_00/firewall
         - /etc/lantana/logrotate.d/00_00/auth
         - /etc/lantana/logrotate.d/00_00/audit
+        - /etc/lantana/logrotate.d/00_00/suricata
         - /etc/lantana/logrotate.d/00_00/honeypots
       register: logrotate_check
 

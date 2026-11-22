@@ -1,5 +1,34 @@
 ---
 # --- FIREWALL LOGGING ---
+- name: "Suppress kernel info/notice firewall logs on KVM console"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-lantana-console.conf
+    content: |
+      # Managed by Ansible
+      # Keep real kernel warnings/errors (<= 4) on console while preventing
+      # level-info (6) nftables drop logs from flooding KVM /dev/tty0.
+      kernel.printk = 4 4 1 4
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Reload sysctl"
+  tags: [nftables]
+
+- name: "Check live kernel.printk console loglevel"
+  become: true
+  ansible.builtin.slurp:
+    src: /proc/sys/kernel/printk
+  register: live_kernel_printk
+  tags: [nftables]
+
+- name: "Apply KVM console printk sysctl immediately when drifted"
+  become: true
+  ansible.builtin.command: "sysctl -p /etc/sysctl.d/99-lantana-console.conf"
+  when: "not (live_kernel_printk.content | b64decode).startswith('4')"
+  changed_when: true
+  tags: [nftables]
+
 - name: "Setup firewall connections logging"
   become: true
   ansible.builtin.copy:
@@ -9,6 +38,35 @@
     group: root
     mode: "0644"
   notify: "Restart rsyslog"
+  tags: [nftables]
+
+- name: "Check whether rsyslog loaded 10-nftables.conf"
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    conf_mtime=$(stat -c %Y /etc/rsyslog.d/10-nftables.conf)
+    rsyslog_ts=$(systemctl show rsyslog.service --property=ActiveEnterTimestamp --value)
+    if [ -z "$rsyslog_ts" ]; then
+      echo stale
+      exit 0
+    fi
+    rsyslog_epoch=$(date -d "$rsyslog_ts" +%s 2>/dev/null || echo 0)
+    if [ "$conf_mtime" -gt "$rsyslog_epoch" ]; then
+      echo stale
+    else
+      echo fresh
+    fi
+  register: rsyslog_nftables_state
+  changed_when: false
+  tags: [nftables]
+
+- name: "Restart rsyslog when 10-nftables.conf post-dates last rsyslog start"
+  become: true
+  ansible.builtin.systemd:
+    name: rsyslog
+    state: restarted
+    enabled: true
+  when: rsyslog_nftables_state.stdout | trim == "stale"
   tags: [nftables]
 
 - name: "Setup log rotation of firewall connections"

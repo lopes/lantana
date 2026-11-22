@@ -16,3 +16,12 @@
       tags: [nftables]
     - role: suricata
       tags: [suricata]
+  post_tasks:
+    - name: "Ensure Vector is enabled and running"
+      become: true
+      ansible.builtin.systemd:
+        name: vector
+        enabled: true
+        state: started
+        daemon_reload: true
+      tags: [vector]

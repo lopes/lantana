@@ -1,10 +1,13 @@
 # /etc/lantana/logrotate.d/00_00/honeypots
 # Managed by Ansible
+# Explicit per-sensor log paths (avoiding root-owned wildcard globs over
+# container-writable directories). Both Cowrie and Dionaea map their worker UID
+# to stigma via UserNS=keep-id, so both stanzas rotate under `su stigma stigma`.
 
-# All low-interaction honeypots like Cowrie, Dionaea, Honeyd
-/var/log/lantana/sensor/*/*.log
-/var/log/lantana/sensor/*/*.json
+/var/log/lantana/sensor/cowrie/cowrie.log
+/var/log/lantana/sensor/cowrie/cowrie.json
 {
+    su {{ system.users.sensor.name }} {{ system.users.sensor.name }}
     # No 'daily': forced with cron for more determinism
     rotate 7
     missingok
@@ -13,20 +16,33 @@
     delaycompress
     copytruncate
     sharedscripts
-    # Cowrie's Twisted writer holds the file descriptor across rotation and
-    # keeps appending at its remembered offset, leaving a sparse-null region
-    # at the start of the new file (op_alpha 2026-06-19: cowrie.json reported
-    # 149 MB, first non-null byte at offset 141 271 814 — Vector tails it
-    # fine but cat/jq inspection breaks and analyst debug is blocked).
-    # Restarting the rootless quadlet hands the writer a fresh FD pointing
-    # at offset 0. Cost: any cowrie SSH session active at the moment of
-    # rotation disconnects, losing a few seconds of intel — acceptable since
-    # the cron fires at 00:00 UTC and attacker sessions rarely span midnight.
-    # Dionaea's writer reopens cleanly on truncation so it doesn't need the
-    # same treatment.
     postrotate
-        runuser -u {{ system.users.sensor.name }} -- \
+        if ! runuser -u {{ system.users.sensor.name }} -- \
             env XDG_RUNTIME_DIR=/run/user/{{ system.users.sensor.uid }} \
-            systemctl --user restart cowrie.service >/dev/null 2>&1 || true
+            systemctl --user restart cowrie.service 2>/dev/null; then
+            logger -t lantana-logrotate -p daemon.err "Failed to restart cowrie.service after log rotation"
+        fi
+    endscript
+}
+
+/var/log/lantana/sensor/dionaea/dionaea.log
+/var/log/lantana/sensor/dionaea/dionaea-errors.log
+/var/log/lantana/sensor/dionaea/dionaea.json
+{
+    su {{ system.users.sensor.name }} {{ system.users.sensor.name }}
+    # No 'daily': forced with cron for more determinism
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    sharedscripts
+    postrotate
+        if ! runuser -u {{ system.users.sensor.name }} -- \
+            env XDG_RUNTIME_DIR=/run/user/{{ system.users.sensor.uid }} \
+            systemctl --user restart dionaea.service 2>/dev/null; then
+            logger -t lantana-logrotate -p daemon.err "Failed to restart dionaea.service after log rotation"
+        fi
     endscript
 }

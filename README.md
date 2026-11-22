@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/debian-13-red" alt="Debian 13">
 </p>
 
-**Lantana is a honeypot-as-code platform.** Deploy IPv4/IPv6 dual-stack honeypots from an Ansible inventory, capture attacker behavior into a typed datalake, and ship intelligence as Discord briefs, STIX bundles, and a Streamlit dashboard. Aligned with [MITRE Engage](https://engage.mitre.org/) — honeypots are treated as disposable infrastructure that gets rotated and reshaped as narratives evolve.
+**Lantana is a honeypot-as-code platform.** Deploy IPv4/IPv6 dual-stack honeypots from an Ansible inventory, capture attacker behavior into a typed datalake, and ship intelligence as Discord briefs, STIX bundles, and an air-gapped Vigil dashboard. Aligned with [MITRE Engage](https://engage.mitre.org/) — honeypots are treated as disposable infrastructure that gets rotated and reshaped as narratives evolve.
 
 The platform covers the full lifecycle: controlled exposure → structured ingestion → enrichment → analysis → intelligence output. Designed for disposability, policy-driven deployment, and strict blast-radius containment.
 
@@ -27,8 +27,8 @@ The platform covers the full lifecycle: controlled exposure → structured inges
   <table>
     <tr>
       <td align="center">
-        <img src="assets/lantana-screenshot-dashboard-overview.png" alt="Streamlit dashboard — overview page" width="480">
-        <br><sub>Streamlit dashboard — overview</sub>
+        <img src="assets/lantana-screenshot-dashboard-overview.png" alt="Vigil dashboard — overview page" width="480">
+        <br><sub>Vigil dashboard — overview</sub>
       </td>
       <td align="center">
         <img src="assets/lantana-screenshot-dashboard-geography.png" alt="Dashboard — geography page" width="480">
@@ -147,8 +147,9 @@ Lantana is designed to operate safely in hostile environments and assumes that s
 ```
 lantana/
   config/ansible/     # Ansible roles, playbooks, inventories, validation playbooks
+  containers/         # Self-owned pinned Cowrie and Dionaea container images
   infra/terraform/    # Terraform host provisioning (Proxmox)
-  pipeline/           # Python data pipeline (enrichment, OCSF, dashboard, reports, STIX)
+  pipeline/           # Python data pipeline (enrichment, OCSF, Vigil dashboard, reports, STIX)
   scripts/            # Operational scripts (bootstrap, backup, probes, dashboard)
   docs/               # Full documentation
 ```
@@ -181,14 +182,14 @@ For the full rationale, see [docs/architecture.md](/docs/architecture.md).
 
 ## Roadmap
 
-Tracked work for post-v1.0.0 — a mix of known gaps deliberately deferred from the v1 cut and planned improvements that would expand Lantana's analytical reach. Boxes get checked as items land.
+Tracked work across v1.5 and future cuts. Boxes get checked as items land.
 
-- [ ] **Dionaea download URL → pipeline.** The `store` ihandler captures attacker-delivered binaries to `/var/lib/lantana/sensor/dionaea/binaries/`, but URL + hash metadata stays inside dionaea's incident bus and never reaches `dionaea.json`. Surfacing the URL into bronze → silver → brief → STIX needs a small custom ihandler that subscribes to `dionaea.download.complete.unique` and writes the URL + MD5 + connection metadata to a JSON stream Vector can tail.
-- [ ] **Dionaea MSSQL/MySQL command bodies → pipeline.** Same upstream constraint. The bundled `log_json` ihandler emits only connection lifecycle + credentials for these services; surfacing command bodies requires a custom ihandler or switching to `log_sqlite` + a tail job.
-- [x] **SHA-256 hash integration for dionaea binaries.** Implemented: a daily `00:30 UTC` `lantana-grant-read` cron (`roles/dionaea/tasks/main.yml`) grants `nectar` read access to `/var/lib/lantana/sensor/dionaea/binaries/`, `extract_dionaea_binary_events()` (`enrichment/ioc.py`) computes on-disk SHA-256 hashes and emits synthetic `dionaea.binary.captured` silver events (`models/normalize.py`), and VirusTotal hash enrichment populates `vt_file_*` columns for gold, the daily brief, and STIX 2.1 file indicators. Remaining upstream limitation: per-session `src_ip` (and download URL) attribution on binary captures, since Dionaea's `store` ihandler writes files by MD5 without connection metadata in `dionaea.json`.
-- [ ] **Self-built honeypot images.** Replace the upstream rolling tags `docker.io/cowrie/cowrie:latest` and `docker.io/dinotools/dionaea:nightly` with images built by Lantana CI from a pinned upstream git ref, published to `ghcr.io/lopes/lantana-{cowrie,dionaea}`. Two incidents on 2026-06-08 → 2026-06-11 traced to upstream rebases silently flowing into production (cowrie's in-image UID shifted 998 → 999; dionaea's two-user runtime started racing the Quadlet's `,U` flag). Owning the build pipeline makes the in-container UID/GID a repo constant, moves rebases to PRs gated by `validate-sensor-runtime`, and lets us carry in-house patches (MSSQL version-string hardcoding, per-session `src_ip` / download-URL attribution on Dionaea binary captures). Full brief in [TODO.md](/TODO.md#self-built-honeypot-images-effort-medium).
-- [ ] **Dashboard date-range selector.** The Streamlit dashboard currently renders a fixed window from the gold tables. Adding `start` + `end` date pickers (defaulting to the last 7 days) and threading them through the Polars filters on every page would let analysts scope visualizations to specific incidents, persona-rotation windows, or comparative periods without code edits. Major analytical power-up for a small UI change.
-- [ ] **Multi-day slow-burn detection — proper version.** The v1.0.0 multi-day progression gold table was retired (it OOM'd the 7.6 GB collector at a 7-day silver lookback). The dashboard's Multi-Day Progression section now derives a multi-day flag from daily `behavioral_progression` gold over a trailing 7-day window — cheap, but lossy: it can't see the silver-only per-stage timestamps the old logic used (e.g. day of first credential attempt vs day of first interactive command), so "Multi-Day IPs" is a permissive proxy for slow-burn behaviour rather than a stage-progression signal. A proper rewrite would either (a) compute per-day per-stage timestamps at silver→gold time and store them in the daily `behavioral_progression` partition, then aggregate at the dashboard, or (b) stream the multiday computation per-day to avoid the silver concat. Either approach keeps the slow-burn detection lossless without the OOM risk.
+- [x] **Dionaea download URL + per-session `src_ip` attribution → pipeline.** Shipped in v1.5 via the custom `lantana_json` ihandler in `ghcr.io/lopes/lantana-dionaea:v1.5`, subscribing to `dionaea.download.complete.{unique,again}` and emitting `dionaea.binary.captured` events with `src_ip`, SHA-256 `shasum`, and `download_url` directly into `dionaea.json` (with the `00:10 UTC` POSIX ACL + date-scoped disk hash scan kept as a deduplicated fallback).
+- [x] **Dionaea MSSQL/MySQL command bodies & HTTP POST capture → pipeline.** Shipped in v1.5 via `lantana_json` (`sql_command` on MSSQL/MySQL) and `patch_http.py` (structured HTTP POST/JSON payload capture without leaking `http-*.tmp` files).
+- [x] **SHA-256 hash integration for dionaea binaries.** Implemented via `lantana_json` attributed bronze events plus the `00:10 UTC` `lantana-grant-read` POSIX ACL fallback, VirusTotal hash enrichment (`vt_file_*` + `vhash` clustering), gold `extracted_iocs`, the daily brief, and STIX 2.1 file indicators.
+- [x] **Self-built pinned honeypot images.** Shipped in v1.5: `containers/{cowrie,dionaea}/` built by GitHub Actions from pinned upstream git commits and published to `ghcr.io/lopes/lantana-{cowrie,dionaea}:v1.5`, locking in-container UIDs (`999`/`1000`), baking `dionaea.cfg` (`processors=filter_emu`, zero `bistreams`), and preserving host POSIX ACLs across restarts.
+- [x] **Dashboard date-range selector & air-gapped Vigil console.** Shipped in v1.5: replaced Streamlit with a self-contained, zero-CDN `vigil`-themed stdlib HTTP console (`127.0.0.1:8501`) supporting 5 date windows (Day, 7d, 30d, Custom range, All) across 5 CTI-grouped views (`Overview`, `Attackers`, `Behavior`, `Intel & Export`, `Health`), dropping 25 runtime packages.
+- [ ] **Multi-day slow-burn detection — proper version.** The v1.0.0 multi-day progression gold table was retired (it OOM'd the 7.6 GB collector at a 7-day silver lookback). The dashboard's Multi-Day Progression section now derives a multi-day flag from daily `behavioral_progression` gold across the selected window — cheap, but lossy: it can't see the silver-only per-stage timestamps the old logic used (e.g. day of first credential attempt vs day of first interactive command), so "Multi-Day IPs" is a permissive proxy for slow-burn behaviour rather than a stage-progression signal. A proper rewrite would either (a) compute per-day per-stage timestamps at silver→gold time and store them in the daily `behavioral_progression` partition, then aggregate at the dashboard, or (b) stream the multiday computation per-day to avoid the silver concat. Either approach keeps the slow-burn detection lossless without the OOM risk.
 
 ---
 

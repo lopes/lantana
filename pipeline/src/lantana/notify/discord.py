@@ -94,6 +94,7 @@ def generate_and_send(argv: list[str] | None = None) -> None:
     """
     import argparse
     import asyncio
+    import os
     import tempfile
     from datetime import UTC, date, datetime, timedelta
     from pathlib import Path
@@ -101,10 +102,16 @@ def generate_and_send(argv: list[str] | None = None) -> None:
     import polars as pl
 
     from lantana.common.config import load_reporting, load_secrets
-    from lantana.common.datalake import read_gold_table, read_silver_partition
-    from lantana.notify.alerts import DEFAULT_ERRORS_PATH, categorize_errors, load_errors_for_date
+    from lantana.common.datalake import SILVER_ROOT, read_gold_table, read_silver_partition
+    from lantana.notify.alerts import (
+        DEFAULT_ERRORS_PATH,
+        categorize_errors,
+        evaluate_liveness_alerts,
+        load_errors_for_date,
+    )
     from lantana.notify.report import generate_daily_brief, generate_embed_summary
     from lantana.notify.timing import collect_step_timings
+    from lantana.prune import DEFAULT_LAKE_DIR, check_disk_usage
 
     parser = argparse.ArgumentParser(
         prog="lantana-report",
@@ -117,6 +124,18 @@ def generate_and_send(argv: list[str] | None = None) -> None:
         metavar="YYYY-MM-DD",
         help="Date to report on (UTC). Defaults to yesterday.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate brief and embed locally without posting to Discord.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Optional path to write the rendered Markdown brief.",
+    )
     parsed_args, _ = parser.parse_known_args(argv)
     target_date = (
         parsed_args.date
@@ -126,14 +145,12 @@ def generate_and_send(argv: list[str] | None = None) -> None:
     secrets = load_secrets()
     reporting = load_reporting()
 
-    if not secrets.discord_webhook:
+    if not parsed_args.dry_run and parsed_args.output is None and not secrets.discord_webhook:
         logger.warning("no_discord_webhook", hint="Set discord_webhook in secrets.json")
         return
 
-    # Pipeline-health classification — single source of truth for the embed
-    # color and the brief's Pipeline Health section.
-    error_rows = load_errors_for_date(DEFAULT_ERRORS_PATH, target_date)
-    buckets = categorize_errors(error_rows)
+    errors_path = Path(os.environ.get("LANTANA_ENRICHMENT_ERRORS", str(DEFAULT_ERRORS_PATH)))
+    error_rows = load_errors_for_date(errors_path, target_date)
 
     # Per-step duration from systemd. Report self-timing is intentionally
     # skipped (see notify/timing.py).
@@ -145,10 +162,13 @@ def generate_and_send(argv: list[str] | None = None) -> None:
         ]
     )
 
-    # Read gold tables. geographic_summary + detection_findings are
-    # optional in generate_daily_brief (they gate the Geographic Origin
-    # and Detection Highlights sections); the prior code omitted them
-    # and those sections were silently dropped from every report.
+    disk_usage_pct: float | None = None
+    try:
+        if DEFAULT_LAKE_DIR.exists():
+            disk_usage_pct = check_disk_usage(DEFAULT_LAKE_DIR)
+    except OSError as exc:
+        logger.warning("disk_usage_check_failed", error=repr(exc))
+
     summary = read_gold_table("daily_summary", target_date)
     reputation = read_gold_table("ip_reputation", target_date)
     progression = read_gold_table("behavioral_progression", target_date)
@@ -156,15 +176,16 @@ def generate_and_send(argv: list[str] | None = None) -> None:
     geographic = read_gold_table("geographic_summary", target_date)
     detection = read_gold_table("detection_findings", target_date)
 
-    # Silver feeds two brief sections:
-    #   - Malware Captured: VT family/type/detections looked up by SHA256
-    #     (only cowrie rows have file_hash_sha256 populated)
-    #   - Full IOC Inventory: unique IPs across all datasets + unique
-    #     hashes/URLs from cowrie rows
-    # Diagonal concat across datasets gives us both — cowrie-only columns
-    # are null on suricata/nftables rows, which the section renderers
-    # already tolerate. An empty/missing partition collapses to an empty
-    # DataFrame and both sections degrade gracefully.
+    liveness_rows = evaluate_liveness_alerts(
+        target_date=target_date,
+        summary=summary,
+        expected_datasets=reporting.operation.expected_datasets,
+        silver_root=SILVER_ROOT,
+        timings=timings,
+        disk_usage_pct=disk_usage_pct,
+    )
+    buckets = categorize_errors([*error_rows, *liveness_rows])
+
     try:
         silver = read_silver_partition(target_date).collect()
     except (FileNotFoundError, pl.exceptions.PolarsError) as exc:
@@ -175,7 +196,6 @@ def generate_and_send(argv: list[str] | None = None) -> None:
         )
         silver = pl.DataFrame()
 
-    # Generate report with health classification + per-step timing embedded.
     brief = generate_daily_brief(
         target_date,
         summary,
@@ -189,6 +209,7 @@ def generate_and_send(argv: list[str] | None = None) -> None:
         timing=timings,
         silver=silver,
         tlp=reporting.sharing.tlp,
+        disk_usage_pct=disk_usage_pct,
     )
     embed_text = generate_embed_summary(
         target_date,
@@ -196,8 +217,17 @@ def generate_and_send(argv: list[str] | None = None) -> None:
         progression,
         buckets=buckets,
         timing=timings,
+        disk_usage_pct=disk_usage_pct,
     )
     level = max_severity(buckets)
+
+    if parsed_args.output is not None:
+        parsed_args.output.write_text(brief, encoding="utf-8")
+        logger.info("report_written", path=str(parsed_args.output), level=level)
+
+    if parsed_args.dry_run or not secrets.discord_webhook:
+        logger.info("report_dry_run_complete", date=target_date.isoformat(), level=level)
+        return
 
     # Write report to temp file for attachment
     with tempfile.NamedTemporaryFile(

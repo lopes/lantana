@@ -40,6 +40,20 @@ transforms:
       }
       del(.ftp)
 
+      # Normalize rich lantana_json fields when present so bronze schema stays
+      # flat across HTTP probes, MSSQL/MySQL queries, and attributed binaries.
+      if exists(.http_method) { .http_method = to_string(.http_method) ?? null }
+      if exists(.http_uri) { .http_uri = to_string(.http_uri) ?? null }
+      if exists(.http_user_agent) { .http_user_agent = to_string(.http_user_agent) ?? null }
+      if exists(.http_host) { .http_host = to_string(.http_host) ?? null }
+      if exists(.http_content_type) { .http_content_type = to_string(.http_content_type) ?? null }
+      if exists(.http_body_preview) { .http_body_preview = to_string(.http_body_preview) ?? null }
+      if exists(.sql_command) { .sql_command = to_string(.sql_command) ?? null }
+      if exists(.shasum) { .shasum = to_string(.shasum) ?? null }
+      if exists(.download_url) { .download_url = to_string(.download_url) ?? null }
+      if exists(.binary_file_name) { .binary_file_name = to_string(.binary_file_name) ?? null }
+      if exists(.eventid) { .eventid = to_string(.eventid) ?? null }
+
       .dataset = "dionaea"
       .server = "{{ inventory_hostname }}"
       .operation = "{{ narrative.operation_name }}"
@@ -51,6 +65,6 @@ transforms:
     condition:
       type: vrl
       source: |-
-        src = to_string(.src_ip) ?? ""
+        src = replace(downcase(to_string(.src_ip) ?? ""), r'^::ffff:', "")
         connection_type = to_string(.connection_type) ?? ""
-        connection_type == "accept" && src != "" && !starts_with(src, "127.") && !starts_with(downcase(src), "::ffff:127.") && src != "::1" && !starts_with(downcase(src), "fe80:") && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && src != "{{ network.honeywall.wan.ipv4.split('/')[0] }}" && src != "{{ network.honeywall.wan.ipv6.split('/')[0] }}"
+        connection_type == "accept" && src != "" && !(ip_cidr_contains("127.0.0.0/8", src) ?? false) && !(ip_cidr_contains("::1/128", src) ?? false) && !(ip_cidr_contains("10.0.0.0/8", src) ?? false) && !(ip_cidr_contains("172.16.0.0/12", src) ?? false) && !(ip_cidr_contains("192.168.0.0/16", src) ?? false) && !(ip_cidr_contains("169.254.0.0/16", src) ?? false) && !(ip_cidr_contains("fe80::/10", src) ?? false) && !(ip_cidr_contains("fc00::/7", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && !(ip_cidr_contains("{{ network.honeywall.wan.ipv4.split('/')[0] }}/32", src) ?? false) && !(ip_cidr_contains("{{ network.honeywall.wan.ipv6.split('/')[0] }}/128", src) ?? false)

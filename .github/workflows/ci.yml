@@ -89,7 +89,7 @@ jobs:
           fetch-depth: 1
 
       - name: shellcheck
-        run: shellcheck scripts/*.sh config/ansible/roles/base/files/lantana-grant-read
+        run: shellcheck scripts/*.sh config/ansible/roles/base/files/lantana-grant-read containers/dionaea/entrypoint.sh
 
   ansible-lint:
     name: Ansible-lint
