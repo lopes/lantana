@@ -10,6 +10,17 @@
     mode: "0755"
   tags: [dionaea]
 
+- name: "Check whether Dionaea log directory already exists"
+  become: true
+  ansible.builtin.stat:
+    path: /var/log/lantana/sensor/dionaea
+  register: _dionaea_log_dir
+  tags: [dionaea]
+
+# On fresh install, create owned by stigma:stigma (0770) so container UID 0
+# can initialize it on first boot. Afterwards entrypoint.sh owns it as
+# dionaea:0 (host 100999:stigma); avoid resetting owner on re-deploys while
+# Dionaea is running.
 - name: "Create Dionaea log directory"
   become: true
   ansible.builtin.file:
@@ -17,7 +28,8 @@
     state: directory
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
-    mode: "0750"
+    mode: "0770"
+  when: not _dionaea_log_dir.stat.exists
   tags: [dionaea]
 
 - name: "Grant Vector read-only POSIX ACL on Dionaea log directory"
@@ -25,7 +37,8 @@
   ansible.builtin.shell: |
     set -eu
     setfacl -R -P -m u:vector:rX /var/log/lantana/sensor/dionaea
-    setfacl -d -m u:vector:rX /var/log/lantana/sensor/dionaea
+    setfacl -m g::rwx,u:vector:rX /var/log/lantana/sensor/dionaea
+    setfacl -d -m g::rwx,u:vector:rX /var/log/lantana/sensor/dionaea
   changed_when: false
   tags: [dionaea, vector]
 
@@ -39,14 +52,10 @@
     mode: "0755"
   tags: [dionaea]
 
-- name: "Create Dionaea artifact directories"
+- name: "Check which Dionaea artifact directories already exist"
   become: true
-  ansible.builtin.file:
+  ansible.builtin.stat:
     path: "{{ _dionaea_dir }}"
-    state: directory
-    owner: "{{ system.users.sensor.name }}"
-    group: "{{ system.users.sensor.name }}"
-    mode: "0775"
   loop:
     - /var/lib/lantana/sensor/dionaea/binaries
     - /var/lib/lantana/sensor/dionaea/bistreams
@@ -54,6 +63,26 @@
     - /var/lib/lantana/sensor/dionaea/tmp
   loop_control:
     loop_var: _dionaea_dir
+  register: _dionaea_artifact_dirs
+  tags: [dionaea]
+
+# On fresh install, create owned by stigma:stigma so container UID 0 can
+# initialize them on first boot. Afterwards entrypoint.sh owns them as
+# dionaea:dionaea (host 100999:100999); avoid resetting owner on re-deploys
+# while Dionaea is running.
+- name: "Create Dionaea artifact directories"
+  become: true
+  ansible.builtin.file:
+    path: "{{ _dionaea_dir_stat._dionaea_dir }}"
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0775"
+  loop: "{{ _dionaea_artifact_dirs.results }}"
+  loop_control:
+    loop_var: _dionaea_dir_stat
+    label: "{{ _dionaea_dir_stat._dionaea_dir }}"
+  when: not _dionaea_dir_stat.stat.exists
   tags: [dionaea]
 
 - name: "Grant collector POSIX ACL on Dionaea scratch directories (single-node)"
@@ -254,7 +283,8 @@
   ansible.builtin.shell: |
     set -eu
     setfacl -R -P -m u:vector:rX /var/log/lantana/sensor/dionaea
-    setfacl -d -m u:vector:rX /var/log/lantana/sensor/dionaea
+    setfacl -m g::rwx,u:vector:rX /var/log/lantana/sensor/dionaea
+    setfacl -d -m g::rwx,u:vector:rX /var/log/lantana/sensor/dionaea
   changed_when: false
   tags: [dionaea, vector]
 

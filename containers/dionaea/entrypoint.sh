@@ -52,7 +52,6 @@ do
 done
 
 for dir in \
-    "$LOG_ROOT" \
     "$DATA_ROOT/binaries" \
     "$DATA_ROOT/wwwroot" \
     "$DATA_ROOT/tmp" \
@@ -69,5 +68,34 @@ do
     fi
     chown -h dionaea:dionaea "$dir"
 done
+
+# Dionaea opens dionaea.log and dionaea-errors.log as UID 0 before dropping to
+# -u dionaea -g dionaea, while lantana_json opens dionaea.json as UID 1000
+# afterwards. Temporarily own LOG_ROOT as 0:0 so chmod/create work without
+# CAP_FOWNER or CAP_DAC_OVERRIDE, pre-create the two early logfiles as
+# 0:dionaea (0660), then hand LOG_ROOT to dionaea:0 (0770).
+chown -h 0:0 "$LOG_ROOT"
+chmod 0770 "$LOG_ROOT"
+
+for logfile in \
+    "$LOG_ROOT/dionaea.log" \
+    "$LOG_ROOT/dionaea-errors.log" \
+    "$LOG_ROOT/dionaea.json"
+do
+    if [ -L "$logfile" ]; then
+        echo "Refusing symlink on log file: $logfile" >&2
+        exit 1
+    fi
+done
+
+for early_log in "$LOG_ROOT/dionaea.log" "$LOG_ROOT/dionaea-errors.log"; do
+    if [ ! -e "$early_log" ]; then
+        : > "$early_log"
+    fi
+    chown -h 0:dionaea "$early_log"
+    chmod 0660 "$early_log"
+done
+
+chown -h dionaea:0 "$LOG_ROOT"
 
 exec /opt/dionaea/bin/dionaea -u dionaea -g dionaea -c /opt/dionaea/etc/dionaea/dionaea.cfg "$@"

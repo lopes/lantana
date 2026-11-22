@@ -84,7 +84,8 @@
           cowrie.container is missing UserNS=keep-id:uid=<N>,gid=<N>.
           Without it the worker cannot write its TTY transcripts and
           command sessions abort silently before logging.
-          See AGENTS.md "Honeypot deployment discipline" + the 2026-06-08 incident.
+          See AGENTS.md §3 ("One-Way Privilege Boundary & Sensor Discipline") and
+          .agents/skills/deploy-sensors/SKILL.md.
       when: "'cowrie' in active_honeypots"
 
     - name: "Assert cowrie Quadlet has no ,U flag on rw volumes"

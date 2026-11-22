@@ -149,6 +149,17 @@ jobs:
           print("Dionaea lantana_json POST capture OK:", p)
           PY
 
+          if [ ! -f "$TMPDIR/log/dionaea.log" ] || [ ! -f "$TMPDIR/log/dionaea-errors.log" ]; then
+            echo "ERROR: dionaea.log or dionaea-errors.log was not created!"
+            ls -la "$TMPDIR/log"
+            docker logs "$CID" || true
+            exit 1
+          fi
+          if docker logs "$CID" 2>&1 | grep -qE "Could not open logfile|Permission denied"; then
+            echo "ERROR: Dionaea logged file permission errors on startup!"
+            docker logs "$CID"
+            exit 1
+          fi
           if [ -d "$TMPDIR/lib/bistreams" ] && [ -n "$(ls -A "$TMPDIR/lib/bistreams" 2>/dev/null)" ]; then
             echo "ERROR: bistreams directory is non-empty!"
             exit 1

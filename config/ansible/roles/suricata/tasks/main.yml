@@ -143,7 +143,10 @@
     owner: root
     group: root
     mode: "0644"
-    validate: /usr/bin/suricata -T -c %s
+    # Pass -l /tmp so root-run `suricata -T` never creates a root-owned eve.json
+    # inside /var/log/lantana/honeywall/suricata (which would cause EACCES when
+    # the non-root suricata.service starts).
+    validate: /usr/bin/suricata -T -c %s -l /tmp
   notify: "Restart Suricata"
   tags: [suricata]
 
@@ -212,6 +215,19 @@
   notify:
     - "Reload systemd"
     - "Restart Suricata"
+  tags: [suricata]
+
+- name: "Ensure Suricata runtime directories and log files are owned by suricata"
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "suricata"
+    group: "suricata"
+    recurse: true
+  loop:
+    - /var/log/lantana/honeywall/suricata
+    - /var/lib/lantana/honeywall/suricata/files
   tags: [suricata]
 
 - name: "Ensure Suricata is enabled and started"

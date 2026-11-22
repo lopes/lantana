@@ -35,7 +35,7 @@ Both sensors run from self-owned, CI-verified GHCR images built from pinned upst
    - Built from pinned `DinoTools/dionaea` SHA (`containers/dionaea/Containerfile`) with repo-constant `UID 1000 / GID 1000`.
    - Bakes `/opt/dionaea/etc/dionaea/dionaea.cfg` (`processors=filter_emu`, permanently disabling `bistreams`), patches `http.py` (`patch_http.py`) for structured HTTP/POST payload capture without `http-*.tmp` leaks, ships `lantana_json.py` (HTTP + MSSQL/MySQL + per-session SHA-256 `dionaea.binary.captured`), and uses a non-destructive `entrypoint.sh` (no `cp -a`, preserving host POSIX ACLs).
    - Driven by `roles/dionaea/defaults/main.yml::dionaea_service_catalog`; all Dionaea `.cfg`/`.yaml`/`.py` files must be **7-bit ASCII** (embedded Python 3.6 + PyYAML).
-   - Keep `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`, `FOWNER`; omit `ReadOnly=true`; never use `,U` or `UserNS=keep-id`.
+   - Keep `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN` with `ReadOnly=true` and `VolatileTmp=true`; never use `,U` or `UserNS=keep-id`.
    - Health check uses app-layer `HealthCmd=CMD python3 /healthcheck.py` (HTTP `GET /` -> `HTTP/1.`, fallback FTP `220`) + `HealthOnFailure=kill`, `StartLimitIntervalSec=0`, `RestartSec=10s`.
    - Logrotate restarts `dionaea.service` in `postrotate` (matching Cowrie) to avoid `copytruncate` sparse-null holes.
 3. **One-way POSIX ACL boundary:**
