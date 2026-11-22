@@ -39,11 +39,11 @@ Both sensors run from self-owned, CI-verified GHCR images built from pinned upst
    - Health check uses app-layer `HealthCmd=CMD python3 /healthcheck.py` (HTTP `GET /` -> `HTTP/1.`, fallback FTP `220`) + `HealthOnFailure=kill`, `StartLimitIntervalSec=0`, `RestartSec=10s`.
    - Logrotate restarts `dionaea.service` in `postrotate` (matching Cowrie) to avoid `copytruncate` sparse-null holes.
 3. **One-way POSIX ACL boundary:**
-   - `u:vector:rX` (default + recursive) on `0750` log dirs (`/var/log/lantana/sensor/{cowrie,dionaea}`, `/var/log/lantana/honeywall/suricata`).
+   - `u:vector:rX` (default + recursive) on log dirs (`0750` on `/var/log/lantana/sensor/cowrie` and `/var/log/lantana/honeywall/suricata`; `0770` with `g::rwx` on `/var/log/lantana/sensor/dionaea` so Dionaea's early `UID 0` C logfiles open cleanly as `0:dionaea` without `CAP_DAC_OVERRIDE` or `CAP_FOWNER`, while `stat` guards prevent redeploy ownership drift).
    - `u:nectar:rwX` (default + recursive, refreshed `00:10 UTC` via `/usr/local/sbin/lantana-grant-read`) on sensor scratch dirs (`cowrie/{downloads,tty}`, `dionaea/{binaries,bistreams,tmp}`) so `nectar` (`lantana-prune`) deletes 14d artifacts safely with `O_NOFOLLOW` + `dir_fd` while `stigma` stays locked out (`EACCES`) of datalake/collector.
 4. **Honeywall hardening:**
    - `acl` and `ethtool` installed via `roles/base/tasks/main.yml`.
-   - Suricata runs non-root (`suricata:suricata` systemd drop-in), disables NIC offloads (`lantana-nic-offload.service`), disables `pcap-log` & `file-store` by default, and drops `ltn0` on single-node.
+   - Suricata runs non-root (`suricata:suricata` systemd drop-in), disables NIC offloads (`lantana-nic-offload.service`), disables `pcap-log` & `file-store` by default, and drops `ltn0` on single-node. Always pass `-l /tmp` when validating with root-run `suricata -T` so a `root:root` `eve.json` is never created before non-root `suricata.service` starts.
    - `nftables` uses per-source dynamic meters with `level info` + `/etc/sysctl.d/99-lantana-console.conf` (`kernel.printk = 4 4 1 4`) so firewall drops never spam KVM `/dev/tty0`.
 
 ---
