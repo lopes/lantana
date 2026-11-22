@@ -1,9 +1,8 @@
 # /etc/lantana/logrotate.d/00_00/honeypots
 # Managed by Ansible
 # Explicit per-sensor log paths (avoiding root-owned wildcard globs over
-# container-writable directories). Cowrie rotates under `su stigma stigma`;
-# Dionaea's worker runs as subuid 100999 so only its explicit log filenames are
-# rotated with copytruncate + restart.
+# container-writable directories). Both Cowrie and Dionaea map their worker UID
+# to stigma via UserNS=keep-id, so both stanzas rotate under `su stigma stigma`.
 
 /var/log/lantana/sensor/cowrie/cowrie.log
 /var/log/lantana/sensor/cowrie/cowrie.json
@@ -30,6 +29,7 @@
 /var/log/lantana/sensor/dionaea/dionaea-errors.log
 /var/log/lantana/sensor/dionaea/dionaea.json
 {
+    su {{ system.users.sensor.name }} {{ system.users.sensor.name }}
     # No 'daily': forced with cron for more determinism
     rotate 7
     missingok

@@ -27,9 +27,8 @@ RUN groupadd -r -g "${COWRIE_GID}" "${COWRIE_GROUP}" && \
     useradd -r -l -u "${COWRIE_UID}" -d "${COWRIE_HOME}" -m -g "${COWRIE_GROUP}" "${COWRIE_USER}"
 
 RUN apt-get -qq update && \
-    apt-get -qq install -y \
+    apt-get -qq install -y --no-install-recommends \
         -o APT::Install-Suggests=false \
-        -o APT::Install-Recommends=false \
         -o Dpkg::Use-Pty="0" \
         build-essential \
         ca-certificates \

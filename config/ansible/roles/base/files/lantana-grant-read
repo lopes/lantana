@@ -1,10 +1,10 @@
 #!/bin/sh
 # Grant collector user (nectar) read/write/traverse POSIX ACLs on sensor scratch
-# directories without altering owner, group, or rootless subuid permissions
-# (e.g. Dionaea worker UID 100999). Enforces strict sensor-root allowlisting,
-# walks every path component with O_NOFOLLOW + dir_fd, caps depth, and passes
-# pinned /proc/self/fd/<fd> handles to setfacl so a compromised sensor user can
-# never redirect root ACL grants onto arbitrary host paths via symlinks or TOCTOU.
+# directories without altering stigma ownership or mode bits. Enforces strict
+# sensor-root allowlisting, walks every path component with O_NOFOLLOW + dir_fd,
+# caps depth, and passes pinned /proc/self/fd/<fd> handles to setfacl so a
+# compromised sensor user can never redirect root ACL grants onto arbitrary
+# host paths via symlinks or TOCTOU.
 # Deployed by ansible role base.
 set -eu
 

@@ -38,7 +38,7 @@ Both honeypots run from **self-owned pinned images** built in this repository (`
 | Honeypot | Default image (`defaults/main.yml`) | Pinned upstream ref | In-container UID/GID |
 |---|---|---|---|
 | Cowrie | `ghcr.io/lopes/lantana-cowrie:v1.5` (`cowrie_image`) | `cowrie/cowrie` `v3.1.7` (`8e36327f...`) | `999:999` (`UserNS=keep-id:uid=999,gid=999`) |
-| Dionaea | `ghcr.io/lopes/lantana-dionaea:v1.5` (`dionaea_image`) | `DinoTools/dionaea` (`4e459f1b...`) | `1000:1000` (subuid `100999`, no `,U`) |
+| Dionaea | `ghcr.io/lopes/lantana-dionaea:v1.5` (`dionaea_image`) | `DinoTools/dionaea` (`4e459f1b...`) | `1000:1000` (`UserNS=keep-id:uid=1000,gid=1000`) |
 
 **Why self-owned images?** Rolling third-party tags (`cowrie/cowrie:latest`, `dinotools/dionaea:nightly`) silently broke production twice in Operation Alpha when upstream shifted UIDs (`998 -> 999`) or changed entrypoint ownership behaviour. Owning the Containerfiles turns in-container UIDs into repo constants, moves upstream rebases into explicit PRs gated by `validate-sensor-runtime.yml`, and lets us ship three clean Dionaea extensions:
 
@@ -98,11 +98,8 @@ To stop accepting the packet at the firewall too, remove the matching line from 
 Four invariants remain load-bearing in `roles/dionaea/`:
 
 1. **Per-service and ihandler directory overlays.** The image bakes `/opt/dionaea/etc/dionaea/dionaea.cfg` (`processors=filter_emu`). Ansible mounts `services-enabled/` and `ihandlers-enabled/` `:ro` over the bundled directories so only our 6 catalog services and `lantana_json` + `store` ihandlers load.
-2. **Four specific capabilities stay added.** The Quadlet starts from `DropCapability=ALL` + `ReadOnly=true` + `VolatileTmp=true` and adds only:
-   - `NET_BIND_SERVICE` — bind privileged ports (`21, 80, 135, 445`) inside the container.
-   - `SETUID` + `SETGID` — drop from container-root to `dionaea` (`UID 1000`). Without these, dionaea exits silently with status `133`.
-   - `CHOWN` — non-destructive `entrypoint.sh` keeps `DATA_ROOT` owned by `0:0` (`0755`), rejects symlinks, and uses `chown -h dionaea:dionaea` on writable data/log subdirs without stripping host POSIX ACLs.
-3. **No `,U` and no `UserNS=keep-id`.** Dionaea runs as a two-user container (root entrypoint -> `dionaea` UID `1000` = host subuid `100999`). `,U` races the entrypoint and leaves `dionaea.json` unwritable; host access for Vector and `nectar` flows strictly through POSIX ACLs (`u:vector:rX` on logs, `u:nectar:rwX` via `lantana-grant-read` on `binaries/`, `bistreams/`, `tmp/`).
+2. **Strictly unprivileged with zero capabilities.** The image sets `USER 1000:1000` and the Quadlet enforces `DropCapability=ALL`, `NoNewPrivileges=true`, `ReadOnly=true`, and `VolatileTmp=true`. Setting `Sysctl=net.ipv4.ip_unprivileged_port_start=0` inside the container's isolated network namespace allows Dionaea to bind ports `21, 80, 135, 445` directly as `UID 1000` without `NET_BIND_SERVICE` or root-to-dionaea `SETUID`/`SETGID`/`CHOWN`.
+3. **`UserNS=keep-id:uid=1000,gid=1000` (never `,U`).** Container `UID 1000:1000` maps directly to host `stigma:stigma` (matching Cowrie's `keep-id` model). Non-destructive `entrypoint.sh` refuses symlinks and creates runtime subdirs without stripping host POSIX ACLs (`u:vector:rX` on logs, `u:nectar:rwX` via `lantana-grant-read` on `binaries/`, `bistreams/`, `tmp/`).
 4. **7-bit ASCII only in service and ihandler YAMLs.** `templates/services-enabled/*.yaml.j2` and `templates/ihandlers-enabled/*.yaml.j2` must stay pure 7-bit ASCII (enforced at deploy time by Ansible's `validate:` check). Use `--`, `->`, and straight quotes only.
 
 ### Default protocol surface

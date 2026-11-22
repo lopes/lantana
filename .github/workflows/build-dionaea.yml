@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --entrypoint /bin/sh lantana-dionaea:ci-test -c \
-            'id -u dionaea | grep -qx 1000 && id -g dionaea | grep -qx 1000 && grep -qx "processors=filter_emu" /opt/dionaea/etc/dionaea/dionaea.cfg'
+            'id -u | grep -qx 1000 && id -g | grep -qx 1000 && id -u dionaea | grep -qx 1000 && id -g dionaea | grep -qx 1000 && grep -qx "processors=filter_emu" /opt/dionaea/etc/dionaea/dionaea.cfg'
 
           TMPDIR=$(mktemp -d)
           mkdir -p "$TMPDIR/services" "$TMPDIR/ihandlers" "$TMPDIR/log" "$TMPDIR/lib/binaries" "$TMPDIR/lib/wwwroot" "$TMPDIR/lib/tmp"
@@ -78,7 +78,8 @@ jobs:
               root: /opt/dionaea/var/lib/dionaea/wwwroot
               ports:
                 - 80
-              headers:
+              max_request_size: 32768
+              global_headers:
                 - ["Server", "nginx/1.22.1"]
           EOF
           cat > "$TMPDIR/ihandlers/lantana_json.yaml" <<'EOF'
@@ -93,17 +94,23 @@ jobs:
               path: "/opt/dionaea/var/lib/dionaea/binaries"
           EOF
 
+          # Match baked USER 1000:1000 on bind-mounted writable directories
+          # (on Debian/Podman hosts this flows via UserNS=keep-id:uid=1000,gid=1000).
+          sudo chown -R 1000:1000 "$TMPDIR/log" "$TMPDIR/lib"
+          chmod 0755 "$TMPDIR/log" "$TMPDIR/lib"
+
           CID=$(docker run -d --rm \
             --read-only --tmpfs /tmp \
             --cap-drop=ALL \
-            --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID --cap-add=CHOWN \
+            --security-opt=no-new-privileges \
+            --sysctl net.ipv4.ip_unprivileged_port_start=0 \
             -v "$PWD/config/ansible/roles/dionaea/files/healthcheck.py:/healthcheck.py:ro" \
             -v "$TMPDIR/services:/opt/dionaea/etc/dionaea/services-enabled:ro" \
             -v "$TMPDIR/ihandlers:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro" \
             -v "$TMPDIR/log:/opt/dionaea/var/log/dionaea:rw" \
             -v "$TMPDIR/lib:/opt/dionaea/var/lib/dionaea:rw" \
             lantana-dionaea:ci-test)
-          trap 'docker stop "$CID" >/dev/null 2>&1 || true; rm -rf "$TMPDIR"' EXIT
+          trap 'docker stop "$CID" >/dev/null 2>&1 || true; sudo rm -rf "$TMPDIR"' EXIT
 
           for i in $(seq 1 20); do
             if docker exec "$CID" python3 /healthcheck.py; then
@@ -111,7 +118,9 @@ jobs:
               break
             fi
             if [ "$i" -eq 20 ]; then
-              docker logs "$CID"
+              docker logs "$CID" || true
+              ls -la "$TMPDIR/log" || true
+              cat "$TMPDIR/log/dionaea-errors.log" "$TMPDIR/log/dionaea.log" 2>/dev/null || true
               exit 1
             fi
             sleep 1

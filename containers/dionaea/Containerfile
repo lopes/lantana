@@ -113,6 +113,9 @@ LABEL org.opencontainers.image.title="Lantana Dionaea Malware Honeypot" \
       org.opencontainers.image.base.name="ubuntu:18.04" \
       org.opencontainers.image.created="${SOURCE_DATE_EPOCH}"
 
+USER 1000:1000
 WORKDIR /opt/dionaea
+
+RUN test "$(id -u)" = "1000" && test "$(id -g)" = "1000"
 
 ENTRYPOINT ["/usr/local/sbin/entrypoint.sh"]

@@ -13,11 +13,17 @@ StartLimitIntervalSec=0
 [Container]
 # Self-owned pinned Dionaea image (containers/dionaea/Containerfile):
 # bakes dionaea.cfg (processors=filter_emu, disabling bistreams), patches
-# http.py for structured HTTP telemetry, ships the lantana_json ihandler, and
-# uses a non-destructive entrypoint that preserves host POSIX ACLs.
+# http.py for structured HTTP telemetry, ships the lantana_json ihandler, runs
+# strictly non-root as USER 1000:1000, and uses a non-destructive entrypoint
+# that preserves host POSIX ACLs.
 Image={{ dionaea_image }}
 ContainerName=sensor-dionaea
 Network=pasta
+
+# Map the rootless host user (stigma) to the image's dionaea user (UID 1000) so
+# stigma-owned bind-mount paths appear inside the container as dionaea-owned.
+# UID 1000:1000 is pinned as a repo constant in containers/dionaea/Containerfile.
+UserNS=keep-id:uid=1000,gid=1000
 
 {% for svc, s in dionaea_service_catalog.items() -%}
 PublishPort={{ network.sensors.sensor_01.ipv4.split('/')[0] }}:{{ s.pub_port }}:{{ s.int_port }}
@@ -29,21 +35,12 @@ PublishPort=[{{ network.sensors.sensor_01.ipv6.split('/')[0] }}]:{{ s.pub_port }
 {% endfor %}
 
 # Hardening
-# Capability strategy: drop everything by default, then add back only what
-# our self-owned image's non-destructive entrypoint and worker require:
-#   NET_BIND_SERVICE — dionaea binds privileged ports (21, 80, 135, 445)
-#                     inside the container.
-#   SETUID + SETGID  — the entrypoint launches dionaea with `-u dionaea
-#                     -g dionaea`; without these the privilege-drop
-#                     fails and dionaea exits silently with status 133.
-#   CHOWN            — non-destructive entrypoint.sh ensures writable data/log
-#                     subdirectories are owned by dionaea:dionaea without
-#                     running `cp -a`, preserving host POSIX ACLs.
-# ReadOnly=true keeps the container rootfs immutable (/opt/dionaea/etc/dionaea/
-# dionaea.cfg is baked into the image; writable state lives strictly on the
-# log/lib bind-mounts and VolatileTmp /tmp).
+# Runs strictly as unprivileged UID 1000:1000 with zero Linux capabilities.
+# Allowing unprivileged binds inside the container's isolated network namespace
+# lets dionaea listen on ports 21, 80, 135, 445 without NET_BIND_SERVICE or
+# root-to-dionaea privilege-drop syscalls (SETUID/SETGID/CHOWN).
 DropCapability=ALL
-AddCapability=NET_BIND_SERVICE SETUID SETGID CHOWN
+Sysctl=net.ipv4.ip_unprivileged_port_start=0
 NoNewPrivileges=true
 ReadOnly=true
 VolatileTmp=true
@@ -66,9 +63,8 @@ PodmanArgs=--cpus=1.0 --memory=512m
 #   baked /opt/dionaea/etc/dionaea/ directories. The baked dionaea.cfg globs
 #   *.yaml from these paths, loading only our rendered services + lantana_json
 #   and store ihandlers.
-#   log + lib bind-mounts have NO ,U flag: our non-destructive entrypoint.sh
-#   ensures dionaea:dionaea (UID 1000) ownership on writable subdirs without
-#   `cp -a`, preserving host POSIX ACLs for vector and nectar across restarts.
+#   Ownership flows via UserNS=keep-id:uid=1000,gid=1000 above (no ,U needed),
+#   and entrypoint.sh preserves host POSIX ACLs for vector and nectar.
 Volume=/etc/lantana/sensor/dionaea/healthcheck.py:/healthcheck.py:ro
 Volume=/etc/lantana/sensor/dionaea/services-enabled:/opt/dionaea/etc/dionaea/services-enabled:ro
 Volume=/etc/lantana/sensor/dionaea/ihandlers-enabled:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro

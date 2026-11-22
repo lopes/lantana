@@ -65,25 +65,15 @@ When debugging volume mounts in the `.container` files, verify the correct flags
 
 Lantana v1.5 runs our self-owned pinned image `ghcr.io/lopes/lantana-dionaea:v1.5` (with baked `dionaea.cfg`, `lantana_json`, `patch_http.py`, non-destructive `entrypoint.sh`, and app-layer `healthcheck.py` + `HealthOnFailure=kill`). The checks below help diagnose capability, ASCII YAML, or ownership issues if a host drifts. See [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints) for the load-bearing invariants.
 
-### Symptom: Exit status 133 immediately, no log content
+### Symptom: Dionaea fails to bind privileged ports (`21`, `80`, `135`, `445`) or exits on startup
 
-dionaea launched and died within ~100ms. The container shows
-`status=exited (133)` in `systemctl --user status dionaea.service`,
-the container itself is already gone (auto-rm) so `podman logs` says
-"no such container", and neither `dionaea.log` nor `dionaea-errors.log`
-exist on disk.
-
-Most likely cause: a missing capability. The bundled entrypoint runs
-`dionaea -u dionaea -g dionaea` which calls `setuid()`/`setgid()` to
-drop privileges; without `CAP_SETUID` / `CAP_SETGID` the call fails
-and dionaea exits silently with 133. Confirm by checking the Quadlet:
+Lantana v1.5 runs `ghcr.io/lopes/lantana-dionaea:v1.5` strictly non-root as `USER 1000:1000` with `DropCapability=ALL`, `UserNS=keep-id:uid=1000,gid=1000`, and `Sysctl=net.ipv4.ip_unprivileged_port_start=0`. Confirm the Quadlet carries both keys:
 
 ```bash
-grep -A2 AddCapability /etc/containers/systemd/users/2001/dionaea.container
+grep -E '^(UserNS|DropCapability|Sysctl)=' /etc/containers/systemd/users/2001/dionaea.container
 ```
 
-Should show `NET_BIND_SERVICE SETUID SETGID CHOWN`. If
-anything is missing — re-deploy the dionaea role.
+Should show `UserNS=keep-id:uid=1000,gid=1000`, `DropCapability=ALL`, and `Sysctl=net.ipv4.ip_unprivileged_port_start=0`. If an older host still runs a legacy root-entrypoint image (`exit 133`), pull or rebuild the v1.5 image and re-deploy the `dionaea` role.
 
 ### Symptom: dionaea runs but binds zero ports
 
@@ -137,9 +127,9 @@ options.
 
 `dionaea.json` stops being written after a container restart, though the container is `active (running)` (note: v1.5's app-layer `healthcheck.py` + `HealthOnFailure=kill` and the daily brief's stateless D-1/D-2 dead-man's-switch now surface this automatically).
 
-Trigger: a container start where an existing `dionaea.json` on the host is owned by host `stigma` (container UID 0) instead of the dionaea worker (UID 1000 inside = host subuid 100999). The worker cannot reopen the file for append/write, disabling the JSON ihandler for the process lifetime.
+Trigger: a container start where an existing `dionaea.json` on the host is owned by a UID other than `stigma` (for example after a manual root edit, an upgrade from a legacy subuid `100999` container, or a stale `,U` flag). Because v1.5 maps `USER 1000:1000` to host `stigma` via `UserNS=keep-id:uid=1000,gid=1000`, any non-`stigma` log file cannot be reopened for append/write, disabling the JSON ihandler for the process lifetime.
 
-The historical `,U` flag on bind mounts was the recurring trigger. Lantana no longer uses `,U`, and our self-owned `entrypoint.sh` preserves host POSIX ACLs (`u:vector:rX` / `u:nectar:rwX`). If an older host hits this state:
+The historical `,U` flag on bind mounts was the recurring trigger. Lantana no longer uses `,U`, and our self-owned unprivileged `entrypoint.sh` preserves host POSIX ACLs (`u:vector:rX` / `u:nectar:rwX`). If an older host hits this state:
 
 ```bash
 # 1. Log file timestamps stuck at the last container start.
@@ -160,7 +150,7 @@ Recovery:
 # 1. Remove the wrongly-owned live log file.
 sudo rm /var/log/lantana/sensor/dionaea/dionaea.json
 
-# 2. Restart the container so lantana_json recreates it as UID 1000 (host 100999).
+# 2. Restart the container so lantana_json recreates it as stigma (container UID 1000).
 sudo -u stigma XDG_RUNTIME_DIR=/run/user/2001 systemctl --user restart dionaea.service
 
 # 3. Re-apply Vector's read-only POSIX ACL and verify the FD.

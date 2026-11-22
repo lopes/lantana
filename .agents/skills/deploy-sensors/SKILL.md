@@ -35,11 +35,11 @@ Both sensors run from self-owned, CI-verified GHCR images built from pinned upst
    - Built from pinned `DinoTools/dionaea` SHA (`containers/dionaea/Containerfile`) with repo-constant `UID 1000 / GID 1000`.
    - Bakes `/opt/dionaea/etc/dionaea/dionaea.cfg` (`processors=filter_emu`, permanently disabling `bistreams`), patches `http.py` (`patch_http.py`) for structured HTTP/POST payload capture without `http-*.tmp` leaks, ships `lantana_json.py` (HTTP + MSSQL/MySQL + per-session SHA-256 `dionaea.binary.captured`), and uses a non-destructive `entrypoint.sh` (no `cp -a`, preserving host POSIX ACLs).
    - Driven by `roles/dionaea/defaults/main.yml::dionaea_service_catalog`; all Dionaea `.cfg`/`.yaml`/`.py` files must be **7-bit ASCII** (embedded Python 3.6 + PyYAML).
-   - Keep `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN` with `ReadOnly=true` and `VolatileTmp=true`; never use `,U` or `UserNS=keep-id`.
+   - Runs strictly non-root (`USER 1000:1000`) with `UserNS=keep-id:uid=1000,gid=1000`, `DropCapability=ALL`, `Sysctl=net.ipv4.ip_unprivileged_port_start=0`, `ReadOnly=true`, and `VolatileTmp=true`; never use `,U`.
    - Health check uses app-layer `HealthCmd=CMD python3 /healthcheck.py` (HTTP `GET /` -> `HTTP/1.`, fallback FTP `220`) + `HealthOnFailure=kill`, `StartLimitIntervalSec=0`, `RestartSec=10s`.
-   - Logrotate restarts `dionaea.service` in `postrotate` (matching Cowrie) to avoid `copytruncate` sparse-null holes.
+   - Logrotate runs under `su stigma stigma` and restarts `dionaea.service` in `postrotate` (matching Cowrie) to avoid `copytruncate` sparse-null holes.
 3. **One-way POSIX ACL boundary:**
-   - `u:vector:rX` (default + recursive) on log dirs (`0750` on `/var/log/lantana/sensor/cowrie` and `/var/log/lantana/honeywall/suricata`; `0770` with `g::rwx` on `/var/log/lantana/sensor/dionaea` so Dionaea's early `UID 0` C logfiles open cleanly as `0:dionaea` without `CAP_DAC_OVERRIDE` or `CAP_FOWNER`, while `stat` guards prevent redeploy ownership drift).
+   - `u:vector:rX` (default + recursive) on `0750` log dirs (`/var/log/lantana/sensor/{cowrie,dionaea}` and `/var/log/lantana/honeywall/suricata`).
    - `u:nectar:rwX` (default + recursive, refreshed `00:10 UTC` via `/usr/local/sbin/lantana-grant-read`) on sensor scratch dirs (`cowrie/{downloads,tty}`, `dionaea/{binaries,bistreams,tmp}`) so `nectar` (`lantana-prune`) deletes 14d artifacts safely with `O_NOFOLLOW` + `dir_fd` while `stigma` stays locked out (`EACCES`) of datalake/collector.
 4. **Honeywall hardening:**
    - `acl` and `ethtool` installed via `roles/base/tasks/main.yml`.

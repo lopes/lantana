@@ -7,9 +7,9 @@
 # Asserts:
 #
 #   * Deployed Quadlets carry the ownership invariants that guard against
-#     the 2026-06-08 → 2026-06-11 cowrie + dionaea incidents:
+#     the 2026-06-08 -> 2026-06-11 cowrie + dionaea incidents:
 #       - cowrie has UserNS=keep-id:uid=<N>,gid=<N> and no ,U volume flag
-#       - dionaea has no ,U volume flag
+#       - dionaea has UserNS=keep-id:uid=<N>,gid=<N> and no ,U volume flag
 #   * Each sensor container reports Status=running, Health=healthy,
 #     RestartCount=0.
 #   * Neither sensor's startup journal carries a log-plugin failure
@@ -19,8 +19,8 @@
 #     JSON log (cowrie.json | dionaea.json).
 #   * Today's bronze NDJSON for every active honeypot was written within
 #     the freshness window (default 120 s).
-#   * Sensor state trees have no orphan-owned files (cowrie tree =
-#     stigma-only; dionaea tree = stigma OR worker subuid 100999).
+#   * Sensor state trees have no orphan-owned files (both cowrie and
+#     dionaea trees = stigma-only under UserNS=keep-id).
 #
 # All checks are read-only. Live external attacker-probe sentinels (SSH,
 # FTP, SMB) are NOT included — they require a runner outside the
@@ -55,9 +55,8 @@
         state_paths:
           - /var/lib/lantana/sensor/dionaea
           - /var/log/lantana/sensor/dionaea
-        # Dionaea's supervisor writes as container UID 0 → host stigma;
-        # dionaea worker writes as container UID 1000 → host subuid 100999.
-        orphan_find_args: "! -user stigma ! -uid 100999"
+        # Under UserNS=keep-id:uid=1000,gid=1000, dionaea's non-root worker writes appear as stigma on host.
+        orphan_find_args: "! -user stigma"
         json_log: /var/log/lantana/sensor/dionaea/dionaea.json
         worker_grep: "/opt/dionaea/bin/dionaea"
 
@@ -97,7 +96,7 @@
           incident pattern. Drop the suffix.
       when: "'cowrie' in active_honeypots"
 
-    # === 2. Quadlet drift: dionaea has no ,U ===
+    # === 2. Quadlet drift: dionaea carries UserNS=keep-id, no ,U ===
     - name: "Read deployed dionaea Quadlet"
       become: true
       ansible.builtin.slurp:
@@ -105,14 +104,21 @@
       register: dionaea_quadlet
       when: "'dionaea' in active_honeypots"
 
+    - name: "Assert dionaea Quadlet declares UserNS=keep-id"
+      ansible.builtin.assert:
+        that: "(dionaea_quadlet.content | b64decode) is regex('(?m)^UserNS=keep-id:uid=[0-9]+,gid=[0-9]+$')"
+        fail_msg: >-
+          dionaea.container is missing UserNS=keep-id:uid=<N>,gid=<N>.
+          Without it the non-root UID 1000 dionaea worker cannot write
+          stigma-owned log/state bind mounts cleanly.
+      when: "'dionaea' in active_honeypots"
+
     - name: "Assert dionaea Quadlet has no ,U flag on rw volumes"
       ansible.builtin.assert:
         that: "(dionaea_quadlet.content | b64decode) is not regex('(?m)^Volume=.*:rw,U$')"
         fail_msg: >-
-          dionaea.container carries a ,U volume flag. ,U races the
-          entrypoint's own chown of /opt/dionaea/var/log/dionaea and
-          breaks the worker's reopen of dionaea.json on every restart.
-          See troubleshooting.md "Dionaea Sensor — lantana_json (or legacy log_json) silent fail."
+          dionaea.container carries a ,U volume flag. With UserNS=keep-id
+          this is redundant and breaks host POSIX ACLs; drop the suffix.
       when: "'dionaea' in active_honeypots"
 
     # === 3. Container state: running + healthy + RestartCount=0 ===
@@ -274,13 +280,12 @@
       changed_when: false
       when: "'dionaea' in active_honeypots"
 
-    - name: "Assert dionaea state tree has only stigma or worker (100999) ownership"
+    - name: "Assert dionaea state tree has zero orphan-owned files"
       ansible.builtin.assert:
         that: "dionaea_orphans.stdout | int == 0"
         fail_msg: >-
-          {{ dionaea_orphans.stdout }} files under dionaea state trees
-          owned neither by stigma nor by the worker subuid 100999.
-          This is the failure mode from 2026-06-08 — an upstream image
-          rebase may have shifted the dionaea user UID. See
+          {{ dionaea_orphans.stdout }} files under dionaea state trees not
+          owned by stigma. Under UserNS=keep-id:uid=1000,gid=1000 everything
+          dionaea writes must appear as stigma on host. See
           docs/troubleshooting.md "Dionaea Sensor — lantana_json (or legacy log_json) silent fail".
       when: "'dionaea' in active_honeypots"
