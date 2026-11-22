@@ -339,13 +339,9 @@ class TestAirGappedVigilServer:
         "route",
         [
             "/overview",
-            "/iocs",
-            "/ips",
-            "/geography",
-            "/credentials",
-            "/progression",
-            "/findings",
-            "/stix",
+            "/attackers",
+            "/behavior",
+            "/intel",
             "/health",
         ],
     )
@@ -378,6 +374,42 @@ class TestAirGappedVigilServer:
         )
         assert status == 200
         assert "2026-07-10" in raw.decode("utf-8")
+
+    @pytest.mark.parametrize(
+        ("legacy_route", "expected_target"),
+        [
+            ("/ips", "/attackers?window=7d"),
+            ("/geography", "/attackers?window=7d#geo-origins"),
+            ("/progression", "/behavior?window=7d#prog-funnel"),
+            ("/credentials", "/behavior?window=7d#cred-lists"),
+            ("/findings", "/behavior?window=7d#find-summary"),
+            ("/iocs", "/intel?window=7d#ioc-summary"),
+            ("/stix", "/intel?window=7d#stix-export"),
+        ],
+    )
+    def test_legacy_routes_302_redirect_preserving_query_and_anchor(
+        self,
+        live_dashboard: str,
+        legacy_route: str,
+        expected_target: str,
+    ) -> None:
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(
+                self,
+                req: urllib.request.Request,
+                fp: object,
+                code: int,
+                msg: str,
+                headers: object,
+                newurl: str,
+            ) -> None:
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect)
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            opener.open(f"{live_dashboard}{legacy_route}?window=7d", timeout=5)
+        assert exc_info.value.code == 302
+        assert exc_info.value.headers.get("Location") == expected_target
 
     def test_static_assets_and_vigil_tokens_are_self_contained(self, live_dashboard: str) -> None:
         status_css, headers_css, css_bytes = _fetch(f"{live_dashboard}/static/vigil.css")
@@ -448,8 +480,8 @@ def test_safe_json_for_script_blocks_html5_double_escape() -> None:
 
 
 def test_geography_world_map_is_fully_airgapped_without_scattergeo(live_dashboard: str) -> None:
-    """World map uses local Cartesian landmass polygons (zero scattergeo / cdn.plot.ly XHRs)."""
-    status, _, raw = _fetch(f"{live_dashboard}/geography?window=all")
+    """World map on /attackers uses local Cartesian landmass polygons (zero scattergeo XHRs)."""
+    status, _, raw = _fetch(f"{live_dashboard}/attackers?window=all")
     assert status == 200
     body = raw.decode("utf-8")
     assert '"scattergeo"' not in body.lower()
@@ -458,7 +490,7 @@ def test_geography_world_map_is_fully_airgapped_without_scattergeo(live_dashboar
 
 
 def test_stix_export_fails_closed_when_reporting_config_missing(tmp_path: Path) -> None:
-    """OPSEC: missing/corrupt reporting.json disables /stix and returns HTTP 503."""
+    """OPSEC: missing/corrupt reporting.json disables STIX export on /intel and returns HTTP 503."""
     gold_root, silver_root, reporting_path = _seed_datalake(tmp_path)
     reporting_path.unlink()  # Remove reporting.json so OPSEC redaction rules cannot load
 
@@ -474,7 +506,7 @@ def test_stix_export_fails_closed_when_reporting_config_missing(tmp_path: Path) 
     thread.start()
     try:
         base = f"http://127.0.0.1:{port}"
-        st_status, _, st_raw = _fetch(f"{base}/stix?window=all")
+        st_status, _, st_raw = _fetch(f"{base}/intel?window=all")
         assert st_status == 200
         st_html = st_raw.decode("utf-8")
         assert "OPSEC Guard" in st_html
@@ -550,7 +582,7 @@ def test_geography_shows_helpful_callout_when_maxmind_geo_is_null(tmp_path: Path
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        status, _, raw = _fetch(f"http://127.0.0.1:{port}/geography?window=latest")
+        status, _, raw = _fetch(f"http://127.0.0.1:{port}/attackers?window=latest")
         assert status == 200
         body = raw.decode("utf-8")
         assert "vault_apikey_maxmind" in body

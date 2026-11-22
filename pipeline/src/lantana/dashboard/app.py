@@ -252,67 +252,42 @@ def _render_overview_view(window: DateWindow, gold_root: Path, op_name: str) -> 
         + "</div>"
     )
 
-    toc.append(("top-activity", "Top Credentials & Commands"))
+    toc.append(("highlights", "Activity Highlights"))
     sections.append(
-        render_section_heading(
-            "top-activity", "Top Credentials & Commands", help_key="Top Credentials"
-        )
-    )
-    user_tbl = render_simple_table(
-        ["Rank", "Username", "Count"],
-        [[r["rank"], r["value"], f"{int(str(r['count'])):,}"] for r in bundle.top_usernames],
-        numeric_cols={0, 2},
-        mono_cols={1},
-    )
-    pass_tbl = render_simple_table(
-        ["Rank", "Password", "Count"],
-        [[r["rank"], r["value"], f"{int(str(r['count'])):,}"] for r in bundle.top_passwords],
-        numeric_cols={0, 2},
-        mono_cols={1},
+        render_section_heading("highlights", "Activity Highlights", help_key="Top Commands")
     )
     cmd_tbl = render_simple_table(
         ["Rank", "Command", "Count"],
-        [[r["rank"], r["value"], f"{int(str(r['count'])):,}"] for r in bundle.top_commands],
+        [[r["rank"], r["value"], f"{int(str(r['count'])):,}"] for r in bundle.top_commands[:10]],
         numeric_cols={0, 2},
         mono_cols={1},
     )
-    sections.append(
-        '<div class="chart-grid">'
-        f"<div><h3>Top Usernames</h3>{user_tbl}</div>"
-        f"<div><h3>Top Passwords</h3>{pass_tbl}</div>"
-        "</div>"
-        f"<h3>Top Commands</h3>{cmd_tbl}"
-    )
-
-    toc.append(("origin", "Top Countries & ASNs"))
-    sections.append(
-        render_section_heading("origin", "Top Countries & ASNs", help_key="Geographic Origin")
-    )
-    country_tbl = render_simple_table(
-        ["Rank", "Country", "Count"],
-        [[r["rank"], r["value"], f"{int(str(r['count'])):,}"] for r in bundle.top_countries],
-        numeric_cols={0, 2},
-    )
-    asn_tbl = render_simple_table(
-        ["Rank", "ASN", "ISP", "Unique IPs", "Events"],
+    top_findings = aggregate_detection_findings(window.dates, gold_root=gold_root).head(10)
+    finding_rows = [
         [
-            [
-                r["rank"],
-                r["asn"],
-                r["isp"],
-                f"{int(str(r['unique_ips'])):,}",
-                f"{int(str(r['events'])):,}",
-            ]
-            for r in bundle.top_asns
-        ],
-        numeric_cols={0, 3, 4},
+            idx,
+            str(r.get("finding_uid") or "—"),
+            str(r.get("finding_title") or ""),
+            f"{int(r.get('event_count') or 0):,}",
+        ]
+        for idx, r in enumerate(top_findings.iter_rows(named=True), start=1)
+    ]
+    findings_tbl = render_simple_table(
+        ["Rank", "SID", "Top Suricata Signatures", "Events"],
+        finding_rows,
+        numeric_cols={0, 3},
         mono_cols={1},
     )
+    qs = window_query_string(window)
     sections.append(
         '<div class="chart-grid">'
-        f"<div><h3>Top Countries</h3>{country_tbl}</div>"
-        f"<div><h3>Top ASNs</h3>{asn_tbl}</div>"
+        f"<div><h3>Top Post-Auth Commands</h3>{cmd_tbl}</div>"
+        f"<div><h3>Top IDS Signatures</h3>{findings_tbl}</div>"
         "</div>"
+        '<p class="table-meta">Drill into '
+        f'<a href="/attackers?{qs}">Attackers (Risk &amp; Geo)</a> · '
+        f'<a href="/behavior?{qs}">Behavior (Progression, Creds &amp; Findings)</a> · '
+        f'<a href="/intel?{qs}">Intel &amp; STIX Export</a>.</p>'
     )
 
     return render_page(
@@ -328,124 +303,15 @@ def _render_overview_view(window: DateWindow, gold_root: Path, op_name: str) -> 
     )
 
 
-def _render_iocs_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
-    df = aggregate_extracted_iocs(window.dates, gold_root=gold_root)
-    if df.is_empty():
-        return render_page(
-            title="Malware & Durable IOCs",
-            subtitle=(
-                "High-signal malware hashes, outbound C2 IPs, stager URLs, "
-                "domains, and attacker SSH keys."
-            ),
-            active_route="/iocs",
-            window=window,
-            toc_items=(),
-            body_html=(
-                '<div class="callout">'
-                "No durable IOCs recorded in extracted_iocs for this window.</div>"
-            ),
-            operation_name=op_name,
-        )
-
-    counts = {
-        "malware_hash": df.filter(pl.col("ioc_type") == "malware_hash").height,
-        "c2_ip": df.filter(pl.col("ioc_type") == "c2_ip").height,
-        "stager_url": df.filter(pl.col("ioc_type") == "stager_url").height,
-        "stager_domain": df.filter(pl.col("ioc_type") == "stager_domain").height,
-        "ssh_key": df.filter(pl.col("ioc_type") == "ssh_key").height,
-    }
-    kpis = [
-        KpiCard("Total Durable IOCs", f"{df.height:,}", tone="info", metric_key="Durable IOCs"),
-        KpiCard(
-            "Malware Hashes",
-            f"{counts['malware_hash']:,}",
-            tone="high" if counts["malware_hash"] > 0 else "",
-            metric_key="Malware Uploaded",
-        ),
-        KpiCard(
-            "Outbound C2 IPs", f"{counts['c2_ip']:,}", tone="high" if counts["c2_ip"] > 0 else ""
-        ),
-        KpiCard(
-            "Stager URLs",
-            f"{counts['stager_url']:,}",
-            tone="med" if counts["stager_url"] > 0 else "",
-        ),
-        KpiCard("Stager Domains", f"{counts['stager_domain']:,}", tone="info"),
-        KpiCard("SSH Public Keys", f"{counts['ssh_key']:,}", tone="low"),
-    ]
-
-    rows: list[dict[str, object]] = []
-    for row in df.iter_rows(named=True):
-        rows.append(
-            {
-                "ioc_type": str(row.get("ioc_type") or ""),
-                "ioc_value": str(row.get("ioc_value") or ""),
-                "vhash": str(row.get("vhash") or "—"),
-                "malware_family": str(row.get("malware_family") or "—"),
-                "vt_malicious": row.get("vt_malicious"),
-                "gti_verdict": str(row.get("gti_verdict") or "—"),
-                "actor_associations": str(row.get("actor_associations") or "—"),
-                "event_count": int(row.get("event_count") or 0),
-                "unique_src_ips": int(row.get("unique_src_ips") or 0),
-                "first_seen": _fmt_ts(row.get("first_seen")),
-                "last_seen": _fmt_ts(row.get("last_seen")),
-            }
-        )
-
-    columns = [
-        TableColumn("ioc_type", "Type", badge=True),
-        TableColumn("ioc_value", "Observable (SHA-256 / URL / Host / IP / SSH Key)", mono=True),
-        TableColumn("vhash", "vhash", mono=True),
-        TableColumn("malware_family", "Family"),
-        TableColumn("vt_malicious", "VT Det.", numeric=True),
-        TableColumn("gti_verdict", "GTI Verdict", badge=True),
-        TableColumn("actor_associations", "Actors"),
-        TableColumn("event_count", "Events", numeric=True),
-        TableColumn("unique_src_ips", "Src IPs", numeric=True),
-        TableColumn("first_seen", "First Seen (UTC)", mono=True),
-    ]
-
-    toc = [
-        ("ioc-summary", "Durable IOC Summary"),
-        ("ioc-inventory", "Observable Inventory"),
-    ]
-    body = (
-        render_section_heading("ioc-summary", "Durable IOC Summary", help_key="Malware Captured")
-        + render_kpis(kpis)
-        + render_chart_card("iocs-breakdown", "Durable IOC Breakdown", ioc_breakdown_chart(counts))
-        + render_section_heading("ioc-inventory", "Observable Inventory")
-        + render_interactive_table(
-            "iocs-table",
-            columns,
-            rows,
-            page_size=25,
-            search_placeholder="Search hash, domain, URL, IP, family, vhash...",
-            ioc_type_filter=True,
-        )
-    )
-    return render_page(
-        title="Malware & Durable IOCs",
-        subtitle=(
-            "Uploaded binaries (SHA-256 + vhash clusters), outbound C2 infrastructure, "
-            "stager hostnames, and persistence keys."
-        ),
-        active_route="/iocs",
-        window=window,
-        toc_items=toc,
-        body_html=body,
-        operation_name=op_name,
-    )
-
-
-def _render_ips_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
+def _render_attackers_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
     df = aggregate_ip_reputation(window.dates, gold_root=gold_root)
     if df.is_empty():
         return render_page(
-            title="IP Reputation",
+            title="Attackers",
             subtitle=(
-                "Monotonic behavioral-anchored risk scores and provider sub-score decomposition."
+                "Monotonic behavioral-anchored risk scores, geographic origins, and hosting ASNs."
             ),
-            active_route="/ips",
+            active_route="/attackers",
             window=window,
             toc_items=(),
             body_html='<div class="callout">No IP reputation data available for this window.</div>',
@@ -512,6 +378,124 @@ def _render_ips_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
         + "</div>"
     )
 
+    countries_df = (
+        df.filter(pl.col("geo_country").is_not_null())
+        .group_by("geo_country")
+        .agg(
+            pl.col("src_endpoint_ip").n_unique().alias("Unique IPs"),
+            pl.col("total_events").sum().alias("Total Events"),
+        )
+        .sort(["Unique IPs", "Total Events"], descending=[True, True])
+        .head(15)
+        .rename({"geo_country": "Country"})
+        if "geo_country" in df.columns
+        else pl.DataFrame()
+    )
+    cities_df = (
+        df.filter(pl.col("geo_city").is_not_null() & pl.col("geo_country").is_not_null())
+        .group_by(["geo_city", "geo_country"])
+        .agg(pl.col("src_endpoint_ip").n_unique().alias("Unique IPs"))
+        .sort("Unique IPs", descending=True)
+        .head(15)
+        if {"geo_city", "geo_country"} <= set(df.columns)
+        else pl.DataFrame()
+    )
+    asns_df = (
+        df.filter(pl.col("geo_asn").is_not_null())
+        .with_columns(
+            pl.col("geo_isp").fill_null("Unknown")
+            if "geo_isp" in df.columns
+            else pl.lit("Unknown").alias("geo_isp")
+        )
+        .group_by(["geo_asn", "geo_isp"])
+        .agg(
+            pl.col("src_endpoint_ip").n_unique().alias("Unique IPs"),
+            pl.col("total_events").sum().alias("Events"),
+        )
+        .sort(["Unique IPs", "Events"], descending=[True, True])
+        .head(15)
+        if "geo_asn" in df.columns
+        else pl.DataFrame()
+    )
+
+    has_coords = {"geo_latitude", "geo_longitude"} <= set(df.columns) and not df.filter(
+        pl.col("geo_latitude").is_not_null() & pl.col("geo_longitude").is_not_null()
+    ).is_empty()
+    has_geo_any = has_coords or not countries_df.is_empty() or not asns_df.is_empty()
+    qs = window_query_string(window)
+    if not has_geo_any:
+        geo_section = (
+            '<div class="callout callout-warning">'
+            '<div class="callout-title">MaxMind GeoLite2 Not Populated</div>'
+            "No GeoLite2 coordinates, countries, or ASNs were recorded for this window. "
+            "Configure <code>vault_apikey_maxmind</code> (GeoLite2-City &amp; GeoLite2-ASN MMDBs) "
+            f'to enable geographic origin views — see <a href="/health?{qs}">System Health</a> '
+            "for integration status."
+            "</div>"
+        )
+    else:
+        country_rows = [
+            [idx, r["Country"], f"{int(r['Unique IPs']):,}", f"{int(r['Total Events']):,}"]
+            for idx, r in enumerate(countries_df.iter_rows(named=True), start=1)
+        ]
+        city_rows = [
+            [idx, r["geo_city"], r["geo_country"], f"{int(r['Unique IPs']):,}"]
+            for idx, r in enumerate(cities_df.iter_rows(named=True), start=1)
+        ]
+        asn_rows = [
+            [
+                idx,
+                f"AS{r['geo_asn']}",
+                r["geo_isp"],
+                f"{int(r['Unique IPs']):,}",
+                f"{int(r['Events']):,}",
+            ]
+            for idx, r in enumerate(asns_df.iter_rows(named=True), start=1)
+        ]
+        map_block = (
+            render_chart_card(
+                "world-map",
+                "Attacker Origins (Size = log10 Events, Color = Risk)",
+                world_map_chart(df),
+            )
+            if has_coords
+            else ""
+        )
+        countries_chart_block = (
+            render_chart_card(
+                "top-countries-bar",
+                "Unique Attacker IPs by Country",
+                top_countries_bar_chart(countries_df),
+            )
+            if not countries_df.is_empty()
+            else ""
+        )
+        countries_tbl = render_simple_table(
+            ["Rank", "Country", "Unique IPs", "Total Events"],
+            country_rows,
+            numeric_cols={0, 2, 3},
+        )
+        cities_tbl = render_simple_table(
+            ["Rank", "City", "Country", "Unique IPs"],
+            city_rows,
+            numeric_cols={0, 3},
+        )
+        asns_tbl = render_simple_table(
+            ["Rank", "ASN", "ISP", "Unique IPs", "Events"],
+            asn_rows,
+            numeric_cols={0, 3, 4},
+            mono_cols={1},
+        )
+        geo_section = (
+            map_block
+            + countries_chart_block
+            + '<div class="chart-grid">'
+            + f"<div><h3>Top Countries</h3>{countries_tbl}</div>"
+            + f"<div><h3>Top Cities</h3>{cities_tbl}</div>"
+            + "</div>"
+            + f"<h3>Top Hosting ASNs / ISPs</h3>{asns_tbl}"
+        )
+
     rows: list[dict[str, object]] = []
     for row in df.iter_rows(named=True):
         score = float(row.get("risk_score") or 0.0)
@@ -574,6 +558,7 @@ def _render_ips_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
     toc = [
         ("ip-buckets", "Risk Buckets"),
         ("ip-dist", "Score Decomposition"),
+        ("geo-origins", "Geographic Origins & ASNs"),
         ("ip-table-sec", "Scored IP Details"),
     ]
     body = (
@@ -584,6 +569,10 @@ def _render_ips_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
             "ip-dist", "Risk Score Distribution", help_key="Risk Score Distribution"
         )
         + hist_grid
+        + render_section_heading(
+            "geo-origins", "Geographic Origins & Hosting ASNs", help_key="World Map"
+        )
+        + geo_section
         + render_section_heading("ip-table-sec", "Scored IP Details")
         + render_interactive_table(
             "ips-table",
@@ -595,12 +584,12 @@ def _render_ips_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
         )
     )
     return render_page(
-        title="IP Reputation",
+        title="Attackers",
         subtitle=(
             "Composite risk scores, behavioral vs enrichment decomposition, "
-            "and searchable attacker index."
+            "geographic origins, and hosting ASNs."
         ),
-        active_route="/ips",
+        active_route="/attackers",
         window=window,
         toc_items=toc,
         body_html=body,
@@ -608,207 +597,192 @@ def _render_ips_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
     )
 
 
-def _render_geography_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
-    df = aggregate_ip_reputation(window.dates, gold_root=gold_root)
-    if df.is_empty():
-        return render_page(
-            title="Geography",
-            subtitle="Attacker origin map, countries, cities, and hosting ASNs.",
-            active_route="/geography",
-            window=window,
-            toc_items=(),
-            body_html='<div class="callout">No geographic data available for this window.</div>',
-            operation_name=op_name,
-        )
-
-    countries_df = (
-        df.filter(pl.col("geo_country").is_not_null())
-        .group_by("geo_country")
-        .agg(
-            pl.col("src_endpoint_ip").n_unique().alias("Unique IPs"),
-            pl.col("total_events").sum().alias("Total Events"),
-        )
-        .sort(["Unique IPs", "Total Events"], descending=[True, True])
-        .head(15)
-        .rename({"geo_country": "Country"})
-        if "geo_country" in df.columns
-        else pl.DataFrame()
-    )
-    cities_df = (
-        df.filter(pl.col("geo_city").is_not_null() & pl.col("geo_country").is_not_null())
-        .group_by(["geo_city", "geo_country"])
-        .agg(pl.col("src_endpoint_ip").n_unique().alias("Unique IPs"))
-        .sort("Unique IPs", descending=True)
-        .head(15)
-        if {"geo_city", "geo_country"} <= set(df.columns)
-        else pl.DataFrame()
-    )
-    asns_df = (
-        df.filter(pl.col("geo_asn").is_not_null())
-        .with_columns(
-            pl.col("geo_isp").fill_null("Unknown")
-            if "geo_isp" in df.columns
-            else pl.lit("Unknown").alias("geo_isp")
-        )
-        .group_by(["geo_asn", "geo_isp"])
-        .agg(
-            pl.col("src_endpoint_ip").n_unique().alias("Unique IPs"),
-            pl.col("total_events").sum().alias("Events"),
-        )
-        .sort(["Unique IPs", "Events"], descending=[True, True])
-        .head(15)
-        if "geo_asn" in df.columns
-        else pl.DataFrame()
-    )
-
-    country_rows = [
-        [idx, r["Country"], f"{int(r['Unique IPs']):,}", f"{int(r['Total Events']):,}"]
-        for idx, r in enumerate(countries_df.iter_rows(named=True), start=1)
-    ]
-    city_rows = [
-        [idx, r["geo_city"], r["geo_country"], f"{int(r['Unique IPs']):,}"]
-        for idx, r in enumerate(cities_df.iter_rows(named=True), start=1)
-    ]
-    asn_rows = [
-        [
-            idx,
-            f"AS{r['geo_asn']}",
-            r["geo_isp"],
-            f"{int(r['Unique IPs']):,}",
-            f"{int(r['Events']):,}",
-        ]
-        for idx, r in enumerate(asns_df.iter_rows(named=True), start=1)
-    ]
-
-    toc = [
-        ("geo-map", "World Map"),
-        ("geo-countries", "Top Countries & Cities"),
-        ("geo-asns", "Top ASNs / ISPs"),
-    ]
-    countries_tbl = render_simple_table(
-        ["Rank", "Country", "Unique IPs", "Total Events"],
-        country_rows,
-        numeric_cols={0, 2, 3},
-    )
-    cities_tbl = render_simple_table(
-        ["Rank", "City", "Country", "Unique IPs"],
-        city_rows,
-        numeric_cols={0, 3},
-    )
-    has_coords = {"geo_latitude", "geo_longitude"} <= set(df.columns) and not df.filter(
-        pl.col("geo_latitude").is_not_null() & pl.col("geo_longitude").is_not_null()
-    ).is_empty()
-    qs = window_query_string(window)
-    geo_missing_callout = (
-        '<div class="callout callout-warning">'
-        '<div class="callout-title">MaxMind GeoLite2 Not Populated</div>'
-        "No GeoLite2 coordinates or country/ASN metadata were recorded for this window. "
-        "Configure <code>vault_apikey_maxmind</code> (GeoLite2-City &amp; GeoLite2-ASN MMDBs) "
-        f'to populate Geography views — see <a href="/health?{qs}">System Health</a> '
-        "for integration status."
-        "</div>"
-    )
-    map_block = (
-        render_chart_card(
-            "world-map", "Attacker Origins (Size = log10 Events, Color = Risk)", world_map_chart(df)
-        )
-        if has_coords
-        else geo_missing_callout
-    )
-    countries_chart_block = (
-        render_chart_card(
-            "top-countries-bar",
-            "Unique Attacker IPs by Country",
-            top_countries_bar_chart(countries_df),
-        )
-        if not countries_df.is_empty()
-        else ""
-    )
-
-    body = (
-        render_section_heading("geo-map", "World Map", help_key="World Map")
-        + map_block
-        + render_section_heading(
-            "geo-countries", "Top Countries & Cities", help_key="Top Countries"
-        )
-        + countries_chart_block
-        + '<div class="chart-grid">'
-        + f"<div><h3>Top Countries</h3>{countries_tbl}</div>"
-        + f"<div><h3>Top Cities</h3>{cities_tbl}</div>"
-        + "</div>"
-        + render_section_heading("geo-asns", "Top ASNs / ISPs", help_key="Top ASNs")
-        + render_simple_table(
-            ["Rank", "ASN", "ISP", "Unique IPs", "Events"],
-            asn_rows,
-            numeric_cols={0, 3, 4},
-            mono_cols={1},
-        )
-    )
-    return render_page(
-        title="Geography",
-        subtitle=(
-            "MaxMind GeoLite2 origin distribution, cities, and hosting ASNs deduplicated per IP."
-        ),
-        active_route="/geography",
-        window=window,
-        toc_items=toc,
-        body_html=body,
-        operation_name=op_name,
-    )
-
-
-def _render_credentials_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
+def _render_behavior_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
+    prog_df, multiday = aggregate_behavioral_progression(window.dates, gold_root=gold_root)
     summary_df = read_gold_range("daily_summary", window.dates, gold_root=gold_root)
     clusters_df = aggregate_campaign_clusters(window.dates, gold_root=gold_root)
+    findings_df = aggregate_detection_findings(window.dates, gold_root=gold_root)
 
-    if summary_df.is_empty() and clusters_df.is_empty():
+    if (
+        prog_df.is_empty()
+        and summary_df.is_empty()
+        and clusters_df.is_empty()
+        and findings_df.is_empty()
+    ):
         return render_page(
-            title="Credentials & Campaigns",
-            subtitle="Trending credential wordlists and multi-IP stuffing clusters.",
-            active_route="/credentials",
+            title="Behavior & TTPs",
+            subtitle=(
+                "Escalation depth, credential campaigns, post-auth commands, "
+                "and Suricata IDS detections."
+            ),
+            active_route="/behavior",
             window=window,
             toc_items=(),
             body_html=(
-                '<div class="callout">'
-                "No credential or campaign data available for this window.</div>"
+                '<div class="callout">No behavioral or IDS data available for this window.</div>'
             ),
             operation_name=op_name,
         )
 
+    toc: list[tuple[str, str]] = []
+    sections: list[str] = []
+
+    toc.append(("prog-funnel", "Escalation Funnel"))
+    if prog_df.is_empty():
+        sections.append(
+            render_section_heading("prog-funnel", "Escalation Funnel", help_key="Escalation Funnel")
+            + '<div class="callout">No progression data available for this window.</div>'
+        )
+    else:
+        funnel_kpis = [
+            KpiCard(
+                label,
+                f"{prog_df.filter(pl.col('max_stage') >= stage).height:,}",
+                tone=tone,
+                metric_key=mkey,
+            )
+            for stage, label, tone, mkey in (
+                (1, "Stage 1 · Scan", "info", "Stage Scan"),
+                (2, "Stage 2 · Credential", "", "Stage Credential"),
+                (3, "Stage 3 · Authenticated", "med", "Stage Authenticated"),
+                (4, "Stage 4 · Interactive", "high", "Stage Interactive"),
+            )
+        ]
+        auto_count = prog_df.filter(pl.col("is_automated").fill_null(False)).height
+        manual_count = prog_df.height - auto_count
+        auto_kpis = [
+            KpiCard("Automated Bots", f"{auto_count:,}", tone="med", metric_key="Automated Bots"),
+            KpiCard(
+                "Manual / Unknown", f"{manual_count:,}", tone="info", metric_key="Manual or Unknown"
+            ),
+        ]
+        prog_rows: list[dict[str, object]] = [
+            {
+                "src_endpoint_ip": str(row.get("src_endpoint_ip") or ""),
+                "max_stage": int(row.get("max_stage") or 1),
+                "stage_label": str(row.get("stage_label") or ""),
+                "is_automated": "Automated" if row.get("is_automated") else "Manual",
+                "scan_events": int(row.get("scan_events") or 0),
+                "auth_attempts": int(row.get("auth_attempts") or 0),
+                "auth_successes": int(row.get("auth_successes") or 0),
+                "commands_executed": int(row.get("commands_executed") or 0),
+                "seconds_to_auth": _fmt_float(row.get("seconds_to_auth")),
+                "seconds_to_command": _fmt_float(row.get("seconds_to_command")),
+                "first_seen": _fmt_ts(row.get("first_seen")),
+            }
+            for row in prog_df.iter_rows(named=True)
+        ]
+        prog_cols = [
+            TableColumn("src_endpoint_ip", "Source IP", mono=True),
+            TableColumn("max_stage", "Stage", numeric=True),
+            TableColumn("stage_label", "Label", badge=True),
+            TableColumn("is_automated", "Behavior"),
+            TableColumn("scan_events", "Scan", numeric=True),
+            TableColumn("auth_attempts", "Auth", numeric=True),
+            TableColumn("auth_successes", "OK", numeric=True),
+            TableColumn("commands_executed", "Cmds", numeric=True),
+            TableColumn("seconds_to_auth", "s→Auth", numeric=True),
+            TableColumn("seconds_to_command", "s→Cmd", numeric=True),
+            TableColumn("first_seen", "First Seen (UTC)", mono=True),
+        ]
+        multi_html = ""
+        if not multiday.is_empty():
+            toc.append(("prog-multiday", "Multi-Day Persistence"))
+            multi_ips = multiday.filter(pl.col("is_multi_day"))
+            vel_vals = [
+                int(v)
+                for v in multiday.filter(pl.col("progression_velocity_days") > 0)
+                .get_column("progression_velocity_days")
+                .to_list()
+            ]
+            md_rows = [
+                {
+                    "src_endpoint_ip": str(r["src_endpoint_ip"]),
+                    "max_stage": int(r["max_stage"]),
+                    "stage_label": str(r["stage_label"]),
+                    "active_days": int(r["active_days"]),
+                    "progression_velocity_days": int(r["progression_velocity_days"]),
+                    "first_seen_date": str(r["first_seen_date"]),
+                    "last_seen_date": str(r["last_seen_date"]),
+                }
+                for r in multi_ips.iter_rows(named=True)
+            ]
+            md_cols = [
+                TableColumn("src_endpoint_ip", "Source IP", mono=True),
+                TableColumn("max_stage", "Stage", numeric=True),
+                TableColumn("stage_label", "Label", badge=True),
+                TableColumn("active_days", "Active Days", numeric=True),
+                TableColumn("progression_velocity_days", "Velocity (d)", numeric=True),
+                TableColumn("first_seen_date", "First Date", mono=True),
+                TableColumn("last_seen_date", "Last Date", mono=True),
+            ]
+            vel_chart = (
+                render_chart_card(
+                    "velocity-hist",
+                    "Progression Velocity (Days to Max Stage)",
+                    velocity_histogram_chart(vel_vals),
+                    help_key="Progression Velocity",
+                )
+                if vel_vals
+                else ""
+            )
+            multi_html = (
+                render_section_heading(
+                    "prog-multiday", "Multi-Day Persistence", help_key="Multi-Day Progression"
+                )
+                + render_kpis(
+                    [
+                        KpiCard(
+                            "Multi-Day IPs",
+                            f"{multi_ips.height:,}",
+                            tone="high" if multi_ips.height > 0 else "",
+                            metric_key="Multi-Day IPs",
+                        ),
+                        KpiCard(
+                            "Total IPs in Lookback",
+                            f"{multiday.height:,}",
+                            tone="info",
+                            metric_key="Total Multi-Day IPs",
+                        ),
+                    ]
+                )
+                + vel_chart
+                + render_interactive_table(
+                    "multiday-table",
+                    md_cols,
+                    md_rows,
+                    page_size=25,
+                    search_placeholder="Search returning attacker IP...",
+                    empty_message="No multi-day repeat attackers in this lookback window.",
+                )
+            )
+        sections.append(
+            render_section_heading("prog-funnel", "Escalation Funnel", help_key="Escalation Funnel")
+            + render_kpis(funnel_kpis)
+            + render_kpis(auto_kpis)
+            + render_chart_card(
+                "stage-scatter",
+                "Max Stage vs First Seen (UTC)",
+                stage_scatter_chart(prog_df),
+                help_key="Stage vs Time",
+            )
+            + "<h3>IP Progression Details</h3>"
+            + render_interactive_table(
+                "prog-table",
+                prog_cols,
+                prog_rows,
+                page_size=25,
+                search_placeholder="Search IP or stage...",
+                min_stage_filter=True,
+            )
+            + multi_html
+        )
+
+    toc.append(("cred-lists", "Credentials & Campaigns"))
     users = _merge_top_n_structs(summary_df, "top_usernames", limit=15)
     passwords = _merge_top_n_structs(summary_df, "top_passwords", limit=15)
     pairs = _merge_credential_pairs(summary_df, limit=15)
-
-    cluster_rows: list[dict[str, object]] = []
-    for row in clusters_df.iter_rows(named=True):
-        ips = row.get("ips") or []
-        ip_str = ", ".join(str(x) for x in ips) if isinstance(ips, list) else str(ips)
-        cluster_rows.append(
-            {
-                "shared_username": str(row.get("shared_username") or ""),
-                "shared_password": str(row.get("shared_password") or ""),
-                "ip_count": int(row.get("ip_count") or 0),
-                "total_events": int(row.get("total_events") or 0),
-                "ips": ip_str,
-                "first_seen": _fmt_ts(row.get("first_seen")),
-                "last_seen": _fmt_ts(row.get("last_seen")),
-            }
-        )
-
-    cluster_cols = [
-        TableColumn("shared_username", "Username", mono=True),
-        TableColumn("shared_password", "Password", mono=True),
-        TableColumn("ip_count", "Unique IPs", numeric=True),
-        TableColumn("total_events", "Events", numeric=True),
-        TableColumn("ips", "Source IPs", mono=True),
-        TableColumn("first_seen", "First Seen (UTC)", mono=True),
-        TableColumn("last_seen", "Last Seen (UTC)", mono=True),
-    ]
-
-    toc = [
-        ("cred-lists", "Top Credentials"),
-        ("cred-clusters", "Campaign Clusters"),
-    ]
+    commands = _merge_top_n_structs(summary_df, "top_commands", limit=15)
     users_tbl = render_simple_table(
         ["Rank", "Username", "Count"],
         [[r["rank"], r["value"], f"{int(str(r['count'])):,}"] for r in users],
@@ -827,15 +801,49 @@ def _render_credentials_view(window: DateWindow, gold_root: Path, op_name: str) 
         numeric_cols={0, 3},
         mono_cols={1, 2},
     )
-
-    body = (
-        render_section_heading("cred-lists", "Top Credentials", help_key="Top Credentials")
+    commands_tbl = render_simple_table(
+        ["Rank", "Post-Auth Command", "Count"],
+        [[r["rank"], r["value"], f"{int(str(r['count'])):,}"] for r in commands],
+        numeric_cols={0, 2},
+        mono_cols={1},
+    )
+    cluster_rows: list[dict[str, object]] = []
+    for row in clusters_df.iter_rows(named=True):
+        ips = row.get("ips") or []
+        ip_str = ", ".join(str(x) for x in ips) if isinstance(ips, list) else str(ips)
+        cluster_rows.append(
+            {
+                "shared_username": str(row.get("shared_username") or ""),
+                "shared_password": str(row.get("shared_password") or ""),
+                "ip_count": int(row.get("ip_count") or 0),
+                "total_events": int(row.get("total_events") or 0),
+                "ips": ip_str,
+                "first_seen": _fmt_ts(row.get("first_seen")),
+                "last_seen": _fmt_ts(row.get("last_seen")),
+            }
+        )
+    cluster_cols = [
+        TableColumn("shared_username", "Username", mono=True),
+        TableColumn("shared_password", "Password", mono=True),
+        TableColumn("ip_count", "Unique IPs", numeric=True),
+        TableColumn("total_events", "Events", numeric=True),
+        TableColumn("ips", "Source IPs", mono=True),
+        TableColumn("first_seen", "First Seen (UTC)", mono=True),
+        TableColumn("last_seen", "Last Seen (UTC)", mono=True),
+    ]
+    sections.append(
+        render_section_heading(
+            "cred-lists", "Credentials, Campaigns & Commands", help_key="Top Credentials"
+        )
         + '<div class="chart-grid cols-3">'
         + f"<div><h3>Top Usernames</h3>{users_tbl}</div>"
         + f"<div><h3>Top Passwords</h3>{passwords_tbl}</div>"
         + f"<div><h3>Top Pairs</h3>{pairs_tbl}</div>"
         + "</div>"
-        + render_section_heading("cred-clusters", "Campaign Clusters", help_key="Campaign Clusters")
+        + f"<h3>Top Post-Auth Commands</h3>{commands_tbl}"
+        + render_section_heading(
+            "cred-clusters", "Shared-Credential Campaigns", help_key="Campaign Clusters"
+        )
         + render_kpis(
             [
                 KpiCard(
@@ -854,235 +862,36 @@ def _render_credentials_view(window: DateWindow, gold_root: Path, op_name: str) 
             search_placeholder="Search username, password, IP...",
         )
     )
-    return render_page(
-        title="Credentials & Campaigns",
-        subtitle=(
-            "Most-attempted usernames, passwords, pairs, and coordinated "
-            "credential-stuffing botnets (exact IP union)."
-        ),
-        active_route="/credentials",
-        window=window,
-        toc_items=toc,
-        body_html=body,
-        operation_name=op_name,
-    )
 
-
-def _render_progression_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
-    df, multiday = aggregate_behavioral_progression(window.dates, gold_root=gold_root)
-    if df.is_empty():
-        return render_page(
-            title="Behavioral Progression",
-            subtitle=(
-                "Escalation funnel, automation split, stage timing, and multi-day persistence."
-            ),
-            active_route="/progression",
-            window=window,
-            toc_items=(),
-            body_html='<div class="callout">No progression data available for this window.</div>',
-            operation_name=op_name,
-        )
-
-    funnel_kpis = [
-        KpiCard(
-            label,
-            f"{df.filter(pl.col('max_stage') >= stage).height:,}",
-            tone=tone,
-            metric_key=mkey,
-        )
-        for stage, label, tone, mkey in (
-            (1, "Stage 1 · Scan", "info", "Stage Scan"),
-            (2, "Stage 2 · Credential", "", "Stage Credential"),
-            (3, "Stage 3 · Authenticated", "med", "Stage Authenticated"),
-            (4, "Stage 4 · Interactive", "high", "Stage Interactive"),
-        )
-    ]
-    auto_count = df.filter(pl.col("is_automated").fill_null(False)).height
-    manual_count = df.height - auto_count
-    auto_kpis = [
-        KpiCard("Automated Bots", f"{auto_count:,}", tone="med", metric_key="Automated Bots"),
-        KpiCard(
-            "Manual / Unknown", f"{manual_count:,}", tone="info", metric_key="Manual or Unknown"
-        ),
-    ]
-
-    prog_rows: list[dict[str, object]] = []
-    for row in df.iter_rows(named=True):
-        prog_rows.append(
-            {
-                "src_endpoint_ip": str(row.get("src_endpoint_ip") or ""),
-                "max_stage": int(row.get("max_stage") or 1),
-                "stage_label": str(row.get("stage_label") or ""),
-                "is_automated": "Automated" if row.get("is_automated") else "Manual",
-                "scan_events": int(row.get("scan_events") or 0),
-                "auth_attempts": int(row.get("auth_attempts") or 0),
-                "auth_successes": int(row.get("auth_successes") or 0),
-                "commands_executed": int(row.get("commands_executed") or 0),
-                "seconds_to_auth": _fmt_float(row.get("seconds_to_auth")),
-                "seconds_to_command": _fmt_float(row.get("seconds_to_command")),
-                "first_seen": _fmt_ts(row.get("first_seen")),
-            }
-        )
-    prog_cols = [
-        TableColumn("src_endpoint_ip", "Source IP", mono=True),
-        TableColumn("max_stage", "Stage", numeric=True),
-        TableColumn("stage_label", "Label", badge=True),
-        TableColumn("is_automated", "Behavior"),
-        TableColumn("scan_events", "Scan", numeric=True),
-        TableColumn("auth_attempts", "Auth", numeric=True),
-        TableColumn("auth_successes", "OK", numeric=True),
-        TableColumn("commands_executed", "Cmds", numeric=True),
-        TableColumn("seconds_to_auth", "s→Auth", numeric=True),
-        TableColumn("seconds_to_command", "s→Cmd", numeric=True),
-        TableColumn("first_seen", "First Seen (UTC)", mono=True),
-    ]
-
-    multi_html = ""
-    toc: list[tuple[str, str]] = [
-        ("prog-funnel", "Escalation Funnel"),
-        ("prog-scatter", "Stage vs Time"),
-        ("prog-details", "IP Progression Details"),
-    ]
-    if not multiday.is_empty():
-        toc.append(("prog-multiday", "Multi-Day Persistence"))
-        multi_ips = multiday.filter(pl.col("is_multi_day"))
-        vel_vals = [
-            int(v)
-            for v in multiday.filter(pl.col("progression_velocity_days") > 0)
-            .get_column("progression_velocity_days")
-            .to_list()
-        ]
-        md_rows = [
-            {
-                "src_endpoint_ip": str(r["src_endpoint_ip"]),
-                "max_stage": int(r["max_stage"]),
-                "stage_label": str(r["stage_label"]),
-                "active_days": int(r["active_days"]),
-                "progression_velocity_days": int(r["progression_velocity_days"]),
-                "first_seen_date": str(r["first_seen_date"]),
-                "last_seen_date": str(r["last_seen_date"]),
-            }
-            for r in multi_ips.iter_rows(named=True)
-        ]
-        md_cols = [
-            TableColumn("src_endpoint_ip", "Source IP", mono=True),
-            TableColumn("max_stage", "Stage", numeric=True),
-            TableColumn("stage_label", "Label", badge=True),
-            TableColumn("active_days", "Active Days", numeric=True),
-            TableColumn("progression_velocity_days", "Velocity (d)", numeric=True),
-            TableColumn("first_seen_date", "First Date", mono=True),
-            TableColumn("last_seen_date", "Last Date", mono=True),
-        ]
-        vel_chart = (
-            render_chart_card(
-                "velocity-hist",
-                "Progression Velocity (Days to Max Stage)",
-                velocity_histogram_chart(vel_vals),
-                help_key="Progression Velocity",
-            )
-            if vel_vals
-            else ""
-        )
-        multi_html = (
+    toc.append(("find-summary", "Suricata Detections"))
+    if findings_df.is_empty():
+        sections.append(
             render_section_heading(
-                "prog-multiday", "Multi-Day Persistence", help_key="Multi-Day Progression"
+                "find-summary", "Suricata Detections", help_key="Detection Highlights"
             )
-            + render_kpis(
-                [
-                    KpiCard(
-                        "Multi-Day IPs",
-                        f"{multi_ips.height:,}",
-                        tone="high" if multi_ips.height > 0 else "",
-                        metric_key="Multi-Day IPs",
-                    ),
-                    KpiCard(
-                        "Total IPs in Lookback",
-                        f"{multiday.height:,}",
-                        tone="info",
-                        metric_key="Total Multi-Day IPs",
-                    ),
-                ]
-            )
-            + vel_chart
-            + render_interactive_table(
-                "multiday-table",
-                md_cols,
-                md_rows,
-                page_size=25,
-                search_placeholder="Search returning attacker IP...",
-                empty_message="No multi-day repeat attackers in this lookback window.",
-            )
+            + '<div class="callout">No IDS detection findings for this window.</div>'
         )
-
-    body = (
-        render_section_heading("prog-funnel", "Escalation Funnel", help_key="Escalation Funnel")
-        + render_kpis(funnel_kpis)
-        + render_kpis(auto_kpis)
-        + render_section_heading("prog-scatter", "Stage vs Time", help_key="Stage vs Time")
-        + render_chart_card(
-            "stage-scatter", "Max Stage vs First Seen (UTC)", stage_scatter_chart(df)
-        )
-        + render_section_heading("prog-details", "IP Progression Details")
-        + render_interactive_table(
-            "prog-table",
-            prog_cols,
-            prog_rows,
-            page_size=25,
-            search_placeholder="Search IP or stage...",
-            min_stage_filter=True,
-        )
-        + multi_html
-    )
-    return render_page(
-        title="Behavioral Progression",
-        subtitle=(
-            "Depth of attacker engagement from initial scan through hands-on-keyboard commands."
-        ),
-        active_route="/progression",
-        window=window,
-        toc_items=toc,
-        body_html=body,
-        operation_name=op_name,
-    )
-
-
-def _render_findings_view(window: DateWindow, gold_root: Path, op_name: str) -> str:
-    df = aggregate_detection_findings(window.dates, gold_root=gold_root)
-    if df.is_empty():
-        return render_page(
-            title="Detection Findings",
-            subtitle=(
-                "Suricata IDS signatures (decoder/stream noise SIDs 2200000-2260999 excluded)."
+    else:
+        ip_col_label = "IP-days" if window.is_multi_day else "Unique IPs"
+        total_events = int(findings_df.get_column("event_count").sum())
+        total_ip_breadth = int(findings_df.get_column("unique_ips").sum())
+        find_kpis = [
+            KpiCard(
+                "Distinct Rules", f"{findings_df.height:,}", tone="info", metric_key="Total Rules"
             ),
-            active_route="/findings",
-            window=window,
-            toc_items=(),
-            body_html='<div class="callout">No IDS detection findings for this window.</div>',
-            operation_name=op_name,
-        )
-
-    ip_col_label = "IP-days" if window.is_multi_day else "Unique IPs"
-    total_events = int(df.get_column("event_count").sum())
-    total_ip_breadth = int(df.get_column("unique_ips").sum())
-
-    kpis = [
-        KpiCard("Distinct Rules", f"{df.height:,}", tone="info", metric_key="Total Rules"),
-        KpiCard(
-            "Total Alert Events",
-            f"{total_events:,}",
-            tone="med",
-            metric_key="Total Detection Events",
-        ),
-        KpiCard(
-            f"Rule {ip_col_label} Sum",
-            f"{total_ip_breadth:,}",
-            metric_key="Total Detection IPs",
-        ),
-    ]
-
-    rows: list[dict[str, object]] = []
-    for row in df.iter_rows(named=True):
-        rows.append(
+            KpiCard(
+                "Total Alert Events",
+                f"{total_events:,}",
+                tone="med",
+                metric_key="Total Detection Events",
+            ),
+            KpiCard(
+                f"Rule {ip_col_label} Sum",
+                f"{total_ip_breadth:,}",
+                metric_key="Total Detection IPs",
+            ),
+        ]
+        find_rows: list[dict[str, object]] = [
             {
                 "finding_uid": str(row.get("finding_uid") or "—"),
                 "finding_title": str(row.get("finding_title") or ""),
@@ -1093,190 +902,259 @@ def _render_findings_view(window: DateWindow, gold_root: Path, op_name: str) -> 
                 "first_seen": _fmt_ts(row.get("first_seen")),
                 "last_seen": _fmt_ts(row.get("last_seen")),
             }
+            for row in findings_df.iter_rows(named=True)
+        ]
+        find_cols = [
+            TableColumn("finding_uid", "SID", mono=True),
+            TableColumn("finding_title", "Signature Title"),
+            TableColumn("event_count", "Events", numeric=True),
+            TableColumn("unique_ips", ip_col_label, numeric=True),
+            TableColumn("severity_id", "Sev", numeric=True),
+            TableColumn("category", "Category"),
+            TableColumn("first_seen", "First Seen (UTC)", mono=True),
+            TableColumn("last_seen", "Last Seen (UTC)", mono=True),
+        ]
+        sections.append(
+            render_section_heading(
+                "find-summary", "Suricata Detections", help_key="Detection Highlights"
+            )
+            + render_kpis(find_kpis)
+            + render_chart_card(
+                "top-rules-bar",
+                f"Top 20 Signatures (colored by {ip_col_label})",
+                top_rules_bar_chart(findings_df, ip_label=ip_col_label),
+                help_key="Top Rules by Event Count",
+            )
+            + render_chart_card(
+                "findings-pareto",
+                "Rule Concentration (Top 50 Cumulative Share)",
+                pareto_concentration_chart(findings_df),
+                help_key="Rule Concentration",
+            )
+            + "<h3>All Findings</h3>"
+            + render_interactive_table(
+                "findings-table",
+                find_cols,
+                find_rows,
+                page_size=25,
+                search_placeholder="Search SID, rule title, or category...",
+            )
         )
-    columns = [
-        TableColumn("finding_uid", "SID", mono=True),
-        TableColumn("finding_title", "Signature Title"),
-        TableColumn("event_count", "Events", numeric=True),
-        TableColumn("unique_ips", ip_col_label, numeric=True),
-        TableColumn("severity_id", "Sev", numeric=True),
-        TableColumn("category", "Category"),
-        TableColumn("first_seen", "First Seen (UTC)", mono=True),
-        TableColumn("last_seen", "Last Seen (UTC)", mono=True),
-    ]
 
-    toc = [
-        ("find-summary", "Summary"),
-        ("find-top", "Top Rules"),
-        ("find-pareto", "Rule Concentration"),
-        ("find-all", "All Findings"),
-    ]
-    body = (
-        render_section_heading("find-summary", "IDS Summary", help_key="Detection Highlights")
-        + render_kpis(kpis)
-        + render_section_heading(
-            "find-top", "Top Rules by Event Count", help_key="Top Rules by Event Count"
-        )
-        + render_chart_card(
-            "top-rules-bar",
-            f"Top 20 Signatures (colored by {ip_col_label})",
-            top_rules_bar_chart(df, ip_label=ip_col_label),
-        )
-        + render_section_heading(
-            "find-pareto", "Rule Concentration (Pareto)", help_key="Rule Concentration"
-        )
-        + render_chart_card(
-            "findings-pareto", "Top 50 Rules Cumulative Share", pareto_concentration_chart(df)
-        )
-        + render_section_heading("find-all", "All Findings")
-        + render_interactive_table(
-            "findings-table",
-            columns,
-            rows,
-            page_size=25,
-            search_placeholder="Search SID, rule title, or category...",
-        )
-    )
     return render_page(
-        title="Detection Findings",
+        title="Behavior & TTPs",
         subtitle=(
-            "Suricata IDS alerts with preserved signature IDs and "
-            "honest multi-day IP-day aggregation."
+            "Attacker escalation depth, credential wordlists & campaigns, "
+            "post-auth commands, and Suricata IDS signatures."
         ),
-        active_route="/findings",
+        active_route="/behavior",
         window=window,
         toc_items=toc,
-        body_html=body,
+        body_html="".join(sections),
         operation_name=op_name,
     )
 
 
-def _render_stix_view(
+def _render_intel_view(
     window: DateWindow,
     gold_root: Path,
     reporting: ReportingConfig,
     *,
     reporting_loaded: bool = True,
 ) -> str:
-    if not reporting_loaded:
-        return render_page(
-            title="STIX 2.1 & Raw IOC Export",
-            subtitle=(
-                "Durable threat intelligence bundle for OpenCTI/MISP and "
-                "threshold-free Silver CSV.gz export."
-            ),
-            active_route="/stix",
-            window=window,
-            toc_items=(),
-            body_html=(
-                '<div class="callout callout-important">'
-                '<div class="callout-title">OPSEC Guard — STIX Export Disabled</div>'
-                "Could not load <code>reporting.json</code> (infrastructure IP/hostname "
-                "redaction rules unavailable). Refusing to generate or download STIX "
-                "bundles until <code>reporting.json</code> is valid and readable."
-                "</div>"
-            ),
-            operation_name=reporting.operation.name,
-        )
-
     reputation = aggregate_ip_reputation(window.dates, gold_root=gold_root)
     clusters = aggregate_campaign_clusters(window.dates, gold_root=gold_root)
     extracted = aggregate_extracted_iocs(window.dates, gold_root=gold_root)
 
-    if reputation.is_empty() and extracted.is_empty():
-        return render_page(
-            title="STIX 2.1 & Raw IOC Export",
-            subtitle=(
-                "Durable threat intelligence bundle for OpenCTI/MISP and "
-                "threshold-free Silver CSV.gz export."
-            ),
-            active_route="/stix",
-            window=window,
-            toc_items=(),
-            body_html=(
-                '<div class="callout">No Gold data available to export for this window.</div>'
-            ),
-            operation_name=reporting.operation.name,
-        )
-
-    comp = count_stix_composition(reputation, clusters, extracted)
-    durable_total = (
-        comp["malware_hashes"]
-        + comp["c2_ips"]
-        + comp["stager_urls"]
-        + comp["stager_domains"]
-        + comp["ssh_keys"]
-    )
-    kpis = [
-        KpiCard(
-            "Interactive Inbound IPs (7d)",
-            f"{comp['inbound_ips']:,}",
-            tone="high",
-            metric_key="IP Indicators",
-        ),
-        KpiCard(
-            "Durable IOC Indicators", f"{durable_total:,}", tone="info", metric_key="Durable IOCs"
-        ),
-        KpiCard(
-            "Malware Hashes",
-            f"{comp['malware_hashes']:,}",
-            tone="high",
-            metric_key="Hash Indicators",
-        ),
-        KpiCard("Campaigns", f"{comp['campaigns']:,}", tone="med", metric_key="Campaigns"),
+    toc: list[tuple[str, str]] = [
+        ("ioc-summary", "Durable IOCs"),
+        ("stix-export", "STIX 2.1 & Raw Export"),
     ]
+    sections: list[str] = []
 
-    qs = window_query_string(window)
-    preview_block = ""
-    try:
-        bundle = build_window_stix_bundle(window, reporting, gold_root=gold_root)
-        serialized = bundle.serialize(pretty=True)
-        preview_snippet = serialized[:6000]
-        if len(serialized) > 6000:
-            preview_snippet += "\n... (truncated for preview; download full JSON above)"
-        preview_block = (
-            '<p class="table-meta">Verified OPSEC-clean bundle · '
-            f"{len(bundle.objects):,} STIX 2.1 objects "
-            f"(TLP:{esc(reporting.sharing.tlp.upper())}).</p>"
-            f"<pre><code>{esc(preview_snippet)}</code></pre>"
+    if extracted.is_empty():
+        sections.append(
+            render_section_heading("ioc-summary", "Durable IOCs", help_key="Malware Captured")
+            + '<div class="callout">'
+            "No durable IOCs recorded in extracted_iocs for this window.</div>"
         )
-    except Exception as exc:
-        preview_block = (
-            '<div class="callout callout-important">'
-            f'<div class="callout-title">STIX Preview Error</div>{esc(exc)}</div>'
+    else:
+        counts = {
+            "malware_hash": extracted.filter(pl.col("ioc_type") == "malware_hash").height,
+            "c2_ip": extracted.filter(pl.col("ioc_type") == "c2_ip").height,
+            "stager_url": extracted.filter(pl.col("ioc_type") == "stager_url").height,
+            "stager_domain": extracted.filter(pl.col("ioc_type") == "stager_domain").height,
+            "ssh_key": extracted.filter(pl.col("ioc_type") == "ssh_key").height,
+        }
+        ioc_kpis = [
+            KpiCard(
+                "Total Durable IOCs",
+                f"{extracted.height:,}",
+                tone="info",
+                metric_key="Durable IOCs",
+            ),
+            KpiCard(
+                "Malware Hashes",
+                f"{counts['malware_hash']:,}",
+                tone="high" if counts["malware_hash"] > 0 else "",
+                metric_key="Malware Uploaded",
+            ),
+            KpiCard(
+                "Outbound C2 IPs",
+                f"{counts['c2_ip']:,}",
+                tone="high" if counts["c2_ip"] > 0 else "",
+            ),
+            KpiCard(
+                "Stager URLs",
+                f"{counts['stager_url']:,}",
+                tone="med" if counts["stager_url"] > 0 else "",
+            ),
+            KpiCard("Stager Domains", f"{counts['stager_domain']:,}", tone="info"),
+            KpiCard("SSH Public Keys", f"{counts['ssh_key']:,}", tone="low"),
+        ]
+        ioc_rows: list[dict[str, object]] = [
+            {
+                "ioc_type": str(row.get("ioc_type") or ""),
+                "ioc_value": str(row.get("ioc_value") or ""),
+                "vhash": str(row.get("vhash") or "—"),
+                "malware_family": str(row.get("malware_family") or "—"),
+                "vt_malicious": row.get("vt_malicious"),
+                "gti_verdict": str(row.get("gti_verdict") or "—"),
+                "actor_associations": str(row.get("actor_associations") or "—"),
+                "event_count": int(row.get("event_count") or 0),
+                "unique_src_ips": int(row.get("unique_src_ips") or 0),
+                "first_seen": _fmt_ts(row.get("first_seen")),
+            }
+            for row in extracted.iter_rows(named=True)
+        ]
+        ioc_cols = [
+            TableColumn("ioc_type", "Type", badge=True),
+            TableColumn("ioc_value", "Observable (SHA-256 / URL / Host / IP / SSH Key)", mono=True),
+            TableColumn("vhash", "vhash", mono=True),
+            TableColumn("malware_family", "Family"),
+            TableColumn("vt_malicious", "VT Det.", numeric=True),
+            TableColumn("gti_verdict", "GTI Verdict", badge=True),
+            TableColumn("actor_associations", "Actors"),
+            TableColumn("event_count", "Events", numeric=True),
+            TableColumn("unique_src_ips", "Src IPs", numeric=True),
+            TableColumn("first_seen", "First Seen (UTC)", mono=True),
+        ]
+        sections.append(
+            render_section_heading("ioc-summary", "Durable IOCs", help_key="Malware Captured")
+            + render_kpis(ioc_kpis)
+            + render_chart_card(
+                "iocs-breakdown", "Durable IOC Breakdown", ioc_breakdown_chart(counts)
+            )
+            + "<h3>Observable Inventory</h3>"
+            + render_interactive_table(
+                "iocs-table",
+                ioc_cols,
+                ioc_rows,
+                page_size=25,
+                search_placeholder="Search hash, domain, URL, IP, family, vhash...",
+                ioc_type_filter=True,
+            )
         )
 
-    toc = [
-        ("stix-comp", "Bundle Composition"),
-        ("stix-download", "Downloads"),
-        ("stix-preview", "STIX 2.1 Preview"),
-    ]
-    stix_btn = (
-        f'<a class="btn btn-primary" href="/download/stix?{qs}">'
-        "Download STIX 2.1 Bundle (.json)</a>"
-    )
-    csv_btn = f'<a class="btn" href="/download/iocs.csv.gz?{qs}">Download Raw IOCs (.csv.gz)</a>'
-    body = (
-        render_section_heading("stix-comp", "Bundle Composition", help_key="Bundle Composition")
-        + render_kpis(kpis)
-        + render_chart_card(
-            "stix-comp-chart", "STIX 2.1 Object Breakdown", stix_composition_chart(comp)
+    if not reporting_loaded:
+        sections.append(
+            render_section_heading(
+                "stix-export", "STIX 2.1 & Raw IOC Export", help_key="Bundle Composition"
+            )
+            + '<div class="callout callout-important">'
+            '<div class="callout-title">OPSEC Guard — STIX Export Disabled</div>'
+            "Could not load <code>reporting.json</code> (infrastructure IP/hostname "
+            "redaction rules unavailable). Refusing to generate or download STIX "
+            "bundles until <code>reporting.json</code> is valid and readable."
+            "</div>"
         )
-        + render_section_heading("stix-download", "Export Artifacts", help_key="Raw IOC Export")
-        + f'<div class="action-bar">{stix_btn}{csv_btn}</div>'
-        + render_section_heading("stix-preview", "STIX 2.1 Preview")
-        + preview_block
-    )
+    elif reputation.is_empty() and extracted.is_empty():
+        sections.append(
+            render_section_heading(
+                "stix-export", "STIX 2.1 & Raw IOC Export", help_key="Bundle Composition"
+            )
+            + '<div class="callout">No Gold data available to export for this window.</div>'
+        )
+    else:
+        comp = count_stix_composition(reputation, clusters, extracted)
+        durable_total = (
+            comp["malware_hashes"]
+            + comp["c2_ips"]
+            + comp["stager_urls"]
+            + comp["stager_domains"]
+            + comp["ssh_keys"]
+        )
+        stix_kpis = [
+            KpiCard(
+                "Interactive Inbound IPs (7d)",
+                f"{comp['inbound_ips']:,}",
+                tone="high",
+                metric_key="IP Indicators",
+            ),
+            KpiCard(
+                "Durable IOC Indicators",
+                f"{durable_total:,}",
+                tone="info",
+                metric_key="Durable IOCs",
+            ),
+            KpiCard(
+                "Malware Hashes",
+                f"{comp['malware_hashes']:,}",
+                tone="high",
+                metric_key="Hash Indicators",
+            ),
+            KpiCard("Campaigns", f"{comp['campaigns']:,}", tone="med", metric_key="Campaigns"),
+        ]
+        qs = window_query_string(window)
+        try:
+            bundle = build_window_stix_bundle(window, reporting, gold_root=gold_root)
+            serialized = bundle.serialize(pretty=True)
+            preview_snippet = serialized[:6000]
+            if len(serialized) > 6000:
+                preview_snippet += "\n... (truncated for preview; download full JSON above)"
+            preview_block = (
+                '<p class="table-meta">Verified OPSEC-clean bundle · '
+                f"{len(bundle.objects):,} STIX 2.1 objects "
+                f"(TLP:{esc(reporting.sharing.tlp.upper())}).</p>"
+                f"<pre><code>{esc(preview_snippet)}</code></pre>"
+            )
+        except Exception as exc:
+            preview_block = (
+                '<div class="callout callout-important">'
+                f'<div class="callout-title">STIX Preview Error</div>{esc(exc)}</div>'
+            )
+        stix_btn = (
+            f'<a class="btn btn-primary" href="/download/stix?{qs}">'
+            "Download STIX 2.1 Bundle (.json)</a>"
+        )
+        csv_btn = (
+            f'<a class="btn" href="/download/iocs.csv.gz?{qs}">Download Raw IOCs (.csv.gz)</a>'
+        )
+        toc.append(("stix-preview", "STIX 2.1 Preview"))
+        sections.append(
+            render_section_heading(
+                "stix-export", "STIX 2.1 & Raw IOC Export", help_key="Bundle Composition"
+            )
+            + render_kpis(stix_kpis)
+            + render_chart_card(
+                "stix-comp-chart", "STIX 2.1 Object Breakdown", stix_composition_chart(comp)
+            )
+            + render_section_heading("stix-download", "Export Artifacts", help_key="Raw IOC Export")
+            + f'<div class="action-bar">{stix_btn}{csv_btn}</div>'
+            + render_section_heading("stix-preview", "STIX 2.1 Preview")
+            + preview_block
+        )
+
     return render_page(
-        title="STIX 2.1 & Raw IOC Export",
+        title="Intel & Export",
         subtitle=(
-            "Durable malware hashes (vhash), C2 IPs, stager URLs/domains, "
-            "SSH keys, and 7-day interactive inbound IPs."
+            "Durable malware hashes (vhash), outbound C2s, stager URLs/domains, "
+            "SSH keys, and OPSEC-verified STIX 2.1 / CSV.gz exports."
         ),
-        active_route="/stix",
+        active_route="/intel",
         window=window,
         toc_items=toc,
-        body_html=body,
+        body_html="".join(sections),
         operation_name=reporting.operation.name,
     )
 
@@ -1534,6 +1412,17 @@ def _render_health_view(
     )
 
 
+_LEGACY_ROUTE_REDIRECTS: dict[str, tuple[str, str]] = {
+    "/ips": ("/attackers", ""),
+    "/geography": ("/attackers", "#geo-origins"),
+    "/progression": ("/behavior", "#prog-funnel"),
+    "/credentials": ("/behavior", "#cred-lists"),
+    "/findings": ("/behavior", "#find-summary"),
+    "/iocs": ("/intel", "#ioc-summary"),
+    "/stix": ("/intel", "#stix-export"),
+}
+
+
 class DashboardServer(ThreadingHTTPServer):
     """Typed ``ThreadingHTTPServer`` carrying datalake & reporting config."""
 
@@ -1634,6 +1523,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if route in _LEGACY_ROUTE_REDIRECTS:
+            dest_path, anchor = _LEGACY_ROUTE_REDIRECTS[route]
+            qs_suffix = f"?{parsed.query}" if parsed.query else ""
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", f"{dest_path}{qs_suffix}{anchor}")
+            self.end_headers()
+            return
+
         window = self._resolve_request_window(query)
         reporting, reporting_loaded = _load_reporting_checked(self.server.reporting_path)
         op_name = reporting.operation.name
@@ -1642,27 +1539,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if route == "/overview":
             self._send_html(_render_overview_view(window, gold_root, op_name))
             return
-        if route == "/iocs":
-            self._send_html(_render_iocs_view(window, gold_root, op_name))
+        if route == "/attackers":
+            self._send_html(_render_attackers_view(window, gold_root, op_name))
             return
-        if route == "/ips":
-            self._send_html(_render_ips_view(window, gold_root, op_name))
+        if route == "/behavior":
+            self._send_html(_render_behavior_view(window, gold_root, op_name))
             return
-        if route == "/geography":
-            self._send_html(_render_geography_view(window, gold_root, op_name))
-            return
-        if route == "/credentials":
-            self._send_html(_render_credentials_view(window, gold_root, op_name))
-            return
-        if route == "/progression":
-            self._send_html(_render_progression_view(window, gold_root, op_name))
-            return
-        if route == "/findings":
-            self._send_html(_render_findings_view(window, gold_root, op_name))
-            return
-        if route == "/stix":
+        if route == "/intel":
             self._send_html(
-                _render_stix_view(
+                _render_intel_view(
                     window,
                     gold_root,
                     reporting,

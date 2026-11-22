@@ -59,7 +59,7 @@ Free IP→geography and IP→ASN database from MaxMind. Used by **Vector** (not 
 | `geo.asn`          | `autonomous_system_number`   | From ASN MMDB |
 | `geo.isp`          | `autonomous_system_organization` | From ASN MMDB |
 
-**If the vault key is missing.** Ansible's `when:` guards skip the download silently. Vector starts cleanly, but every event omits `.geo.*` fields. Symptom: Vigil's `/geography` view displays a **MaxMind GeoLite2 Not Populated** warning callout, `/health` marks MaxMind as `Not Configured`, and the gold `geographic_summary` table stays empty. Fix: add `vault_apikey_maxmind` to the vault and re-run the collector role.
+**If the vault key is missing.** Ansible's `when:` guards skip the download silently. Vector starts cleanly, but every event omits `.geo.*` fields. Symptom: Vigil's `/attackers#geo-origins` section displays a **MaxMind GeoLite2 Not Populated** warning callout, `/health` marks MaxMind as `Not Configured`, and the gold `geographic_summary` table stays empty. Fix: add `vault_apikey_maxmind` to the vault and re-run the collector role.
 
 ### AbuseIPDB
 
@@ -356,4 +356,4 @@ GreyNoise returns HTTP 404 for IPs not in its dataset rather than an empty 200. 
 
 ### MaxMind silent skip on missing license key
 
-If `vault_apikey_maxmind` is omitted or empty, Ansible's `when:` guards silently skip the MMDB download, extraction, ownership, and cron-update tasks. Vector starts fine — it just emits empty `.geo.*` fields for every event. Symptom: Vigil's `/geography` view shows the **MaxMind GeoLite2 Not Populated** warning callout, `/health` reports MaxMind as `Not Configured`, gold's `geographic_summary` is empty, and STIX bundles lack geo context. Fix: add `vault_apikey_maxmind` to the vault and re-run `deploy_single.yml` with the `vector` or `collector` tag.
+If `vault_apikey_maxmind` is omitted or empty, Ansible's `when:` guards silently skip the MMDB download, extraction, ownership, and cron-update tasks. Vector starts fine — it just emits empty `.geo.*` fields for every event. Symptom: Vigil's `/attackers#geo-origins` section shows the **MaxMind GeoLite2 Not Populated** warning callout, `/health` reports MaxMind as `Not Configured`, gold's `geographic_summary` is empty, and STIX bundles lack geo context. Fix: add `vault_apikey_maxmind` to the vault and re-run `deploy_single.yml` with the `vector` or `collector` tag.

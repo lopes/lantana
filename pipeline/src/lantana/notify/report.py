@@ -563,7 +563,7 @@ def generate_daily_brief(
                 "_VT Detections = number of AV engines flagging the file. "
                 "VT Risk = bucketed 0..100 score from `compute_file_risk_score`. "
                 "Family from VT's popular_threat_name (fallback: suggested_threat_label). "
-                "Full SHA256s and vhash clusters appear in the Vigil dashboard (/iocs and /stix)._"
+                "Full SHA256s and vhash clusters appear in the Vigil dashboard (/intel)._"
             )
             lines.append("")
 

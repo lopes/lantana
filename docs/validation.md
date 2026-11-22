@@ -624,7 +624,7 @@ Check your Discord channel for:
 
 ### 7.2 STIX bundles
 
-**Primary path — via the dashboard.** STIX bundles aren't stored server-side. They're generated on-demand from gold tables and streamed to the operator's browser. Open the Vigil dashboard (§7.3), navigate to **STIX Export** (`/stix`), pick the target date or window, and click **Download STIX 2.1 Bundle (.json)** (`/download/stix`) — the file saves to your workstation as `lantana-stix-<YYYY-MM-DD>.json`.
+**Primary path — via the dashboard.** STIX bundles aren't stored server-side. They're generated on-demand from gold tables and streamed to the operator's browser. Open the Vigil dashboard (§7.3), navigate to **Intel & Export** (`/intel`), pick the target date or window, and click **Download STIX 2.1 Bundle (.json)** (`/download/stix`) — the file saves to your workstation as `lantana-stix-<YYYY-MM-DD>.json`.
 
 Inspect the downloaded bundle on your workstation:
 
@@ -690,16 +690,12 @@ sudo -u nectar /opt/lantana/pipeline/venv/bin/lantana-dashboard
 cd pipeline && uv run python ../scripts/run-dashboard-local.py
 ```
 
-Then on your workstation, open <http://localhost:8501> and verify the window picker (`Day` / `7d` / `30d` / `Custom` / `All`), the dark/light theme toggle, and all 9 views:
+Then on your workstation, open <http://localhost:8501> and verify the window picker (`Day` / `7d` / `30d` / `Custom` / `All`), the dark/light theme toggle, and all 5 views (legacy paths like `/stix` and `/geography` cleanly `302` redirect to the corresponding anchored section):
 
-- **Overview (`/overview`):** Metric cards (events, IPs, auth, commands, findings, downloads) with `<details>` help drawers from `notify/explanations.py`, authentication donut, events-by-type stacked bar, and top-N tables.
-- **Durable IOCs (`/iocs`):** Outbound C2 IPs, post-auth stager URLs & domains, malware SHA-256 hashes (grouped by `vhash` cluster), and persistent SSH key fingerprints from `extracted_iocs`.
-- **IP Reputation (`/ips`):** Monotonic formula drawer linking [`docs/risk-scoring.md`](/docs/risk-scoring.md), High / Medium / Low / Total IP buckets (`RISK_HIGH_THRESHOLD = 70`, `RISK_THRESHOLD = 40`), composite/enrichment/behavioral histograms, and filterable IP table.
-- **Geography (`/geography`):** World map (bubble size = log10 events, color = `risk_score`) + top countries, cities, and ASNs from `geographic_summary`.
-- **Credentials (`/credentials`):** Top usernames, passwords, credential pairs, and shared-credential `campaign_clusters`.
-- **Behavioral Progression (`/progression`):** Escalation funnel (Scan / Credential / Authenticated / Interactive), Stage vs Time scatter, and multi-day progression summary across the selected date window.
-- **Detection Findings (`/findings`):** Real Suricata detection rules (excluding decoder SIDs `2200000-2260999`) — top rules bar chart and Pareto concentration chart.
-- **STIX Export (`/stix`):** Live bundle composition tiles mirroring `intel/stix.py`, one-click `/download/stix` (`.json`), and `/download/iocs.csv.gz` raw IOC export.
+- **Overview (`/overview`):** Telemetry pulse KPIs (events, IPs, auth, commands, malware, C2s, findings) with `<details>` help drawers from `notify/explanations.py`, multi-day trend, auth outcome donut, events-by-class bar, and top commands / top IDS rules highlights.
+- **Attackers (`/attackers`):** Risk buckets (`RISK_HIGH_THRESHOLD = 70`, `RISK_THRESHOLD = 40`) + monotonic formula drawer linking [`docs/risk-scoring.md`](/docs/risk-scoring.md), composite/behavioral/enrichment histograms, offline MaxMind GeoLite2 world map + Top Countries/Cities/ASNs (`#geo-origins`, collapsing to a compact warning callout when GeoLite2 is unset), and searchable Scored IP table.
+- **Behavior (`/behavior`):** Escalation funnel (Scan / Credential / Authenticated / Interactive), Stage-vs-Time scatter, multi-day persistence, Top Credentials + Post-Auth Commands + shared-credential `campaign_clusters` (`#cred-lists`), and Suricata Detection Findings (`#find-summary`, decoder SIDs `2200000-2260999` excluded, top rules + Pareto).
+- **Intel & Export (`/intel`):** Durable IOCs (`#ioc-summary`: outbound C2 IPs, post-auth stager URLs & domains, malware SHA-256 hashes with `vhash` clusters, SSH keys), live STIX 2.1 bundle composition (`#stix-export`, fail-closed when `reporting.json` is unavailable), one-click `/download/stix` (`.json`), and `/download/iocs.csv.gz` raw IOC export.
 - **System Health (`/health`):** 3rd-party API integration config and last-run status, scheduled pipeline unit timings, Bronze/Silver dataset liveness, live non-root `statvfs` disk headroom, per-tier datalake storage footprint, and recent sanitized error messages (zero secret values exposed).
   - **Overall Status meanings:** **`Healthy`** = zero criticals, warnings, rate-limits, and usable disk `<= 70%`; **`Degraded`** = pipeline still wrote data, but at least one non-critical issue is listed below (e.g., provider `auth_failed`, `Warning (Rate Limit)` / cooldown, `Silent (1d)`, or disk `70–80%`); **`Critical`** = data capture or retention is endangered (`pipeline_starved`, `Silent (2+d)`, `transform_failed`, failed systemd unit, or disk `> 80%`).
   - **Integration & alert labels:** **`Not Configured`** means an optional key is intentionally omitted and never degrades Overall Status; **`C · W · I`** on the alerts card counts **Critical**, **Warning**, and routine **Info** (e.g. free-tier `rate_limit`) events for the latest partition.
@@ -726,6 +722,6 @@ With `read_gold_range()`, the Vigil dashboard aggregates `behavioral_progression
 
 ## Post-v1.5 Analytical Follow-Ups
 
-The v1.5 release ships self-owned pinned GHCR honeypot images, Dionaea `lantana_json` (attributed binaries, download URLs, MSSQL/MySQL `sql_command`, structured HTTP POST bodies), monotonic behavioral-anchored risk scoring, durable STIX 2.1 IOCs (`extracted_iocs`), stateless D-1/D-2 dead-man's-switch alerting, decoupled 14d/180d retention, and the 9-view air-gapped Vigil dashboard (including `/health`) with 5 date windows. Remaining roadmap items tracked on the [README Roadmap](/README.md#roadmap):
+The v1.5 release ships self-owned pinned GHCR honeypot images, Dionaea `lantana_json` (attributed binaries, download URLs, MSSQL/MySQL `sql_command`, structured HTTP POST bodies), monotonic behavioral-anchored risk scoring, durable STIX 2.1 IOCs (`extracted_iocs`), stateless D-1/D-2 dead-man's-switch alerting, decoupled 14d/180d retention, and the 5-view air-gapped Vigil dashboard (`Overview`, `Attackers`, `Behavior`, `Intel & Export`, `Health`) with 5 date windows. Remaining roadmap items tracked on the [README Roadmap](/README.md#roadmap):
 
 - **Lossless multi-day slow-burn detection**: streaming or per-day stage-timestamp persistence to replace the window-rollup proxy without risking collector OOMs.

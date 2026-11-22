@@ -490,7 +490,7 @@ The runner is designed so that **one provider failing never blocks the others**:
 
 ### MaxMind silent failure (`.geo.*` fields empty)
 
-If Vigil's `/geography` view shows the **MaxMind GeoLite2 Not Populated** warning banner (or `/health` shows MaxMind as `Not Configured` / `Error`):
+If Vigil's `/attackers#geo-origins` section shows the **MaxMind GeoLite2 Not Populated** warning banner (or `/health` shows MaxMind as `Not Configured` / `Error`):
 
 1. **Check the vault has the key.** `ansible-vault view inventories/op_<name>/group_vars/all/vault.yml | grep maxmind`. If `vault_apikey_maxmind` is missing or empty, Ansible silently skipped the MMDB download — that's by design but it's the most common cause.
 2. **Check the MMDBs exist on the collector.** `ls -la /var/lib/lantana/collector/geoip/` should show two ~70 MB and ~10 MB files dated within the last month.

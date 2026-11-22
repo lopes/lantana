@@ -535,7 +535,7 @@ def _build_integrations(
         IntegrationHealth(
             name="MaxMind GeoLite2",
             key_id="maxmind",
-            role="Vector ingestion-time City/LatLon & ASN enrichment (/geography)",
+            role="Vector ingestion-time City/LatLon & ASN enrichment (/attackers#geo-origins)",
             config_mode=mm_mode,
             status=mm_status,
             last_message=mm_msg,

@@ -177,9 +177,9 @@ Threshold constants live in [`intel/stix.py`](/pipeline/src/lantana/intel/stix.p
 |---|---|---|
 | `intel/stix.py:_make_indicators` | `behavioral_risk_score > 0` AND `risk_score >= RISK_THRESHOLD` (not RIOT/`benign`) | Gate for transient inbound IP indicators (emitted with 7-day `valid_until`). Durable IOCs from `extracted_iocs` (outbound C2 IPs, stager URLs/domains, malware hashes, SSH keys) bypass the inbound IP gate and carry 30–90 day validity. |
 | `intel/stix.py:_make_indicators` | `risk_score` | STIX `confidence` field = `min(int(risk_score), 100)`. |
-| `dashboard/queries.py` + `dashboard/html.py` (`/ips`, `/overview`) | `risk_score` | High (`>= RISK_HIGH_THRESHOLD`) / Medium (`>= RISK_THRESHOLD`) / Low buckets. Help drawers read from `notify/explanations.py`. |
-| `dashboard/queries.py` (`/stix`) | `behavioral_risk_score > 0` AND `risk_score >= RISK_THRESHOLD` | Bundle composition preview mirroring the exact STIX gate. |
-| `dashboard/charts.py` (`/geography`) | `risk_score` | World-map color scale (0–100). |
+| `dashboard/queries.py` + `dashboard/html.py` (`/attackers`, `/overview`) | `risk_score` | High (`>= RISK_HIGH_THRESHOLD`) / Medium (`>= RISK_THRESHOLD`) / Low buckets. Help drawers read from `notify/explanations.py`. |
+| `dashboard/queries.py` (`/intel`) | `behavioral_risk_score > 0` AND `risk_score >= RISK_THRESHOLD` | Bundle composition preview mirroring the exact STIX gate. |
+| `dashboard/charts.py` (`/attackers#geo-origins`) | `risk_score` | World-map color scale (0–100). |
 | `notify/report.py` | `risk_score` (sort) + `enrichment_risk_score` + `behavioral_risk_score` + 4 per-provider scores | Top Attackers table with decomposition column. |
 
 ## Worked examples

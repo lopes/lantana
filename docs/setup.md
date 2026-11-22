@@ -474,5 +474,5 @@ Two common follow-ups:
 | Validate active canaries | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-canaries.yml --ask-vault-pass` |
 | Validate pipeline cycle | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass` |
 | Dashboard tunnel | `ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>` → on collector: `sudo -u nectar /opt/lantana/pipeline/venv/bin/lantana-dashboard` → browse to <http://localhost:8501> |
-| Export STIX bundle | Vigil Dashboard → STIX Export (`/stix`) → pick date/window → **Download STIX 2.1 Bundle** (`.json`) |
+| Export STIX bundle | Vigil Dashboard → Intel & Export (`/intel`) → pick date/window → **Download STIX 2.1 Bundle** (`.json`) |
 | Baseline snapshot | `scripts/backup-vps.sh <host> <user> <key> <port> ./backups/<op_name>/baseline` |

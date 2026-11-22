@@ -29,13 +29,9 @@ if TYPE_CHECKING:
 
 NAV_ROUTES: tuple[tuple[str, str], ...] = (
     ("/overview", "Overview"),
-    ("/iocs", "Malware & IOCs"),
-    ("/ips", "IP Reputation"),
-    ("/geography", "Geography"),
-    ("/credentials", "Credentials"),
-    ("/progression", "Progression"),
-    ("/findings", "Findings"),
-    ("/stix", "STIX & Export"),
+    ("/attackers", "Attackers"),
+    ("/behavior", "Behavior"),
+    ("/intel", "Intel & Export"),
     ("/health", "Health"),
 )
 
