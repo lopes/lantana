@@ -689,7 +689,7 @@ sudo -u nectar /opt/lantana/pipeline/venv/bin/lantana-dashboard
 cd pipeline && uv run python ../scripts/run-dashboard-local.py
 ```
 
-Then on your workstation, open <http://localhost:8501> and verify the window picker (`Day` / `7d` / `30d` / `Custom` / `All`), the dark/light theme toggle, and all 8 views:
+Then on your workstation, open <http://localhost:8501> and verify the window picker (`Day` / `7d` / `30d` / `Custom` / `All`), the dark/light theme toggle, and all 9 views:
 
 - **Overview (`/overview`):** Metric cards (events, IPs, auth, commands, findings, downloads) with `<details>` help drawers from `notify/explanations.py`, authentication donut, events-by-type stacked bar, and top-N tables.
 - **Durable IOCs (`/iocs`):** Outbound C2 IPs, post-auth stager URLs & domains, malware SHA-256 hashes (grouped by `vhash` cluster), and persistent SSH key fingerprints from `extracted_iocs`.
@@ -699,6 +699,7 @@ Then on your workstation, open <http://localhost:8501> and verify the window pic
 - **Behavioral Progression (`/progression`):** Escalation funnel (Scan / Credential / Authenticated / Interactive), Stage vs Time scatter, and multi-day progression summary across the selected date window.
 - **Detection Findings (`/findings`):** Real Suricata detection rules (excluding decoder SIDs `2200000-2260999`) — top rules bar chart and Pareto concentration chart.
 - **STIX Export (`/stix`):** Live bundle composition tiles mirroring `intel/stix.py`, one-click `/download/stix` (`.json`), and `/download/iocs.csv.gz` raw IOC export.
+- **System Health (`/health`):** 3rd-party API integration config and last-run status (`OK`, `Warning (Rate Limit)`, `Error`, `Not Configured`), scheduled pipeline unit timings, Bronze/Silver dataset liveness, live non-root `statvfs` disk headroom, per-tier datalake storage footprint, and recent sanitized error messages (zero secret values exposed).
 
 ### 7.4 Multi-day progression
 

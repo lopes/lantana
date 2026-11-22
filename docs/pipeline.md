@@ -175,7 +175,7 @@ Section captions and dashboard help drawers share one source — `WhatWhyHow` tr
 
 Entry point: `lantana-dashboard` (`lantana.dashboard.app`). Self-contained, air-gapped stdlib `ThreadingHTTPServer` themed with a local `vigil.css` and serving Plotly JS locally from `/static/plotly.min.js` (zero Streamlit, zero Pandas, zero external CDNs or fonts, strict `connect-src 'none'` CSP).
 
-Binds strictly to `127.0.0.1:8501` (OPSEC Layer 3 — never exposed externally; reach via `ssh -L 8501:localhost:8501`). Supports 5 date windows (`Day`, `7d`, `30d`, `Custom range`, `All`) across 8 routes: `/overview`, `/iocs`, `/ips`, `/geography`, `/credentials`, `/progression`, `/findings`, and `/stix` (with on-demand `/download/stix` and `/download/iocs.csv.gz` streams). See [`validation.md` §7.3 → "Vigil dashboard"](/docs/validation.md#73-vigil-dashboard).
+Binds strictly to `127.0.0.1:8501` (OPSEC Layer 3 — never exposed externally; reach via `ssh -L 8501:localhost:8501`). Supports 5 date windows (`Day`, `7d`, `30d`, `Custom range`, `All`) across 9 routes: `/overview`, `/iocs`, `/ips`, `/geography`, `/credentials`, `/progression`, `/findings`, `/stix`, and `/health` (with on-demand `/download/stix` and `/download/iocs.csv.gz` streams). See [`validation.md` §7.3 → "Vigil dashboard"](/docs/validation.md#73-vigil-dashboard).
 
 #### Verification playbooks
 

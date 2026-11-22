@@ -36,6 +36,7 @@ NAV_ROUTES: tuple[tuple[str, str], ...] = (
     ("/progression", "Progression"),
     ("/findings", "Findings"),
     ("/stix", "STIX & Export"),
+    ("/health", "Health"),
 )
 
 
@@ -258,19 +259,68 @@ def render_interactive_table(
     )
 
 
+def render_badge(value: object) -> str:
+    """Render a Vigil semantic status badge matching client-side ``badgeHtml``."""
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return "—"
+    low = text.lower()
+    if low in {
+        "high",
+        "malicious",
+        "malware_hash",
+        "critical",
+        "error",
+        "failed",
+        "silent (2+d)",
+    }:
+        cls = "badge badge-high"
+    elif low in {
+        "medium",
+        "suspicious",
+        "c2_ip",
+        "stager_url",
+        "warning",
+        "warning (rate limit)",
+        "degraded",
+        "silent (1d)",
+        "cooldown",
+    }:
+        cls = "badge badge-med"
+    elif low in {
+        "low",
+        "benign",
+        "ssh_key",
+        "ok",
+        "healthy",
+        "active",
+        "success",
+        "configured",
+        "configured (gti)",
+        "configured (free)",
+        "configured (keyed)",
+    }:
+        cls = "badge badge-low"
+    else:
+        cls = "badge badge-info"
+    return f'<span class="{cls}">{esc(text)}</span>'
+
+
 def render_simple_table(
     headers: Sequence[str],
     rows: Sequence[Sequence[object]],
     *,
     numeric_cols: set[int] | None = None,
     mono_cols: set[int] | None = None,
+    badge_cols: set[int] | None = None,
     empty_message: str = "No records for this window.",
 ) -> str:
-    """Render a compact static table (e.g. top-10 lists on Overview/Credentials)."""
+    """Render a compact static table (e.g. top-10 lists on Overview/Credentials/Health)."""
     if not rows:
         return f'<div class="callout">{esc(empty_message)}</div>'
     num_set = numeric_cols or set()
     mono_set = mono_cols or set()
+    badge_set = badge_cols or set()
     thead = "".join(f"<th>{esc(h)}</th>" for h in headers)
     tbody_rows: list[str] = []
     for row in rows:
@@ -282,7 +332,8 @@ def render_simple_table(
             if idx in mono_set:
                 cls_parts.append("mono")
             cls_attr = f' class="{" ".join(cls_parts)}"' if cls_parts else ""
-            tds.append(f"<td{cls_attr}>{esc(cell)}</td>")
+            content = render_badge(cell) if idx in badge_set else esc(cell)
+            tds.append(f"<td{cls_attr}>{content}</td>")
         tbody_rows.append(f"<tr>{''.join(tds)}</tr>")
     return (
         '<div class="table-wrap">'
@@ -394,14 +445,21 @@ _CONSOLE_JS = """
     var s = String(val || "");
     var low = s.toLowerCase();
     var cls = "badge";
-    if (low === "high" || low === "malicious" || low === "malware_hash") {
+    if (
+      low === "high" || low === "malicious" || low === "malware_hash" ||
+      low === "critical" || low === "error" || low === "failed"
+    ) {
       cls += " badge-high";
     } else if (
       low === "medium" || low === "suspicious" ||
-      low === "c2_ip" || low === "stager_url"
+      low === "c2_ip" || low === "stager_url" ||
+      low === "warning" || low === "warning (rate limit)" || low === "degraded"
     ) {
       cls += " badge-med";
-    } else if (low === "low" || low === "benign" || low === "ssh_key") {
+    } else if (
+      low === "low" || low === "benign" || low === "ssh_key" ||
+      low === "ok" || low === "healthy" || low === "active" || low === "success"
+    ) {
       cls += " badge-low";
     } else {
       cls += " badge-info";

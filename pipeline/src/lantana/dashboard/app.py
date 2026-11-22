@@ -45,6 +45,10 @@ from lantana.dashboard.charts import (
     velocity_histogram_chart,
     world_map_chart,
 )
+from lantana.dashboard.health import (
+    collect_health_snapshot,
+    format_bytes,
+)
 from lantana.dashboard.html import (
     KpiCard,
     TableColumn,
@@ -691,19 +695,43 @@ def _render_geography_view(window: DateWindow, gold_root: Path, op_name: str) ->
         city_rows,
         numeric_cols={0, 3},
     )
-    body = (
-        render_section_heading("geo-map", "World Map", help_key="World Map")
-        + render_chart_card(
+    has_coords = {"geo_latitude", "geo_longitude"} <= set(df.columns) and not df.filter(
+        pl.col("geo_latitude").is_not_null() & pl.col("geo_longitude").is_not_null()
+    ).is_empty()
+    qs = window_query_string(window)
+    geo_missing_callout = (
+        '<div class="callout callout-warning">'
+        '<div class="callout-title">MaxMind GeoLite2 Not Populated</div>'
+        "No GeoLite2 coordinates or country/ASN metadata were recorded for this window. "
+        "Configure <code>vault_apikey_maxmind</code> (GeoLite2-City &amp; GeoLite2-ASN MMDBs) "
+        f'to populate Geography views — see <a href="/health?{qs}">System Health</a> '
+        "for integration status."
+        "</div>"
+    )
+    map_block = (
+        render_chart_card(
             "world-map", "Attacker Origins (Size = log10 Events, Color = Risk)", world_map_chart(df)
         )
-        + render_section_heading(
-            "geo-countries", "Top Countries & Cities", help_key="Top Countries"
-        )
-        + render_chart_card(
+        if has_coords
+        else geo_missing_callout
+    )
+    countries_chart_block = (
+        render_chart_card(
             "top-countries-bar",
             "Unique Attacker IPs by Country",
             top_countries_bar_chart(countries_df),
         )
+        if not countries_df.is_empty()
+        else ""
+    )
+
+    body = (
+        render_section_heading("geo-map", "World Map", help_key="World Map")
+        + map_block
+        + render_section_heading(
+            "geo-countries", "Top Countries & Cities", help_key="Top Countries"
+        )
+        + countries_chart_block
         + '<div class="chart-grid">'
         + f"<div><h3>Top Countries</h3>{countries_tbl}</div>"
         + f"<div><h3>Top Cities</h3>{cities_tbl}</div>"
@@ -1253,6 +1281,256 @@ def _render_stix_view(
     )
 
 
+def _render_health_view(
+    window: DateWindow,
+    gold_root: Path,
+    silver_root: Path,
+    reporting: ReportingConfig,
+    *,
+    datalake_root: Path | None = None,
+    secrets_path: Path | None = None,
+    geoip_dir: Path | None = None,
+) -> str:
+    snap = collect_health_snapshot(
+        dates=window.dates,
+        reporting=reporting,
+        gold_root=gold_root,
+        silver_root=silver_root,
+        datalake_root=datalake_root,
+        secrets_path=secrets_path,
+        geoip_dir=geoip_dir,
+    )
+
+    configured_cnt = sum(1 for i in snap.integrations if i.config_mode != "Not Configured")
+    unconfigured_names = [i.name for i in snap.integrations if i.config_mode == "Not Configured"]
+    if snap.disk is not None:
+        disk_val = f"{snap.disk.usage_pct:.1f}%"
+        disk_sub = (
+            f"{format_bytes(snap.disk.used_bytes)} / "
+            f"{format_bytes(snap.disk.total_usable_bytes)} "
+            f"({format_bytes(snap.disk.free_bytes)} free)"
+        )
+        disk_tone = (
+            "high"
+            if snap.disk.status == "Critical"
+            else ("med" if snap.disk.status == "Warning" else "low")
+        )
+    else:
+        disk_val = "—"
+        disk_sub = "Unavailable"
+        disk_tone = ""
+
+    crit_n = sum(int(r.get("count", 1)) for r in snap.buckets.critical)
+    warn_n = sum(int(r.get("count", 1)) for r in snap.buckets.warning)
+    info_n = sum(int(r.get("count", 1)) for r in snap.buckets.info)
+    alert_tone = "high" if crit_n > 0 else ("med" if warn_n > 0 else "low")
+
+    kpis = [
+        KpiCard(
+            "Overall Status",
+            snap.overall_status,
+            sub=(
+                f"Latest partition: {snap.target_date.isoformat()}"
+                if snap.target_date
+                else "No Gold partitions yet"
+            ),
+            tone=snap.overall_tone,
+        ),
+        KpiCard(
+            "Usable Disk",
+            disk_val,
+            sub=disk_sub,
+            tone=disk_tone,
+            metric_key="Usable Disk",
+        ),
+        KpiCard(
+            "Integrations Active",
+            f"{configured_cnt} / {len(snap.integrations)}",
+            sub=(
+                "All configured"
+                if not unconfigured_names
+                else f"Unset: {', '.join(unconfigured_names[:2])}"
+                + ("…" if len(unconfigured_names) > 2 else "")
+            ),
+            tone="low" if not unconfigured_names else "info",
+        ),
+        KpiCard(
+            "Latest Run Alerts",
+            f"{crit_n}C · {warn_n}W · {info_n}I",
+            sub="Critical · Warning · Info",
+            tone=alert_tone,
+        ),
+        KpiCard(
+            "Enrichment Cache",
+            f"{snap.cache_active_entries:,}",
+            sub=f"SQLite DB: {format_bytes(snap.cache_size_bytes)}",
+            tone="info",
+            metric_key="Enrichment Cache",
+        ),
+    ]
+
+    secrets_warning = (
+        ""
+        if snap.secrets_loaded
+        else (
+            '<div class="callout callout-warning">'
+            '<div class="callout-title">Secrets Config Unavailable</div>'
+            "<code>secrets.json</code> was not readable from the dashboard process — "
+            "integration configuration status defaults to Not Configured."
+            "</div>"
+        )
+    )
+
+    integration_rows = [
+        [
+            i.name,
+            i.config_mode,
+            i.status,
+            f"{i.cache_entries:,}" if i.cache_entries is not None else "—",
+            i.last_rate_limited or "—",
+            i.last_message,
+        ]
+        for i in snap.integrations
+    ]
+    integrations_tbl = render_simple_table(
+        ["Integration", "Config", "Last Run Status", "Cached IOCs", "Last 429", "Details"],
+        integration_rows,
+        numeric_cols={3},
+        mono_cols={4},
+        badge_cols={1, 2},
+    )
+
+    unit_rows = [
+        [
+            u.step,
+            u.schedule,
+            u.status,
+            u.raw_result,
+            u.duration_display,
+            u.finished_at_display,
+        ]
+        for u in snap.units
+    ]
+    units_tbl = render_simple_table(
+        ["Step", "Schedule", "Status", "Systemd Result", "Duration", "Last Finished"],
+        unit_rows,
+        numeric_cols={4},
+        mono_cols={0, 1, 3, 5},
+        badge_cols={2},
+    )
+
+    ds_rows = [
+        [
+            d.dataset,
+            d.status,
+            d.latest_bronze,
+            d.latest_silver,
+            format_bytes(d.silver_size_bytes) if d.silver_size_bytes > 0 else "—",
+        ]
+        for d in snap.datasets
+    ]
+    datasets_tbl = render_simple_table(
+        ["Dataset", "Liveness", "Latest Bronze", "Latest Silver", "Latest Silver Size"],
+        ds_rows,
+        numeric_cols={4},
+        mono_cols={0, 2, 3},
+        badge_cols={1},
+    )
+
+    disk_bar_html = ""
+    if snap.disk is not None:
+        clamped = max(0.0, min(100.0, snap.disk.usage_pct))
+        bar_tone = f" tone-{disk_tone}" if disk_tone in ("med", "high") else ""
+        disk_bar_html = (
+            '<div class="callout">'
+            f'<div class="callout-title">Filesystem Headroom — {snap.disk.usage_pct:.1f}% Used '
+            f"(Warn &gt;70% · Emergency Prune &gt;80%)</div>"
+            f'<div class="disk-meter"><div class="disk-meter-fill{bar_tone}" '
+            f'style="width:{clamped:.1f}%"></div></div>'
+            f'<div class="table-meta">Used: {esc(format_bytes(snap.disk.used_bytes))} · '
+            f"Free (non-root usable): {esc(format_bytes(snap.disk.free_bytes))} · "
+            f"Total usable: {esc(format_bytes(snap.disk.total_usable_bytes))}</div>"
+            "</div>"
+        )
+
+    storage_rows = [
+        [
+            t.tier,
+            t.retention,
+            f"{t.files:,}",
+            format_bytes(t.size_bytes),
+        ]
+        for t in snap.storage_tiers
+    ]
+    storage_tbl = render_simple_table(
+        ["Storage Tier", "Retention Policy", "Files", "Footprint"],
+        storage_rows,
+        numeric_cols={2, 3},
+    )
+
+    msg_columns = [
+        TableColumn("date", "Date", mono=True),
+        TableColumn("severity", "Severity", badge=True),
+        TableColumn("provider", "Component", mono=True),
+        TableColumn("error_type", "Type", mono=True),
+        TableColumn("count", "Count", numeric=True),
+        TableColumn("message", "Message"),
+    ]
+    messages_block = render_interactive_table(
+        "health-messages-table",
+        msg_columns,
+        snap.recent_messages,
+        page_size=25,
+        search_placeholder="Filter provider, error type, or message...",
+        empty_message="All clear — no pipeline or provider errors recorded for this window.",
+    )
+
+    toc = [
+        ("health-summary", "System Summary"),
+        ("health-integrations", "3rd-Party Integrations"),
+        ("health-pipeline", "Pipeline Units & Liveness"),
+        ("health-storage", "Storage & Retention"),
+        ("health-messages", "Recent Messages"),
+    ]
+    body = (
+        render_section_heading("health-summary", "System Summary", help_key="Pipeline Health")
+        + render_kpis(kpis)
+        + secrets_warning
+        + render_section_heading(
+            "health-integrations", "3rd-Party Integrations", help_key="Integrations Status"
+        )
+        + integrations_tbl
+        + render_section_heading(
+            "health-pipeline", "Pipeline Units & Dataset Liveness", help_key="Dataset Liveness"
+        )
+        + '<div class="chart-grid">'
+        + f"<div><h3>Scheduled Units</h3>{units_tbl}</div>"
+        + f"<div><h3>Dataset Liveness</h3>{datasets_tbl}</div>"
+        + "</div>"
+        + render_section_heading(
+            "health-storage", "Storage & Retention", help_key="Storage & Retention"
+        )
+        + disk_bar_html
+        + storage_tbl
+        + render_section_heading(
+            "health-messages", "Recent Pipeline & Provider Messages", help_key="Recent Messages"
+        )
+        + messages_block
+    )
+    return render_page(
+        title="System Health",
+        subtitle=(
+            "3rd-party API status, last-run messages, dataset liveness, "
+            "pipeline timing, and storage headroom."
+        ),
+        active_route="/health",
+        window=window,
+        toc_items=toc,
+        body_html=body,
+        operation_name=reporting.operation.name,
+    )
+
+
 class DashboardServer(ThreadingHTTPServer):
     """Typed ``ThreadingHTTPServer`` carrying datalake & reporting config."""
 
@@ -1265,10 +1543,16 @@ class DashboardServer(ThreadingHTTPServer):
         gold_root: Path = GOLD_ROOT,
         silver_root: Path = SILVER_ROOT,
         reporting_path: Path | None = None,
+        secrets_path: Path | None = None,
+        datalake_root: Path | None = None,
+        geoip_dir: Path | None = None,
     ) -> None:
         self.gold_root = gold_root
         self.silver_root = silver_root
         self.reporting_path = reporting_path
+        self.secrets_path = secrets_path
+        self.datalake_root = datalake_root
+        self.geoip_dir = geoip_dir
         super().__init__(server_address, DashboardRequestHandler)
 
 
@@ -1383,6 +1667,19 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 )
             )
             return
+        if route == "/health":
+            self._send_html(
+                _render_health_view(
+                    window,
+                    gold_root,
+                    self.server.silver_root,
+                    reporting,
+                    datalake_root=self.server.datalake_root,
+                    secrets_path=self.server.secrets_path,
+                    geoip_dir=self.server.geoip_dir,
+                )
+            )
+            return
 
         if route == "/download/stix":
             if not reporting_loaded:
@@ -1468,6 +1765,9 @@ def create_server(
     gold_root: Path | None = None,
     silver_root: Path | None = None,
     reporting_path: Path | None = None,
+    secrets_path: Path | None = None,
+    datalake_root: Path | None = None,
+    geoip_dir: Path | None = None,
 ) -> DashboardServer:
     """Create a configured ``DashboardServer`` bound strictly to ``host:port``."""
     resolved_gold = (
@@ -1485,6 +1785,9 @@ def create_server(
         gold_root=resolved_gold,
         silver_root=resolved_silver,
         reporting_path=reporting_path,
+        secrets_path=secrets_path,
+        datalake_root=datalake_root,
+        geoip_dir=geoip_dir,
     )
 
 

@@ -346,6 +346,7 @@ class TestAirGappedVigilServer:
             "/progression",
             "/findings",
             "/stix",
+            "/health",
         ],
     )
     def test_all_views_render_200_and_are_strictly_air_gapped(
@@ -481,6 +482,194 @@ def test_stix_export_fails_closed_when_reporting_config_missing(tmp_path: Path) 
 
         dl_status, _, _ = _fetch(f"{base}/download/stix?window=all")
         assert dl_status == 503
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_geography_shows_helpful_callout_when_maxmind_geo_is_null(tmp_path: Path) -> None:
+    """When MaxMind GeoIP is unconfigured, show a clear callout instead of blank axes."""
+    gold_root, silver_root, reporting_path = _seed_datalake(tmp_path)
+    d = date(2026, 7, 11)
+    ts = datetime(2026, 7, 11, 14, 0, 0, tzinfo=UTC)
+    write_gold_table(
+        pl.DataFrame(
+            {
+                "src_endpoint_ip": ["203.0.113.50"],
+                "risk_score": [60.0],
+                "enrichment_risk_score": [None],
+                "behavioral_risk_score": [60.0],
+                "total_events": [25],
+                "auth_attempts": [10],
+                "auth_successes": [2],
+                "commands_executed": [3],
+                "downloads": [0],
+                "findings_triggered": [1],
+                "geo_country": [None],
+                "geo_city": [None],
+                "geo_latitude": [None],
+                "geo_longitude": [None],
+                "geo_asn": [None],
+                "geo_isp": [None],
+                "greynoise_class": [None],
+                "greynoise_name": [None],
+                "greynoise_riot": [None],
+                "shodan_org": [None],
+                "datasets": [["cowrie"]],
+                "first_seen": [ts],
+                "last_seen": [ts],
+            },
+            schema_overrides={
+                "enrichment_risk_score": pl.Float64,
+                "geo_country": pl.Utf8,
+                "geo_city": pl.Utf8,
+                "geo_latitude": pl.Float64,
+                "geo_longitude": pl.Float64,
+                "geo_asn": pl.Int64,
+                "geo_isp": pl.Utf8,
+                "greynoise_class": pl.Utf8,
+                "greynoise_name": pl.Utf8,
+                "greynoise_riot": pl.Boolean,
+                "shodan_org": pl.Utf8,
+            },
+        ),
+        "ip_reputation",
+        d,
+        gold_root=gold_root,
+    )
+
+    server = create_server(
+        host="127.0.0.1",
+        port=0,
+        gold_root=gold_root,
+        silver_root=silver_root,
+        reporting_path=reporting_path,
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, raw = _fetch(f"http://127.0.0.1:{port}/geography?window=latest")
+        assert status == 200
+        body = raw.decode("utf-8")
+        assert "vault_apikey_maxmind" in body
+        assert "/health" in body
+        assert 'id="world-map"' not in body
+        assert 'id="top-countries-bar"' not in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_health_dashboard_surfaces_integrations_errors_storage_and_never_leaks_secrets(
+    tmp_path: Path,
+) -> None:
+    """/health surfaces API config, last-run status, storage, liveness, and 0 secrets."""
+    gold_root, silver_root, reporting_path = _seed_datalake(tmp_path)
+    secrets_path = tmp_path / "secrets.json"
+    synthetic_vt = "SYNTHETIC_TEST_VT_SECRET_000000"
+    synthetic_abuse = "SYNTHETIC_TEST_ABUSE_SECRET_000000"
+    synthetic_discord = "https://discord.example.com/api/webhooks/000000/SYNTHETIC_WEBHOOK_TOKEN"
+    secrets_path.write_text(
+        json.dumps(
+            {
+                "vault_apikey_virustotal": synthetic_vt,
+                "vault_apikey_abuseipdb": synthetic_abuse,
+                "vault_apikey_shodan": None,
+                "vault_apikey_greynoise": "",
+                "vault_apikey_gti": None,
+                "gti_enabled": False,
+                "vault_apikey_maxmind": None,
+                "vault_webhook_discord": synthetic_discord,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    errors_path = tmp_path / "enrichment_errors.json"
+    errors_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "date": "2026-07-11",
+                        "provider": "virustotal",
+                        "error_type": "auth_failed",
+                        "count": 1,
+                        "message": "HTTP 401 Unauthorized",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "date": "2026-07-11",
+                        "provider": "greynoise",
+                        "error_type": "rate_limit",
+                        "count": 5,
+                        "message": "HTTP 429 Too Many Requests",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    provider_state_path = tmp_path / ".provider_state.json"
+    provider_state_path.write_text(
+        json.dumps({"greynoise": {"last_rate_limited": "2026-07-11"}}),
+        encoding="utf-8",
+    )
+
+    geoip_dir = tmp_path / "geoip"
+    geoip_dir.mkdir()
+
+    server = create_server(
+        host="127.0.0.1",
+        port=0,
+        gold_root=gold_root,
+        silver_root=silver_root,
+        reporting_path=reporting_path,
+        secrets_path=secrets_path,
+        datalake_root=tmp_path,
+        geoip_dir=geoip_dir,
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, headers, raw = _fetch(f"http://127.0.0.1:{port}/health?window=latest")
+        assert status == 200
+        assert "connect-src 'none'" in headers.get("content-security-policy", "")
+        body = raw.decode("utf-8")
+
+        # Integrations & last-run statuses
+        assert "AbuseIPDB" in body
+        assert "VirusTotal" in body
+        assert "Shodan" in body
+        assert "GreyNoise" in body
+        assert "MaxMind GeoLite2" in body
+        assert "Discord Webhook" in body
+        assert "Not Configured" in body
+        assert "Rate Limit" in body
+        assert "auth_failed" in body
+        assert "HTTP 401 Unauthorized" in body
+
+        # Storage & liveness sections
+        assert "Usable Disk" in body
+        assert "Bronze" in body
+        assert "Silver" in body
+        assert "Gold" in body
+        assert "cowrie" in body
+        assert "suricata" in body
+
+        # OPSEC: zero secret values ever rendered into HTML
+        assert synthetic_vt not in body
+        assert synthetic_abuse not in body
+        assert synthetic_discord not in body
+        assert "SYNTHETIC_TEST_" not in body
+        assert "SYNTHETIC_WEBHOOK_TOKEN" not in body
     finally:
         server.shutdown()
         server.server_close()

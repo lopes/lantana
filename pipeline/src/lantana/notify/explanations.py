@@ -225,6 +225,27 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         why="post-login behaviour reveals attacker intent (recon, persistence, drop).",
         how="silver cowrie command events grouped by actor_process_cmd_line.",
     ),
+    # Health page sections
+    "Integrations Status": WhatWhyHow(
+        what="configured vs unconfigured 3rd-party APIs and their latest run outcome.",
+        why="explains missing enrichment or blank Geography views without inspecting secrets.",
+        how="boolean presence in secrets.json + enrichment_errors.json + .provider_state.json.",
+    ),
+    "Dataset Liveness": WhatWhyHow(
+        what="latest Bronze and Silver partition dates across all expected sensor datasets.",
+        why="spots silent honeypot freezes, Vector drops, or ingestion lag immediately.",
+        how="stateless D-1/D-2 freshness check across cowrie, dionaea, suricata, nftables.",
+    ),
+    "Storage & Retention": WhatWhyHow(
+        what="non-root usable disk percentage and per-tier datalake footprint.",
+        why="tracks headroom against 70% warning and 80% emergency-prune thresholds.",
+        how="os.statvfs (f_bavail) + bounded non-symlink scan of bronze, silver, gold, and cache.",
+    ),
+    "Recent Messages": WhatWhyHow(
+        what="deduped pipeline errors, rate-limit notices, and liveness alerts.",
+        why="gives operators the exact failure reason without SSHing into journalctl.",
+        how="enrichment_errors.json + evaluate_liveness_alerts(), sanitized at write time.",
+    ),
 }
 
 
@@ -414,5 +435,15 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         what="all durable daily observables: malware hashes, C2 IPs, URLs, domains, SSH keys.",
         why="high-shelf-life threat intelligence ready for OpenCTI, MISP, and retro-hunting.",
         how="row count of the extracted_iocs Gold table across the active window.",
+    ),
+    "Usable Disk": WhatWhyHow(
+        what="non-root usable filesystem usage percentage matching df.",
+        why="ext4 reserves ~5% for root; unprivileged nectar hits ENOSPC at 100% usable.",
+        how="os.statvfs used / (used + f_bavail); warn >70%, emergency prune >80%.",
+    ),
+    "Enrichment Cache": WhatWhyHow(
+        what="active (unexpired) IOC records cached in .enrichment_cache.db.",
+        why="avoids burning scarce free-tier API quota on repeat scanners and known hashes.",
+        how="read-only SQLite count where expires_at > now() across ip/hash/url/domain.",
     ),
 }
