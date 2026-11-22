@@ -96,8 +96,8 @@ jobs:
 
           # Match baked USER 1000:1000 on bind-mounted writable directories
           # (on Debian/Podman hosts this flows via UserNS=keep-id:uid=1000,gid=1000).
-          sudo chown -R 1000:1000 "$TMPDIR/log" "$TMPDIR/lib"
           chmod 0755 "$TMPDIR/log" "$TMPDIR/lib"
+          sudo chown -R 1000:1000 "$TMPDIR/log" "$TMPDIR/lib"
 
           CID=$(docker run -d --rm \
             --read-only --tmpfs /tmp \
