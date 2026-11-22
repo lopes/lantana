@@ -411,6 +411,48 @@ class TestAirGappedVigilServer:
         assert exc_info.value.code == 302
         assert exc_info.value.headers.get("Location") == expected_target
 
+    def test_legacy_redirect_sanitizes_query_against_header_injection(
+        self, live_dashboard: str
+    ) -> None:
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(
+                self,
+                req: urllib.request.Request,
+                fp: object,
+                code: int,
+                msg: str,
+                headers: object,
+                newurl: str,
+            ) -> None:
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect)
+
+        # Valid custom date window params are preserved cleanly
+        with pytest.raises(urllib.error.HTTPError) as valid_exc:
+            opener.open(
+                f"{live_dashboard}/stix?window=custom&start=2026-07-10&end=2026-07-11",
+                timeout=5,
+            )
+        assert valid_exc.value.code == 302
+        assert (
+            valid_exc.value.headers.get("Location")
+            == "/intel?window=custom&start=2026-07-10&end=2026-07-11#stix-export"
+        )
+
+        # CRLF injection and unknown/invalid parameters are stripped completely
+        with pytest.raises(urllib.error.HTTPError) as evil_exc:
+            opener.open(
+                f"{live_dashboard}/ips?window=7d%0d%0aX-Injected:1&start=bad&evil=1",
+                timeout=5,
+            )
+        assert evil_exc.value.code == 302
+        location = evil_exc.value.headers.get("Location") or ""
+        assert location == "/attackers"
+        assert "\r" not in location and "\n" not in location
+        assert "X-Injected" not in location
+        assert "evil" not in location
+
     def test_static_assets_and_vigil_tokens_are_self_contained(self, live_dashboard: str) -> None:
         status_css, headers_css, css_bytes = _fetch(f"{live_dashboard}/static/vigil.css")
         assert status_css == 200

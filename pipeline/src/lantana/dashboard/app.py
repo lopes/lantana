@@ -11,13 +11,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import date
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import plotly.offline
 import polars as pl
@@ -62,6 +63,7 @@ from lantana.dashboard.html import (
     window_query_string,
 )
 from lantana.dashboard.queries import (
+    VALID_WINDOW_MODES,
     DateWindow,
     _merge_credential_pairs,
     _merge_top_n_structs,
@@ -1422,6 +1424,40 @@ _LEGACY_ROUTE_REDIRECTS: dict[str, tuple[str, str]] = {
     "/stix": ("/intel", "#stix-export"),
 }
 
+_ALLOWED_REDIRECT_WINDOWS: dict[str, str] = {mode: mode for mode in VALID_WINDOW_MODES}
+
+
+def _build_safe_redirect_location(
+    dest_path: str,
+    anchor: str,
+    query: dict[str, list[str]],
+) -> str:
+    """Build a strictly sanitized relative ``Location`` header for legacy redirects.
+
+    Reconstructs only allowlisted date-window parameters (``window``, ``start``,
+    ``end``) from static literals and parsed ISO dates so raw request strings
+    never flow into HTTP response headers.
+    """
+    params: list[tuple[str, str]] = []
+    window_vals = query.get("window")
+    if window_vals:
+        safe_window = _ALLOWED_REDIRECT_WINDOWS.get(window_vals[0].strip().lower())
+        if safe_window is not None:
+            params.append(("window", safe_window))
+
+    for date_key in ("start", "end"):
+        raw_vals = query.get(date_key)
+        if not raw_vals:
+            continue
+        try:
+            parsed_date = date.fromisoformat(raw_vals[0].strip())
+        except ValueError:
+            continue
+        params.append((date_key, parsed_date.isoformat()))
+
+    qs_suffix = f"?{urlencode(params)}" if params else ""
+    return f"{dest_path}{qs_suffix}{anchor}"
+
 
 class DashboardServer(ThreadingHTTPServer):
     """Typed ``ThreadingHTTPServer`` carrying datalake & reporting config."""
@@ -1525,9 +1561,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
         if route in _LEGACY_ROUTE_REDIRECTS:
             dest_path, anchor = _LEGACY_ROUTE_REDIRECTS[route]
-            qs_suffix = f"?{parsed.query}" if parsed.query else ""
+            location = _build_safe_redirect_location(dest_path, anchor, query)
             self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", f"{dest_path}{qs_suffix}{anchor}")
+            self.send_header("Location", location)
             self.end_headers()
             return
 
