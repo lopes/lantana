@@ -1,6 +1,6 @@
 # Lantana: Data Pipeline
 
-The Lantana data pipeline is a Python application that processes honeypot telemetry through a three-tier data lake (bronze, silver, gold), producing enriched Parquet datasets, threat intelligence reports, STIX 2.1 bundles, and an air-gapped Vigil operator console. It runs on the Collector zone via systemd `oneshot` services triggered by systemd timers (`lantana-prune.timer` at `00:15 UTC`, `lantana-enrich.timer` at `01:00 UTC`, `lantana-transform.timer` at `05:30 UTC`, `lantana-report.timer` at `06:00 UTC`, plus manual/replay `lantana-alert.service` — 5 `.service` units and 4 `.timer` units total), alongside lightweight cron jobs for `00:10 UTC` symlink-safe POSIX ACL refreshes (`lantana-grant-read`), monthly GeoIP refreshes (`lantana-geoip-update`), and deterministic log rotation (`lantana-logs`).
+The Lantana data pipeline is a Python application that processes honeypot telemetry through a three-tier data lake (bronze, silver, gold), producing enriched Parquet datasets, threat intelligence reports, STIX 2.1 bundles, and an air-gapped Vigil operator console. It runs on the Collector zone via systemd `oneshot` services triggered by systemd timers (`lantana-prune.timer` at `00:15 UTC`, `lantana-enrich.timer` at `01:00 UTC`, `lantana-transform.timer` at `05:30 UTC`, `lantana-report.timer` at `06:00 UTC`, plus manual/replay `lantana-alert.service` — 5 collector `.service` units and 4 `.timer` units total), alongside an unprivileged `stigma` sensor scratch timer (`lantana-sensor-prune.timer`, hourly) and two lightweight root cron jobs for monthly GeoIP refreshes (`lantana-geoip-update`) and deterministic + `maxsize` log rotation (`lantana-logs`).
 
 ---
 
@@ -72,8 +72,8 @@ Entry point: `lantana-enrich` (systemd timer: `lantana-enrich.timer` at `01:00 U
 
 For each dataset (`cowrie`, `suricata`, `nftables`, `dionaea`):
 
-1. **Read bronze** NDJSON via streaming `\x00`-safe ingestion (`read_bronze_ndjson`) for every dataset into Polars DataFrames (with `lantana_json` already writing attributed `dionaea.binary.captured` rows carrying `src_ip`, SHA-256 `shasum`, and `download_url`; `extract_dionaea_binary_events()` stays as a date-scoped, hash-deduplicated fallback over `/var/lib/lantana/sensor/dionaea/binaries/` enabled by the `00:10 UTC` `lantana-grant-read` POSIX ACL refresh).
-2. **Extract IOCs globally** across all datasets — unique inbound source IPs (sorted by behavioral engagement priority), malware SHA-256 hashes (bronze + date-scoped disk fallback), outbound C2 IPs, and post-auth stager URLs & domains (`enrichment/ioc.py`). An IOC appearing in multiple datasets is queried once, not twice.
+1. **Read bronze** NDJSON via streaming `\x00`-safe ingestion (`read_bronze_ndjson`) for every dataset into Polars DataFrames (`lantana_json` emits attributed `dionaea.binary.captured` rows carrying `src_ip`, SHA-256 `shasum`, and `download_url` directly into Bronze; `nectar` never reads `/var/lib/lantana/sensor/`, keeping single-node and multi-node enrichment 100% identical).
+2. **Extract IOCs globally** across all datasets from Bronze — unique inbound source IPs (sorted by behavioral engagement priority), malware SHA-256 hashes, outbound C2 IPs, and post-auth stager URLs & domains (`enrichment/ioc.py`). An IOC appearing in multiple datasets is queried once, not twice.
 3. **OPSEC-filter IOCs** against `RedactionConfig` (`infrastructure_ips`, derived variants, `infrastructure_cidrs`, `infrastructure_hostnames`, plus non-routable RFC 1918 / loopback / link-local / ULA ranges) — operation-owned addresses and hostnames never reach an external provider.
 4. **Query optional enrichment providers** cache-first with token-bucket pacing (`_AsyncRateLimiter` honoring `provider.rate_limit()`):
    - AbuseIPDB (abuse confidence, report count) — IPs (optional; skipped cleanly if key unset)
@@ -167,7 +167,7 @@ OPSEC enforcement: `_assert_no_infra_leaks()` in [`intel/stix.py`](/pipeline/src
 
 #### Discord Intel Reports & Dead-Man's-Switch
 
-Generated from gold data via [`notify/report.py`](/pipeline/src/lantana/notify/report.py), sent via `lantana-report` (`lantana-report.timer` at `06:00 UTC` daily, merged with the legacy `lantana-alert` flow — embed colour follows max severity, brief always posts). Includes stateless D-1/D-2 dataset silence detection (`evaluate_liveness_alerts()` in `notify/alerts.py`, using `expected_datasets` auto-derived from `sensor_honeypots` + `['suricata', 'nftables']` in `reporting.json.j2`), live collector disk usage (`statvfs` usable `%` via `prune.py`), systemd unit `StepTiming` (highlighting failed units), key metrics, geographic origin, escalation funnel, top attackers with score decomposition, campaign clusters, detection highlights, malware captured, and top credentials/commands. The brief footer points at the Vigil dashboard's `/intel` view for the durable IOC inventory, STIX 2.1 bundle, and raw IOC CSV.gz.
+Generated from gold data via [`notify/report.py`](/pipeline/src/lantana/notify/report.py), sent via `lantana-report` (`lantana-report.timer` at `06:00 UTC` daily, merged with the legacy `lantana-alert` flow — embed colour follows max severity, brief always posts). Includes stateless D-1/D-2 dataset silence detection (`evaluate_liveness_alerts()` in `notify/alerts.py`, using `expected_datasets` auto-derived from `sensor_honeypots` + `['suricata', 'nftables']` in `reporting.json.j2`), read-only OPSEC-safe blocked sensor egress detection (`notify/egress.py` parsing dedicated kernel-only `sensor-egress.log` without ever emitting `SRC=`/WAN IPs, escalating non-canary drops to Critical `sensor_egress_blocked`), live collector disk usage (`statvfs` usable `%` via `prune.py`), systemd unit `StepTiming` (highlighting failed units), key metrics, geographic origin, escalation funnel, top attackers with score decomposition, campaign clusters, detection highlights, malware captured, and top credentials/commands. The brief footer points at the Vigil dashboard's `/intel` view for the durable IOC inventory, STIX 2.1 bundle, and raw IOC CSV.gz.
 
 Section captions and dashboard help drawers share one source — `WhatWhyHow` triplets in [`notify/explanations.py`](/pipeline/src/lantana/notify/explanations.py) (`BRIEF_SECTIONS` + `METRICS`).
 
@@ -232,17 +232,17 @@ Four layers enforce this (matching [`AGENTS.md` §3](/AGENTS.md#1-opsec-is-non-n
 
 ## 6. Operational Tools
 
-### lantana-prune (retention and disk monitoring)
+### lantana-prune & lantana-sensor-prune (decoupled, boundary-safe retention)
 
-Entry point: `lantana-prune` (systemd timer: `lantana-prune.timer` at `00:15 UTC` daily, running as `nectar`).
+Storage retention is strictly partitioned by trust boundary so `nectar` never touches sensor-owned files:
 
-1. **Decoupled retention:**
+1. **`lantana-prune`** (`lantana-prune.timer` at `00:15 UTC` daily, `User=nectar`, datalake only):
    - **Bronze NDJSON**: 14 days, deleted **only** after the corresponding Silver Parquet partition is verified non-empty.
    - **Silver & Gold Parquet**: 180 days (plus 180-day trimming of `enrichment_errors.json`).
-   - **Sensor scratch** (`cowrie/{downloads,tty}`, `dionaea/{binaries,bistreams,tmp}`): 14 days via one-way `u:nectar:rwX` POSIX ACLs (refreshed at `00:10 UTC` by `lantana-grant-read`) using symlink-safe `O_NOFOLLOW` + `dir_fd` traversal so a compromised `stigma` container can never redirect deletes outside sensor trees.
-2. **Disk check**: Measures non-root usable filesystem capacity via `os.statvfs` on the datalake volume.
-3. **Warning** (>70%): Sends Discord notification via `lantana-notify`.
-4. **Critical** (>80%): Emergency prune — steps down verified Bronze and sensor scratch to 3 days, then always sends a critical alert with before/after usage percentages even if individual deletions error.
+   - **Disk check**: Measures non-root usable filesystem capacity via `os.statvfs` on `/var/lib/lantana/datalake`. Warns on Discord at `>70%`; triggers a 3-day emergency Bronze prune + Critical Discord alert at `>80%`.
+2. **`lantana-sensor-prune`** (`lantana-sensor-prune.timer` hourly at `*:10:00 UTC`, root-owned unit running strictly as `User=stigma` on both single-node and multi-node):
+   - Standalone stdlib Python script at `/usr/local/libexec/lantana-sensor-prune` traversing only `stigma`-owned scratch trees (`cowrie/{downloads,tty}`, `dionaea/{binaries,bistreams,tmp}`) with `O_DIRECTORY | O_NOFOLLOW` + `dir_fd` and `MAX_DEPTH=32`.
+   - Enforces 14-day retention normally and steps down to 3 days automatically when non-root usable disk exceeds `80%`.
 
 ### lantana-notify (Discord notifications)
 
@@ -266,20 +266,20 @@ The pipeline is deployed by Ansible as part of the `profile_collector` role:
 1. **Source clone**: shallow `git clone` of the public repo (default `https://github.com/lopes/lantana.git`, configurable via `lantana_repo_url` and `lantana_repo_ref`) into `/opt/lantana/repo/`. The ref defaults to `main`; an operation can pin a tag or commit for reproducibility.
 2. **Virtual environment**: managed by `uv` (pinned via `roles/base/defaults/main.yml`) at `/opt/lantana/pipeline/venv/`. The Python interpreter comes from the system (`UV_PYTHON_DOWNLOADS=never`), not uv-managed.
 3. **Package install**: `uv sync --frozen --project /opt/lantana/repo/pipeline/`. `--frozen` enforces exact versions from the checked-in `uv.lock` — any drift fails the deploy rather than silently picking newer transitives.
-4. **Schedule** — the Python pipeline deploys **5 systemd `.service` units** and **4 `.timer` units** to `/etc/systemd/system/` (`lantana-prune.timer`, `lantana-enrich.timer`, `lantana-transform.timer`, `lantana-report.timer`, plus `lantana-alert.service` without a timer for manual/off-cycle replay). Four lightweight cron entries in `/etc/cron.d/` handle privileged host tasks (`lantana-cowrie-downloads`, `lantana-dionaea-binaries`, `lantana-geoip-update`, `lantana-logs`):
+4. **Schedule** — the collector deploys **5 systemd `.service` units** and **4 `.timer` units** (`User=nectar`), sensor hosts deploy **`lantana-sensor-prune.timer`** (`User=stigma`), and two lightweight root cron entries in `/etc/cron.d/` handle GeoIP refreshes and log rotation (`lantana-geoip-update`, `lantana-logs`):
 
 | Time (UTC) | Unit / Cron Job | Mechanism | Description |
 | --- | --- | --- | --- |
-| 00:10 daily | `lantana-cowrie-downloads` & `lantana-dionaea-binaries` | `/etc/cron.d/` (root) | Symlink-safe `lantana-grant-read` (`u:nectar:rwX` POSIX ACL refresh on sensor scratch before prune & enrich) |
-| 00:15 daily | `lantana-prune.service` + `.timer` | systemd timer | Decoupled retention (14d verified Bronze, 180d Silver/Gold, 14d symlink-safe sensor scratch) + `statvfs` disk monitor (>70% warn, >80% 3d emergency prune) |
-| 01:00 daily | `lantana-enrich.service` + `.timer` | systemd timer | Bronze → silver (yesterday): IOC extraction, optional API enrichment, OCSF normalize, OPSEC redact |
-| 05:30 daily | `lantana-transform.service` + `.timer` | systemd timer | Silver → gold (yesterday): computes all 7 gold Parquet tables (4h30m margin after enrich for VT throttle) |
-| 06:00 daily | `lantana-report.service` + `.timer` | systemd timer | Merged daily flow: dead-man's-switch liveness, live disk %, error severity + full Markdown intel brief, always posts |
-| Manual / replay | `lantana-alert.service` (no timer) | systemd oneshot / CLI | Off-cycle pipeline alert replay/debug (`systemctl start lantana-alert.service` or `lantana-alert --force --date YYYY-MM-DD`) |
+| Hourly (`*:10`) | `lantana-sensor-prune.service` + `.timer` | systemd timer (`User=stigma`) | Symlink-safe (`O_NOFOLLOW` + `dir_fd`) sensor scratch retention (14d normal, 3d emergency `>80%`) |
+| 00:15 daily | `lantana-prune.service` + `.timer` | systemd timer (`User=nectar`) | Datalake-only retention (14d verified Bronze, 180d Silver/Gold) + `statvfs` disk monitor (`>70%` warn, `>80%` 3d emergency prune) |
+| 01:00 daily | `lantana-enrich.service` + `.timer` | systemd timer (`User=nectar`) | Bronze → silver (yesterday): IOC extraction, optional API enrichment, OCSF normalize, OPSEC redact |
+| 05:30 daily | `lantana-transform.service` + `.timer` | systemd timer (`User=nectar`) | Silver → gold (yesterday): computes all 7 gold Parquet tables (4h30m margin after enrich for VT throttle) |
+| 06:00 daily | `lantana-report.service` + `.timer` | systemd timer (`User=nectar`) | Merged daily flow: dead-man's-switch liveness, sensor egress check, live disk %, error severity + full Markdown intel brief, always posts |
+| Manual / replay | `lantana-alert.service` (no timer) | systemd oneshot / CLI (`User=nectar`) | Off-cycle pipeline alert replay/debug (`systemctl start lantana-alert.service` or `lantana-alert --force --date YYYY-MM-DD`) |
 | 02:30 monthly (1st) | `lantana-geoip-update` | `/etc/cron.d/` (root) | Refresh MaxMind GeoLite2 City + ASN MMDBs and restart Vector |
-| Periodic | `lantana-logs` | `/etc/cron.d/` (root) | Deterministic logrotate trigger for `/etc/lantana/logrotate.d/` |
+| 00:00 daily + `*:15` hourly | `lantana-logs` | `/etc/cron.d/` (root) | Deterministic midnight `logrotate -f` + hourly `maxsize 100M` safety pass |
 
-All 5 pipeline systemd services run as the `nectar` user (UID 2002), which owns the datalake directories. The cron entries in `/etc/cron.d/` (`lantana-cowrie-downloads`, `lantana-dionaea-binaries`, `lantana-geoip-update`, `lantana-logs`) run as root. The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`. Query a service's last run via `journalctl -u <name>.service`; see next-fire times via `systemctl list-timers`.
+All 5 collector pipeline systemd services run as the `nectar` user (UID 2002), which owns only `/var/lib/lantana/datalake/`. Sensor scratch pruning runs strictly as `stigma` (UID 2001). The two cron entries in `/etc/cron.d/` (`lantana-geoip-update`, `lantana-logs`) run as root. The pipeline reads `secrets.json` and `reporting.json` from `/etc/lantana/collector/`. Query a service's last run via `journalctl -u <name>.service`; see next-fire times via `systemctl list-timers`.
 
 ---
 
@@ -348,7 +348,7 @@ Python code keeps short attribute names (`secrets.virustotal`, `secrets.gti`, `s
 | --- | --- | --- |
 | `lantana-enrich` | `lantana.enrichment.runner` | Bronze-to-silver daily enrichment |
 | `lantana-transform` | `lantana.transform.runner` | Silver-to-gold aggregation |
-| `lantana-prune` | `lantana.prune` | Decoupled retention + symlink-safe scratch prune + disk monitor |
+| `lantana-prune` | `lantana.prune` | Datalake-only retention (14d verified Bronze, 180d Silver/Gold) + disk monitor |
 | `lantana-alert` | `lantana.notify.alerts` | Off-cycle pipeline alert replay and severity inspection |
 | `lantana-notify` | `lantana.notify.cli` | Discord webhook notification utility |
 | `lantana-report` | `lantana.notify.discord` | Generate and send Discord daily intel reports |
@@ -384,17 +384,19 @@ pipeline/
 │   │   ├── alerts.py                 # Enrichment-error severity classifier, D-1/D-2 dataset liveness & lantana-alert CLI
 │   │   ├── cli.py                    # Discord webhook CLI
 │   │   ├── discord.py                # Notification sending + report CLI entry
+│   │   ├── egress.py                 # OPSEC-safe host firewall.log parser for blocked sensor egress alerts
 │   │   ├── explanations.py           # Shared WhatWhyHow registry (BRIEF_SECTIONS + METRICS)
 │   │   ├── report.py                 # Markdown daily brief generation
 │   │   └── timing.py                 # Systemd unit runtime duration & failure helper for daily brief
 │   ├── dashboard/
 │   │   ├── app.py                    # Air-gapped stdlib ThreadingHTTPServer (127.0.0.1:8501)
+│   │   ├── health.py                 # Read-only /health snapshot (integrations, egress, units, liveness, storage)
 │   │   ├── queries.py                # Pure Polars multi-day rollups (5 date windows)
 │   │   ├── charts.py                 # Pure plotly.graph_objects builders (incl. offline world map, zero Pandas)
 │   │   ├── html.py                   # Server-rendered Vigil HTML + help drawers + CSP
 │   │   ├── theme.py                  # Vigil dark/light chart tokens + Plotly config
 │   │   └── static/vigil.css          # Local tailored Vigil stylesheet (zero external URLs)
-│   └── prune.py                      # Decoupled retention, symlink-safe scratch prune, live statvfs disk %
+│   └── prune.py                      # Datalake-only retention (14d Bronze, 180d Silver/Gold), live statvfs disk %
 └── tests/                            # Tests mirroring src/ structure
 ```
 

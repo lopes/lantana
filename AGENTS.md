@@ -9,7 +9,7 @@ Lantana is an open-source, honeypot-as-code platform aligned with MITRE Engage, 
 | Track | Primary Guides |
 | :--- | :--- |
 | **Architecture & Setup** | [`docs/architecture.md`](docs/architecture.md) · [`docs/setup.md`](docs/setup.md) · [`docs/glossary.md`](docs/glossary.md) |
-| **Sensors & Images** | [`docs/honeypots.md`](docs/honeypots.md) · [`containers/`](containers/) (self-owned pinned `ghcr.io/lopes/lantana-{cowrie,dionaea}:v1.5`) |
+| **Sensors & Images** | [`docs/honeypots.md`](docs/honeypots.md) · [`containers/`](containers/) (self-owned pinned `ghcr.io/lopes/lantana-{cowrie,dionaea}:v1.5.1`) |
 | **Data Pipeline & Intel** | [`docs/pipeline.md`](docs/pipeline.md) · [`docs/risk-scoring.md`](docs/risk-scoring.md) · [`docs/integrations.md`](docs/integrations.md) |
 | **Validation & Ops** | [`docs/validation.md`](docs/validation.md) · [`docs/troubleshooting.md`](docs/troubleshooting.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | **Agent Skills** | [`.agents/skills/deploy-sensors/SKILL.md`](.agents/skills/deploy-sensors/SKILL.md) · [`.agents/skills/verify-pipeline/SKILL.md`](.agents/skills/verify-pipeline/SKILL.md) · [`.agents/skills/scaffold-narrative/SKILL.md`](.agents/skills/scaffold-narrative/SKILL.md) |
@@ -22,13 +22,13 @@ Lantana is an open-source, honeypot-as-code platform aligned with MITRE Engage, 
 | :--- | :--- | :--- |
 | [`config/ansible/roles/`](config/ansible/roles/) | **Zoned Provisioning:** Atomic roles (`base`, `network`, `firewall`, `suricata`, `cowrie`, `dionaea`) composed into `profile_{honeywall,sensor_low,collector}`. | Single-node coexists on `ltn0` (`10.50.99.0/24`, `fd99:10:50:99::/64`); `filter_*` routes directly to `enrich_geo` in memory (no local forwarders). |
 | [`config/ansible/inventories/`](config/ansible/inventories/) | **Operation-as-Inventory:** Clone `op_single` / `op_multi` into gitignored `op_<name>` (`main.yml`, `network.yml`, `narrative.yml`, `reporting.yml`, `vault.yml`). | Only `op_<name>/group_vars/all/` holds real WAN IPs, hostnames, or API keys. |
-| [`containers/`](containers/) | **Pinned Honeypot Images:** Self-built Cowrie (`UID 999`) & Dionaea (`UID 1000`, `processors=filter_emu`, `patch_http.py`, `lantana_json.py`, non-destructive `entrypoint.sh`). | Built and smoke-tested by `.github/workflows/build-{cowrie,dionaea}.yml`. All Dionaea config/Python files must be 7-bit ASCII. |
-| [`pipeline/src/lantana/common/`](pipeline/src/lantana/common/) | **Core I/O & OPSEC:** `config.py`, streaming `\x00`-safe `datalake.py` (atomic Parquet + `read_gold_range`), two-pass `redact.py` (WAN variants + hostnames + SHA-256-only leak errors). | `stigma` (UID 2001) has EACCES on datalake/collector; `nectar` (UID 2002) owns unified symlink-safe (`O_NOFOLLOW`+`dir_fd`) pruning (`prune.py`). |
+| [`containers/`](containers/) | **Pinned Honeypot Images:** Self-built offline Cowrie (`UID 999`, `patch_offline.py`) & Dionaea (`UID 1000`, `modules=python,emu`, `processors=filter_emu`, `patch_http.py`, `patch_ftp.py`, `lantana_json.py`, non-destructive `entrypoint.sh`). | Built and smoke-tested by `.github/workflows/build-{cowrie,dionaea}.yml`. All Dionaea config/Python files must be 7-bit ASCII. |
+| [`pipeline/src/lantana/common/`](pipeline/src/lantana/common/) | **Core I/O & OPSEC:** `config.py`, streaming `\x00`-safe `datalake.py` (atomic Parquet + `read_gold_range`), two-pass `redact.py` (WAN variants + hostnames + SHA-256-only leak errors). | Strictly one-way isolation: `stigma` (UID 2001) prunes its own scratch via `/usr/local/libexec/lantana-sensor-prune` (`lantana-sensor-prune.timer`); `nectar` (UID 2002) never touches `/var/lib/lantana/sensor` and prunes only `nectar`-owned datalake tiers (`prune.py`). |
 | [`pipeline/src/lantana/enrichment/`](pipeline/src/lantana/enrichment/) | **Enrichment & IOCs:** Optional providers (`abuseipdb`, `shodan`, `greynoise`, `virustotal` + opt-in commercial GTI), token-bucket `rate_limit()`, behavioral priority queue, SQLite tiered cache. | 429 never retried (dual circuit breaker: `5` consecutive / `30` cumulative); `404` emits `None` risk score (never dilutes). |
 | [`pipeline/src/lantana/models/`](pipeline/src/lantana/models/) & [`transform/`](pipeline/src/lantana/transform/) | **OCSF Silver & 7 Gold Tables:** `daily_summary`, `ip_reputation`, `behavioral_progression`, `campaign_clusters`, `geographic_summary`, `detection_findings`, `extracted_iocs`. | Pure Polars transforms, explicit Gold schemas, decoder SIDs `2200000-2260999` excluded, monotonic behavioral-anchored `risk_score`. |
 | [`pipeline/src/lantana/intel/`](pipeline/src/lantana/intel/) & [`notify/`](pipeline/src/lantana/notify/) | **STIX 2.1, Discord Brief & Dead-Man's-Switch:** Durable IOC pivot + 7d interactive inbound IPs, stateless D-1/D-2 liveness, live `statvfs` disk %, shared `explanations.py`. | Zero bogus HTTP rules; benign GreyNoise scanners excluded from Threat Actors; `lantana-report` always posts. |
 | [`pipeline/src/lantana/dashboard/`](pipeline/src/lantana/dashboard/) | **Air-Gapped Vigil Console:** Stdlib `ThreadingHTTPServer` (`127.0.0.1:8501`), 5 CTI views (`/overview`, `/attackers`, `/behavior`, `/intel`, `/health` + `302` legacy redirects), local `static/vigil.css` & `/static/plotly.min.js`, pure `plotly.graph_objects` (zero Streamlit/Pandas). | Strict `connect-src 'none'` CSP; zero external URLs (`lopes.id`, CDNs, Google Fonts); zero secret values exposed on `/health`. |
-| [`config/ansible/tests/`](config/ansible/tests/) & [`pipeline/tests/`](pipeline/tests/) | **Verification Suites:** `validate-{single-node,canaries,sensor-runtime,pipeline-cycle}.yml` + mocked unit & production-shape tests (`test_integration_production_shape.py`). | Fixtures mirror nested Vector production shape (`{"geo": {...}}`, `{"alert": {...}}`). |
+| [`config/ansible/tests/`](config/ansible/tests/) & [`pipeline/tests/`](pipeline/tests/) | **Verification Suites:** `validate-{single-node,canaries,sensor-runtime,pipeline-cycle}.yml`, `audit-host-integrity.yml` + mocked unit & production-shape tests (`test_integration_production_shape.py`). | Fixtures mirror nested Vector production shape (`{"geo": {...}}`, `{"alert": {...}}`). |
 
 ---
 
@@ -46,9 +46,10 @@ Lantana is an open-source, honeypot-as-code platform aligned with MITRE Engage, 
 - **Schema variation tolerated by construction:** Flatten nested Vector structs (`geo`, `alert`) at dispatcher boundaries (`pl.Struct`, JSON `pl.Utf8`, or absent); backfill optional/cross-dataset columns via `_ensure_gold_columns()` and `_optional_first()`.
 - **Rate limits:** Exclude HTTP `429` from tenacity retries; honor `provider.rate_limit()` via `_AsyncRateLimiter` and trip on `5` consecutive / `30` cumulative 429s.
 
-### 3. One-Way Privilege Boundary & Sensor Discipline
-- **Security direction:** `stigma` (sensors) has zero access to `nectar` / datalake / secrets. `nectar` (`lantana-prune`, `00:15 UTC`) receives `u:nectar:rwX` POSIX ACLs (refreshed `00:10 UTC` via `lantana-grant-read`) to prune 14d sensor scratch safely using `O_NOFOLLOW` + `dir_fd`, 14d verified Bronze (non-empty Silver gate; 3d emergency `>80%`), and 180d Silver/Gold.
-- **Vector & Quadlets:** Load [`deploy-sensors`](.agents/skills/deploy-sensors/SKILL.md) before editing Ansible roles/Vector/Quadlets. Every Vector template must `notify: "Validate Vector config tree"` before `"Restart Vector"`. Both sensors enforce app-layer `healthcheck.py` + `HealthOnFailure=kill`. Suricata runs non-root (`suricata:suricata` systemd drop-in), disables NIC offloads (`ethtool`), and disables `pcap-log` & `file-store` by default.
+### 3. One-Way Privilege Boundary, Zero-Egress & Sensor Discipline
+- **Security direction:** Strictly one-way (`stigma` -> `vector` -> `nectar`). `stigma` (sensors) has `EACCES` on `nectar`/datalake/secrets, and `nectar` (collector) has zero write ACLs or filesystem reads under `/var/lib/lantana/sensor/` (`lantana-grant-read` is permanently removed). `stigma` prunes its own 14d scratch (3d emergency `>80%`) hourly via root-owned `lantana-sensor-prune.timer` running as `User=stigma` with `O_NOFOLLOW` + `dir_fd`; `nectar` (`lantana-prune`, `00:15 UTC`) prunes only `nectar`-owned datalake tiers (14d verified Bronze, 3d emergency `>80%`, 180d Silver/Gold).
+- **100% dark runtime egress:** Both `:v1.5.1` sensor images are non-egressing at the app layer (`patch_offline.py` + `out_addr = 127.0.0.1` for Cowrie; `modules=python,emu` + `patch_ftp.py` for Dionaea), Quadlets enforce `Pull=never` with offline `root` `podman save | runuser -u stigma -- podman load` import, and `firewall-single.nft.j2` logs + `counter drop`s all `meta skuid stigma ct state new` packets across WAN, loopback, and `ltn0`. Non-canary drops escalate to Critical (`sensor_egress_blocked`) via `notify/egress.py` without leaking host WAN IPs.
+- **Vector & Quadlets:** Load [`deploy-sensors`](.agents/skills/deploy-sensors/SKILL.md) before editing Ansible roles/Vector/Quadlets. Every Vector template must `notify: "Validate Vector config tree"` before `"Restart Vector"`. Both sensors enforce app-layer `healthcheck.py` + `HealthOnFailure=kill`. Suricata runs non-root (`suricata:suricata` systemd drop-in), disables NIC offloads (`ethtool`), disables raw alert payload/packet dumps + `pcap-log` & `file-store` by default, and host logs enforce `maxsize 100M` + `journald` `SystemMaxUse=200M`.
 
 ### 4. Risk Score & STIX 2.1 Invariants
 - **Monotonic behavioral-anchored formula** ([`docs/risk-scoring.md`](docs/risk-scoring.md)): pure scanners (`behavioral == 0`) cap at `enrichment * 0.35 <= 35.0` (0.0 if RIOT/benign); interactive attackers (`behavioral > 0`) score `max(behavioral, 0.5 * behavioral + 0.5 * enrichment)` (halved if RIOT/benign).
@@ -62,7 +63,7 @@ Lantana is an open-source, honeypot-as-code platform aligned with MITRE Engage, 
 
 ## 4. Checklists ("How to Add X")
 
-- **Honeypot Sensor Role:** Create `config/ansible/roles/<name>/` dropping config (`/etc/lantana/sensor/<name>`), Vector VRL with Layer-1 OPSEC filter (`/etc/vector/conf.d/<name>.yaml` notifying validate -> restart), dual-stack `inet` nftables (`/etc/lantana/honeywall/nftables/sensors/<name>.nft`), app-layer `healthcheck.py`, and POSIX ACLs (`u:vector:rX`, `u:nectar:rwX`) -> register normalizer in `models/normalize.py` + `enrichment/runner.py` + `tests/test_models/test_normalize.py`.
+- **Honeypot Sensor Role:** Create `config/ansible/roles/<name>/` dropping config (`/etc/lantana/sensor/<name>`), Vector VRL with Layer-1 OPSEC filter (`/etc/vector/conf.d/<name>.yaml` notifying validate -> restart), dual-stack `inet` nftables (`/etc/lantana/honeywall/nftables/sensors/<name>.nft`), app-layer `healthcheck.py`, `Pull=never` + offline `import_sensor_image.yml`, and read-only `u:vector:rX` POSIX ACL on logs -> register normalizer in `models/normalize.py` + `enrichment/runner.py` + `tests/test_models/test_normalize.py`.
 - **Enrichment Provider:** Implement `enrichment/providers/<name>.py` returning `<name>_risk_score` (`None` on `404`, never `0.0`) + `rate_limit()` -> register optional key in `common/config.py`, `secrets.json.j2`, and `_RISK_SCORE_FIELDS` in `enrichment/runner.py` -> update `docs/risk-scoring.md` and `tests/test_enrichment/`.
 - **Gold Table / Vigil View:** Add pure metric builder in `transform/metrics.py` + explicit schema + registration in `transform/runner.py` & `validate-pipeline-cycle.yml` -> add rollup in `dashboard/queries.py`, pure `go.*` chart in `dashboard/charts.py`, shared `WhatWhyHow` text in `notify/explanations.py`, route in `dashboard/app.py`, and air-gap test in `tests/test_dashboard/`.
 
@@ -74,12 +75,12 @@ All gates must return **0 errors** before completing work or opening a PR:
 
 ```bash
 cd pipeline && uv sync --frozen --extra dev
-uv run ruff format --check . ../scripts/*.py
-uv run ruff check . ../scripts/*.py
-uv run mypy --strict src tests ../scripts/*.py
+uv run ruff format --check . ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
+uv run ruff check . ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
+uv run mypy --strict src tests ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
 uv run pytest
 cd ../config/ansible && ansible-lint playbooks roles tests
-cd ../.. && shellcheck scripts/*.sh config/ansible/roles/base/files/lantana-grant-read containers/dionaea/entrypoint.sh
+cd ../.. && shellcheck scripts/*.sh containers/dionaea/entrypoint.sh
 ```
 
 - **Pipeline live runs:** Load [`verify-pipeline`](.agents/skills/verify-pipeline/SKILL.md) before touching live API quota or datalake partitions.

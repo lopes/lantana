@@ -72,9 +72,9 @@ The CI workflow (`.github/workflows/ci.yml`) gates every PR with four jobs. If y
 
 ```bash
 cd pipeline
-uv run ruff format --check . ../scripts/*.py
-uv run ruff check . ../scripts/*.py
-uv run mypy --strict src tests ../scripts/*.py
+uv run ruff format --check . ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
+uv run ruff check . ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
+uv run mypy --strict src tests ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
 uv run pytest
 ```
 
@@ -100,7 +100,7 @@ ansible-lint playbooks roles tests
 ### Shell (`scripts/`, helpers, container entrypoints)
 
 ```bash
-shellcheck scripts/*.sh config/ansible/roles/base/files/lantana-grant-read containers/dionaea/entrypoint.sh
+shellcheck scripts/*.sh containers/dionaea/entrypoint.sh
 ```
 
 - Plain POSIX-compatible patterns, standard coreutils only. No exotic tools or fancy constructs. Readable and auditable.

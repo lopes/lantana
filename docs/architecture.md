@@ -19,10 +19,19 @@ The following table outlines the minimum hardware requirements for each logical 
 | **Honeywall** | 2 | 2 GB | 20 GB | 2 (1 Public, 1 Private) | Runs `nftables`, `suricata`, and `vector`. Acts as the security gateway. |
 | **Sensor (Low-Interaction)** | 2 | 4 GB | 40 GB | 1 (Private) | Runs `podman` and `vector`. Hosts multiple containerized decoys. |
 | **Collector** | 2 | 4 GB | 100 GB | 1 (Private) | Runs `vector` and the Python pipeline. Storage scales with data retention needs. |
-| **Single-Node (All-in-One)** | 2 | 4 GB | 60 GB | 1 Physical + 1 Dummy | Default Proxmox sizing (`infra/terraform/environments/proxmox/`). All zones run concurrently on one host. |
+| **Single-Node (All-in-One)** | 2 | 4 GB | 60 GB | 1 Physical + 1 Dummy | Default Proxmox sizing (`infra/terraform/environments/proxmox/`). All zones run concurrently on one host; see [Disk Sizing & Accepted DoS Risk](#disk-sizing--accepted-dos-risk). |
 
 > [!NOTE]
 > High-interaction honeypots (fully vulnerable OS deployments) have variable hardware requirements based on the specific operating system and narrative being emulated. They must only be deployed in Multi-Node mode as dedicated hosts.
+
+### Disk Sizing & Accepted DoS Risk
+
+Steady-state disk usage depends heavily on internet background noise, active Dionaea HTTP/SMB/DB traffic, and custom Suricata rules — do **not** extrapolate early low-volume baselines indefinitely. Research honeypots intentionally avoid aggressive ingress rate-limiters or WAF throttles so genuine attacker campaigns are never silently dropped. Instead, Lantana layers zero-intel-loss storage guardrails:
+
+- **Bounded payloads & alert logs:** Dionaea disables `bistreams`, bounds HTTP requests to `32 KiB` (`512 B` `http_body_preview`, max 64 multipart parts), Suricata disables raw alert packet/payload dumps (`payload`/`packet`/`http-body: false`) and `pcap-log`/`file-store`, and `nftables` pairs per-source drop meters (`2/min`) with a secondary global ceiling (`5/sec`).
+- **Bounded host log buffers:** `systemd-journald` is capped at `SystemMaxUse=200M` (`14day`), and logrotate enforces `maxsize 100M` via an hourly non-forced pass alongside deterministic `00:00 UTC` rotation.
+- **Automated retention & emergency circuit breakers:** `lantana-sensor-prune.timer` (`User=stigma`, hourly) and `lantana-prune.timer` (`User=nectar`, `00:15 UTC`) retain 14 days of sensor scratch and verified Bronze (180 days Silver/Gold), automatically stepping down to 3 days when non-root usable disk exceeds 80% (`>70%` warns on Discord and Vigil `/health`).
+- **Residual risk (single-node shared filesystem):** A determined adversary flooding an exposed port or an escaped container filling `/var/lib/lantana/sensor` can still exhaust a shared single-node root filesystem faster than hourly pruning. Operators requiring hard quota isolation should mount `/var/lib/lantana/sensor` on a dedicated block device / LVM LV or deploy Multi-Node mode.
 
 ---
 
@@ -79,8 +88,8 @@ With the hosts provisioned, Lantana is structured around a **zoned architecture*
 
 To enforce strict boundary isolation across these zones, Lantana relies on dedicated, non-interactive service accounts. These users own the processes and data for their respective roles:
 
-- **`stigma` (Sensor User):** Operates entirely within the Sensor Zone. Launches and manages rootless Podman containers housing the decoys. Strictly isolated (`EACCES`) from collector secrets and the datalake.
-- **`nectar` (Collector User):** Operates within the Collector Zone. Executes the Python enrichment/transform/report/dashboard pipeline and owns unified symlink-safe (`O_NOFOLLOW` + `dir_fd`) cleanup across both the datalake and sensor scratch directories via one-way `u:nectar:rwX` POSIX ACLs.
+- **`stigma` (Sensor User):** Operates entirely within the Sensor Zone. Launches and manages rootless Podman containers (`Pull=never`, offline-imported by `root`) and prunes its own sensor scratch hourly via the root-owned `lantana-sensor-prune.timer` (`User=stigma`, `O_NOFOLLOW` + `dir_fd`). Strictly isolated (`EACCES`) from collector secrets and the datalake, and locked to 100% dark runtime egress (`meta skuid stigma ct state new` dropped and logged across WAN, loopback, and `ltn0`).
+- **`nectar` (Collector User):** Operates strictly within the Collector Zone. Executes the Python enrichment/transform/report/dashboard pipeline and prunes only `nectar`-owned datalake tiers (`bronze`, `silver`, `gold`) — never traversing or modifying `/var/lib/lantana/sensor/`.
 - **`vector` (Telemetry User):** Runs Datadog Vector across zones with read-only `u:vector:rX` POSIX ACLs on sensor logs. In Single-Node mode, `filter_*` transforms feed `enrich_geo` directly in memory (eliminating local TCP forwarder duplication); in Multi-Node mode, sensors forward over the private network to the Collector.
 - **`suricata` (IDS User):** Runs Suricata non-root (`CAP_NET_RAW`, `CAP_NET_ADMIN`, `CAP_SYS_NICE`) on the Honeywall with WAN NIC offloads disabled (`ethtool`).
 
@@ -256,7 +265,7 @@ Lantana favors modern, native Linux tooling over heavy abstractions. This reduce
 - **nftables:** Handles all firewalling, NAT, network segmentation, and strict egress containment policies. It is configured modularly: `/etc/nftables.conf` sets the base and includes routing definitions from `/etc/lantana/honeywall/nftables`, while plugin-specific rules are dynamically ingested from the `/sensors` subdirectory.
 - **systemd:** Manages service orchestration, ensuring honeypots and telemetry pipelines start reliably and recover from crashes.
 - **iproute2:** Manages network configurations, routing tables, and the creation of dummy interfaces for Single-Node mode.
-- **logrotate & cron:** Manages log retention and rotation deterministically. To avoid the unpredictable execution times of standard `anacron` (used by `/etc/cron.daily`), Lantana uses strict schedules in `/etc/cron.d/` to trigger explicit rotation scripts located in `/etc/lantana/logrotate.d/`, ensuring log processing aligns perfectly with downstream pipeline expectations. Raw logs under `/var/log/lantana/` are a transient forwarding buffer for Vector, not a system of record — the durable copy is the bronze NDJSON on the collector, and disk-safety circuit breakers live at the lake layer (`lantana-prune`), not in logrotate.
+- **logrotate, journald & cron:** Manages host log retention deterministically via `/etc/cron.d/lantana-logs` (`00:00 UTC` forced rotation plus an hourly non-forced `maxsize 100M` safety pass) and `/etc/systemd/journald.conf.d/10-lantana.conf` (`SystemMaxUse=200M`). Raw logs under `/var/log/lantana/` are a transient forwarding buffer for Vector, not a system of record — the durable copy is the bronze NDJSON on the collector, and retention/disk circuit breakers live in `lantana-sensor-prune` (`stigma`) and `lantana-prune` (`nectar`).
 
 ### Specialized Deception & Data Tools
 

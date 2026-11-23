@@ -1,7 +1,7 @@
 # Honeypots
 
-Lantana v1.5 ships two honeypots: **Cowrie** (SSH + Telnet) and **Dionaea**
-(SMB, FTP, HTTP, MSSQL, MySQL, EPMAP/DCERPC). Both run from **self-owned, pinned GHCR container images** as rootless Podman containers under the `stigma` user (UID 2001), are configured via Ansible roles under `config/ansible/roles/`, and ship event NDJSON to the collector via Vector.
+Lantana v1.5.1 ships two honeypots: **Cowrie** (SSH + Telnet) and **Dionaea**
+(SMB, FTP, HTTP, MSSQL, MySQL, EPMAP/DCERPC). Both run from **self-owned, pinned, strictly non-egressing GHCR container images** as rootless Podman containers under the `stigma` user (UID 2001) with `Pull=never`, are configured via Ansible roles under `config/ansible/roles/`, and ship event NDJSON to the collector via Vector.
 
 This document covers the image sourcing strategy, per-honeypot defaults and runtime constraints, and how to disable a specific protocol post-deploy.
 
@@ -37,25 +37,26 @@ Both honeypots run from **self-owned pinned images** built in this repository (`
 
 | Honeypot | Default image (`defaults/main.yml`) | Pinned upstream ref | In-container UID/GID |
 |---|---|---|---|
-| Cowrie | `ghcr.io/lopes/lantana-cowrie:v1.5` (`cowrie_image`) | `cowrie/cowrie` `v3.1.7` (`8e36327f...`) | `999:999` (`UserNS=keep-id:uid=999,gid=999`) |
-| Dionaea | `ghcr.io/lopes/lantana-dionaea:v1.5` (`dionaea_image`) | `DinoTools/dionaea` (`4e459f1b...`) | `1000:1000` (`UserNS=keep-id:uid=1000,gid=1000`) |
+| Cowrie | `ghcr.io/lopes/lantana-cowrie:v1.5.1` (`cowrie_image`) | `cowrie/cowrie` `v3.1.7` (`8e36327f...`) | `999:999` (`UserNS=keep-id:uid=999,gid=999`) |
+| Dionaea | `ghcr.io/lopes/lantana-dionaea:v1.5.1` (`dionaea_image`) | `DinoTools/dionaea` (`4e459f1b...`) | `1000:1000` (`UserNS=keep-id:uid=1000,gid=1000`) |
 
-**Why self-owned images?** Rolling third-party tags (`cowrie/cowrie:latest`, `dinotools/dionaea:nightly`) silently broke production twice in Operation Alpha when upstream shifted UIDs (`998 -> 999`) or changed entrypoint ownership behaviour. Owning the Containerfiles turns in-container UIDs into repo constants, moves upstream rebases into explicit PRs gated by `validate-sensor-runtime.yml`, and lets us ship three clean Dionaea extensions:
+**Why self-owned images?** Rolling third-party tags (`cowrie/cowrie:latest`, `dinotools/dionaea:nightly`) silently broke production twice in Operation Alpha when upstream shifted UIDs (`998 -> 999`) or changed entrypoint ownership behaviour. Owning the Containerfiles turns in-container UIDs into repo constants, moves upstream rebases into explicit PRs gated by CI smoke tests, and lets us ship zero-egress + telemetry extensions cleanly:
 
-1. **Baked `/opt/dionaea/etc/dionaea/dionaea.cfg`** setting `processors=filter_emu` (eliminating multi-gigabyte `bistreams/` growth).
-2. **`patch_http.py`** patching Dionaea's `http.py` so JSON/non-form POST bodies (e.g. `/v1/chat/completions`, `/mcp`) are captured safely without `cgi.FieldStorage` crashes or leaked `http-*.tmp` files in `binaries/`.
-3. **`lantana_json.py` ihandler** replacing upstream `log_json`, emitting UTC `Z` timestamps, structured HTTP request/POST fields, MSSQL/MySQL `sql_command` bodies, and attributed `dionaea.binary.captured` events (carrying `src_ip`, SHA-256 `shasum`, and `download_url`) on `dionaea.download.complete.{unique,again}`.
-4. **Non-destructive `entrypoint.sh`** that preserves host POSIX ACLs (`u:vector:rX` on logs, `u:nectar:rwX` on scratch dirs) across container restarts instead of wiping them with `cp -a`.
+1. **Cowrie offline hardening (`patch_offline.py` + `out_addr = 127.0.0.1`):** Short-circuits `cowrie/core/network.py` (`resolve_allowed` / `resolve_cname`) and `cowrie/commands/tftp.py` so attacker `wget`/`curl`/`ftpget`/`nc`/`tftp` commands log every URL/host and return realistic error text while emitting **zero** outbound DNS/TCP/UDP packets.
+2. **Dionaea offline & disk-safe hardening (`dionaea.cfg` + `patch_ftp.py`):** Bakes `modules=python,emu` (disabling the outbound `curl` downloader module) and `processors=filter_emu` (eliminating multi-gigabyte `bistreams/` growth), and patches `ftp.py` to remove `' PORT'` from `FEAT` and reject active-mode `PORT` outbound connects with `502` while preserving passive-mode `PASV` uploads.
+3. **`patch_http.py`:** Patches Dionaea's `http.py` so JSON/non-form POST bodies (e.g. `/v1/chat/completions`, `/mcp`) are captured safely (512 B `http_body_preview`, 32 KiB `max_request_size`, max 64 multipart parts) without `cgi.FieldStorage` crashes or leaked `http-*.tmp` files in `binaries/`.
+4. **`lantana_json.py` ihandler:** Replaces upstream `log_json`, emitting UTC `Z` timestamps, structured HTTP request/POST fields, MSSQL/MySQL `sql_command` bodies, and attributed `dionaea.binary.captured` events (carrying `src_ip`, SHA-256 `shasum`, and `download_url`) on `dionaea.download.complete.{unique,again}`.
+5. **Non-destructive `entrypoint.sh` & offline image import:** Preserves host `u:vector:rX` POSIX ACLs across restarts; Quadlets enforce `Pull=never` and Ansible imports images offline from `root` into `stigma` (`podman save | runuser -u stigma -- podman load`) so `stigma` never needs registry egress.
 
-Operators can override `cowrie_image` or `dionaea_image` per inventory (e.g. `localhost/lantana-dionaea:v1.5` for local/staging builds).
+Operators can override `cowrie_image` or `dionaea_image` per inventory (e.g. `localhost/lantana-dionaea:v1.5.1` for local/staging builds).
 
 ## Cowrie
 
-- **Container image:** `ghcr.io/lopes/lantana-cowrie:v1.5` (override via `cowrie_image`).
-- **Quadlet unit:** `sensor-cowrie` (`/etc/containers/systemd/users/2001/cowrie.container`).
-- **Config file:** `/etc/lantana/sensor/cowrie/cowrie.cfg` (rendered from `roles/cowrie/templates/cowrie.cfg.j2`).
+- **Container image:** `ghcr.io/lopes/lantana-cowrie:v1.5.1` (override via `cowrie_image`).
+- **Quadlet unit:** `sensor-cowrie` (`/etc/containers/systemd/users/2001/cowrie.container`, `Pull=never`).
+- **Config file:** `/etc/lantana/sensor/cowrie/cowrie.cfg` (rendered from `roles/cowrie/templates/cowrie.cfg.j2`, including `out_addr = 127.0.0.1`).
 - **Health check:** `HealthCmd=CMD python3 /healthcheck.py` (never `CMD-SHELL` or JSON array) with `HealthOnFailure=kill`.
-- **Ownership:** `UserNS=keep-id:uid=999,gid=999` (never `,U`). Host bind-mount directories stay owned by `stigma`, with `u:vector:rX` on logs and `u:nectar:rwX` on `downloads/` and `tty/`.
+- **Ownership:** `UserNS=keep-id:uid=999,gid=999` (never `,U`). Host bind-mount directories stay owned by `stigma`, with read-only `u:vector:rX` on logs and `stigma`-owned hourly scratch pruning (`lantana-sensor-prune.timer`); `nectar` has zero access to `/var/lib/lantana/sensor/`.
 
 ### Default protocol surface
 
@@ -88,8 +89,8 @@ To stop accepting the packet at the firewall too, remove the matching line from 
 
 ## Dionaea
 
-- **Container image:** `ghcr.io/lopes/lantana-dionaea:v1.5` (override via `dionaea_image`).
-- **Quadlet unit:** `sensor-dionaea` (`/etc/containers/systemd/users/2001/dionaea.container`).
+- **Container image:** `ghcr.io/lopes/lantana-dionaea:v1.5.1` (override via `dionaea_image`).
+- **Quadlet unit:** `sensor-dionaea` (`/etc/containers/systemd/users/2001/dionaea.container`, `Pull=never`).
 - **Config layout:** `/etc/lantana/sensor/dionaea/services-enabled/<svc>.yaml` (one file per protocol in `dionaea_service_catalog`) and `/etc/lantana/sensor/dionaea/ihandlers-enabled/` (`lantana_json.yaml` + `store.yaml`), both bind-mounted read-only over `/opt/dionaea/etc/dionaea/{services,ihandlers}-enabled/`.
 - **Health check:** application-layer `/etc/lantana/sensor/dionaea/healthcheck.py` (opens a real HTTP `GET /` expecting `HTTP/1.`, falling back to FTP `220` or MySQL handshake probes on the first enabled service) with `HealthOnFailure=kill` so silent libev deadlocks auto-restart.
 
@@ -97,9 +98,9 @@ To stop accepting the packet at the firewall too, remove the matching line from 
 
 Four invariants remain load-bearing in `roles/dionaea/`:
 
-1. **Per-service and ihandler directory overlays.** The image bakes `/opt/dionaea/etc/dionaea/dionaea.cfg` (`processors=filter_emu`). Ansible mounts `services-enabled/` and `ihandlers-enabled/` `:ro` over the bundled directories so only our 6 catalog services and `lantana_json` + `store` ihandlers load.
-2. **Strictly unprivileged with zero capabilities.** The image sets `USER 1000:1000` and the Quadlet enforces `DropCapability=ALL`, `NoNewPrivileges=true`, `ReadOnly=true`, and `VolatileTmp=true`. Setting `Sysctl=net.ipv4.ip_unprivileged_port_start=0` inside the container's isolated network namespace allows Dionaea to bind ports `21, 80, 135, 445` directly as `UID 1000` without `NET_BIND_SERVICE` or root-to-dionaea `SETUID`/`SETGID`/`CHOWN`.
-3. **`UserNS=keep-id:uid=1000,gid=1000` (never `,U`).** Container `UID 1000:1000` maps directly to host `stigma:stigma` (matching Cowrie's `keep-id` model). Non-destructive `entrypoint.sh` refuses symlinks and creates runtime subdirs without stripping host POSIX ACLs (`u:vector:rX` on logs, `u:nectar:rwX` via `lantana-grant-read` on `binaries/`, `bistreams/`, `tmp/`).
+1. **Per-service and ihandler directory overlays.** The image bakes `/opt/dionaea/etc/dionaea/dionaea.cfg` (`modules=python,emu`, `processors=filter_emu`). Ansible mounts `services-enabled/` and `ihandlers-enabled/` `:ro` over the bundled directories so only our 6 catalog services and `lantana_json` + `store` ihandlers load.
+2. **Strictly unprivileged with zero capabilities & offline pull.** The image sets `USER 1000:1000` and the Quadlet enforces `Pull=never`, `DropCapability=ALL`, `NoNewPrivileges=true`, `ReadOnly=true`, and `VolatileTmp=true`. Setting `Sysctl=net.ipv4.ip_unprivileged_port_start=0` inside the container's isolated network namespace allows Dionaea to bind ports `21, 80, 135, 445` directly as `UID 1000` without `NET_BIND_SERVICE` or root-to-dionaea `SETUID`/`SETGID`/`CHOWN`.
+3. **`UserNS=keep-id:uid=1000,gid=1000` (never `,U`).** Container `UID 1000:1000` maps directly to host `stigma:stigma` (matching Cowrie's `keep-id` model). Non-destructive `entrypoint.sh` refuses symlinks and creates runtime subdirs without stripping host `u:vector:rX` POSIX ACLs on logs. Scratch cleanup runs strictly as `stigma` via `lantana-sensor-prune.timer`.
 4. **7-bit ASCII only in service and ihandler YAMLs.** `templates/services-enabled/*.yaml.j2` and `templates/ihandlers-enabled/*.yaml.j2` must stay pure 7-bit ASCII (enforced at deploy time by Ansible's `validate:` check). Use `--`, `->`, and straight quotes only.
 
 ### Default protocol surface
