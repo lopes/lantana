@@ -48,11 +48,13 @@ import structlog
 
 from lantana.common.config import load_reporting, load_secrets
 from lantana.notify.discord import send_notification
+from lantana.notify.egress import evaluate_sensor_egress_alerts
 from lantana.prune import DISK_CRITICAL_THRESHOLD, DISK_WARNING_THRESHOLD
 
 if TYPE_CHECKING:
     import polars as pl
 
+    from lantana.notify.egress import SensorEgressSummary
     from lantana.notify.timing import StepTiming
 
 logger = structlog.get_logger()
@@ -70,6 +72,7 @@ CRITICAL_ERROR_TYPES: frozenset[str] = frozenset(
         "sensor_silent_critical",
         "disk_critical",
         "step_failed",
+        "sensor_egress_blocked",
     }
 )
 
@@ -174,6 +177,7 @@ def evaluate_liveness_alerts(
     silver_root: Path,
     timings: list[StepTiming] | None = None,
     disk_usage_pct: float | None = None,
+    egress_summary: SensorEgressSummary | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate stateless dead-man's-switch, disk thresholds, and systemd step health.
 
@@ -272,6 +276,9 @@ def evaluate_liveness_alerts(
                     "message": f"Systemd unit '{step.unit}' exited with result='{step.result}'.",
                 }
             )
+
+    # 5. Unsolicited sensor egress containment violations (host firewall.log)
+    alerts.extend(evaluate_sensor_egress_alerts(target_date, egress_summary))
 
     return alerts
 

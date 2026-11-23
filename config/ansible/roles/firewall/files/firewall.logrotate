@@ -2,8 +2,10 @@
 # Managed by Ansible
 
 /var/log/lantana/honeywall/nftables/firewall.log
+/var/log/lantana/honeywall/nftables/sensor-egress.log
 {
-    # No 'daily': forced with cron for more determinism
+    # Forced at 00:00 UTC + hourly maxsize safety pass
+    maxsize 100M
     rotate 7
     missingok
     notifempty

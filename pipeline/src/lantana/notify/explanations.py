@@ -49,9 +49,18 @@ class WhatWhyHow:
 
 BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
     "Pipeline Health": WhatWhyHow(
-        what="errors, dead-man's-switch liveness, step exit codes, and usable disk %.",
-        why="catches silent sensor freezes, starvation, and disk exhaustion early.",
-        how="enrichment_errors.json + D-1/D-2 silver presence + statvfs + systemd status.",
+        what=(
+            "errors, dead-man's-switch liveness, step exit codes, usable disk %, "
+            "and blocked sensor egress."
+        ),
+        why=(
+            "catches silent sensor freezes, starvation, disk exhaustion, "
+            "and unexpected container egress early."
+        ),
+        how=(
+            "enrichment_errors.json + D-1/D-2 silver presence + statvfs + "
+            "systemd status + host sensor-egress.log."
+        ),
     ),
     "Pipeline Timing": WhatWhyHow(
         what="wall-clock duration of each scheduled pipeline step.",
@@ -460,5 +469,16 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
         what="latest-partition alert totals split into C (Critical), W (Warning), and I (Info).",
         why="separates urgent failures (C) and key/network errors (W) from routine 429s (I).",
         how="enrichment_errors.json + evaluate_liveness_alerts() classified via notify/alerts.py.",
+    ),
+    "Sensor Egress": WhatWhyHow(
+        what="blocked unsolicited outbound or loopback connection attempts from sensor containers.",
+        why=(
+            "Lantana sensors are non-egressing; any non-canary drop signals "
+            "abuse, compromise, or config drift."
+        ),
+        how=(
+            "read-only parse of host sensor-egress.log [LANTANA_OUTPUT_DROP_SENSOR_*] "
+            "excluding RFC 5737 / loopback:1 canaries and SRC=."
+        ),
     ),
 }

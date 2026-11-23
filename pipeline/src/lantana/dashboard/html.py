@@ -717,7 +717,7 @@ def render_page(
         "</div>"
         "</main>"
         '<footer class="nav-footer">'
-        "Lantana v1.5 · Self-contained air-gapped Vigil Console · Bound to 127.0.0.1"
+        "Lantana v1.5.1 · Self-contained air-gapped Vigil Console · Bound to 127.0.0.1"
         "</footer>"
         f"<script>{inline_js}</script>"
         "</body>"

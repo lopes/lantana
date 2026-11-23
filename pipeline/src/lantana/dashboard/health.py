@@ -38,6 +38,12 @@ from lantana.notify.alerts import (
     evaluate_liveness_alerts,
     load_errors_for_date,
 )
+from lantana.notify.egress import (
+    DEFAULT_FIREWALL_LOG_PATH,
+    SensorEgressSummary,
+    collect_sensor_egress_summary,
+    evaluate_sensor_egress_alerts,
+)
 from lantana.notify.timing import StepTiming, collect_step_timings
 from lantana.prune import (
     BRONZE_RETENTION_DAYS,
@@ -144,6 +150,7 @@ class HealthSnapshot:
     cache_size_bytes: int
     buckets: ErrorBuckets
     recent_messages: list[dict[str, object]]
+    egress: SensorEgressSummary | None = None
 
 
 def format_bytes(num_bytes: int) -> str:
@@ -571,6 +578,7 @@ def collect_health_snapshot(
     datalake_root: Path | None = None,
     secrets_path: Path | None = None,
     geoip_dir: Path | None = None,
+    firewall_log_path: Path | None = None,
     collect_timings_fn: Callable[[list[str]], list[StepTiming]] = collect_step_timings,
 ) -> HealthSnapshot:
     """Gather a read-only operator health snapshot without leaking secrets."""
@@ -581,6 +589,9 @@ def collect_health_snapshot(
     )
     resolved_secrets = secrets_path if secrets_path is not None else DEFAULT_SECRETS_PATH
     resolved_geoip = geoip_dir if geoip_dir is not None else DEFAULT_GEOIP_DIR
+    resolved_fw_log = (
+        firewall_log_path if firewall_log_path is not None else DEFAULT_FIREWALL_LOG_PATH
+    )
 
     secrets: SecretsConfig | None = None
     secrets_loaded = False
@@ -665,7 +676,15 @@ def collect_health_snapshot(
             )
         )
 
-    # Combine enrichment errors + stateless liveness alerts (same engine as Daily Brief)
+    # Combine enrichment errors + stateless liveness alerts (same engine as Daily Brief).
+    # Also scan today's live UTC date on /health so same-day containment drops surface
+    # immediately rather than waiting for tomorrow's Gold partition.
+    today_utc = datetime.now(tz=UTC).date()
+    egress = collect_sensor_egress_summary(
+        ref_date,
+        firewall_log_path=resolved_fw_log,
+        extra_dates=[today_utc],
+    )
     summary_df = (
         read_gold_table("daily_summary", target_date, gold_root=gold_root)
         if target_date is not None
@@ -679,9 +698,10 @@ def collect_health_snapshot(
             silver_root=silver_root,
             timings=timings,
             disk_usage_pct=disk.usage_pct if disk is not None else None,
+            egress_summary=egress,
         )
         if target_date is not None
-        else []
+        else evaluate_sensor_egress_alerts(ref_date, egress)
     )
     buckets = categorize_errors(latest_errors + liveness_alerts)
 
@@ -791,4 +811,5 @@ def collect_health_snapshot(
         cache_size_bytes=cache_size,
         buckets=buckets,
         recent_messages=recent_messages,
+        egress=egress,
     )
