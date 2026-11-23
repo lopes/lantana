@@ -1,7 +1,7 @@
 ---
 # Self-owned pinned Dionaea image (built from containers/dionaea/Containerfile).
-# Override per inventory (e.g. localhost/lantana-dionaea:v1.5) for local/staging tests.
-dionaea_image: "ghcr.io/lopes/lantana-dionaea:v1.5"
+# Override per inventory (e.g. localhost/lantana-dionaea:v1.5.1) for local/staging tests.
+dionaea_image: "ghcr.io/lopes/lantana-dionaea:v1.5.1"
 
 # Dionaea service catalog — single source of truth for ports, transport,
 # and which narrative.services.<key> each service draws banners from.

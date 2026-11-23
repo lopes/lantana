@@ -17,6 +17,7 @@ StartLimitIntervalSec=0
 # strictly non-root as USER 1000:1000, and uses a non-destructive entrypoint
 # that preserves host POSIX ACLs.
 Image={{ dionaea_image }}
+Pull=never
 ContainerName=sensor-dionaea
 Network=pasta
 
@@ -64,7 +65,7 @@ PodmanArgs=--cpus=1.0 --memory=512m
 #   *.yaml from these paths, loading only our rendered services + lantana_json
 #   and store ihandlers.
 #   Ownership flows via UserNS=keep-id:uid=1000,gid=1000 above (no ,U needed),
-#   and entrypoint.sh preserves host POSIX ACLs for vector and nectar.
+#   and entrypoint.sh preserves host POSIX ACLs for vector on logs.
 Volume=/etc/lantana/sensor/dionaea/healthcheck.py:/healthcheck.py:ro
 Volume=/etc/lantana/sensor/dionaea/services-enabled:/opt/dionaea/etc/dionaea/services-enabled:ro
 Volume=/etc/lantana/sensor/dionaea/ihandlers-enabled:/opt/dionaea/etc/dionaea/ihandlers-enabled:ro

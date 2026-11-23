@@ -26,7 +26,7 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/lopes/lantana-dionaea
-  CHANNEL_TAG: v1.5
+  CHANNEL_TAG: v1.5.1
   DIONAEA_REF: 4e459f1b672a5b4c1e8335c0bff1b93738019215
 
 jobs:
@@ -67,10 +67,10 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --entrypoint /bin/sh lantana-dionaea:ci-test -c \
-            'id -u | grep -qx 1000 && id -g | grep -qx 1000 && id -u dionaea | grep -qx 1000 && id -g dionaea | grep -qx 1000 && grep -qx "processors=filter_emu" /opt/dionaea/etc/dionaea/dionaea.cfg'
+            'id -u | grep -qx 1000 && id -g | grep -qx 1000 && id -u dionaea | grep -qx 1000 && id -g dionaea | grep -qx 1000 && grep -qx "processors=filter_emu" /opt/dionaea/etc/dionaea/dionaea.cfg && grep -qx "modules=python,emu" /opt/dionaea/etc/dionaea/dionaea.cfg && ! grep -q "self.dtp = FTPDataConnect(" /opt/dionaea/lib/dionaea/python/dionaea/ftp.py && ! grep -q "'\'' PORT\\\\r\\\\n'\''" /opt/dionaea/lib/dionaea/python/dionaea/ftp.py && grep -q "cmd_not_implmntd" /opt/dionaea/lib/dionaea/python/dionaea/ftp.py'
 
           TMPDIR=$(mktemp -d)
-          mkdir -p "$TMPDIR/services" "$TMPDIR/ihandlers" "$TMPDIR/log" "$TMPDIR/lib/binaries" "$TMPDIR/lib/wwwroot" "$TMPDIR/lib/tmp"
+          mkdir -p "$TMPDIR/services" "$TMPDIR/ihandlers" "$TMPDIR/log" "$TMPDIR/lib/binaries" "$TMPDIR/lib/wwwroot" "$TMPDIR/lib/tmp" "$TMPDIR/lib/ftp/root"
           echo "<html>ok</html>" > "$TMPDIR/lib/wwwroot/index.html"
           cat > "$TMPDIR/services/http.yaml" <<'EOF'
           - name: http
@@ -81,6 +81,13 @@ jobs:
               max_request_size: 32768
               global_headers:
                 - ["Server", "nginx/1.22.1"]
+          EOF
+          cat > "$TMPDIR/services/ftp.yaml" <<'EOF'
+          - name: ftp
+            config:
+              root: "var/lib/dionaea/ftp/root"
+              response_messages:
+                welcome_msg: "220 ProFTPD Server (CI)"
           EOF
           cat > "$TMPDIR/ihandlers/lantana_json.yaml" <<'EOF'
           - name: lantana_json
@@ -125,6 +132,28 @@ jobs:
             fi
             sleep 1
           done
+
+          # Verify FTP FEAT omits PORT and active PORT command returns 502 (zero outbound FTP bounce)
+          docker exec "$CID" python3 -c '
+          import socket
+          s = socket.create_connection(("127.0.0.1", 21), timeout=3)
+          s.settimeout(3)
+          banner = s.recv(1024).decode("ascii", errors="replace")
+          assert banner.startswith("220"), banner
+          s.sendall(b"FEAT\r\n")
+          feat = s.recv(1024).decode("ascii", errors="replace")
+          assert "PASV" in feat and "PORT" not in feat, feat
+          s.sendall(b"USER anonymous\r\n")
+          s.recv(1024)
+          s.sendall(b"PASS test@example.com\r\n")
+          s.recv(1024)
+          s.sendall(b"PORT 127,0,0,1,0,80\r\n")
+          port_resp = s.recv(1024).decode("ascii", errors="replace")
+          assert port_resp.startswith("502"), port_resp
+          s.sendall(b"QUIT\r\n")
+          s.close()
+          print("Dionaea FTP offline PORT rejection OK:", port_resp.strip())
+          '
 
           # Send synthetic HTTP POST probe inside container and verify lantana_json output
           docker exec "$CID" python3 -c '

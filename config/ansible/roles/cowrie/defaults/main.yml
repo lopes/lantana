@@ -1,4 +1,4 @@
 ---
 # Self-owned pinned Cowrie image (built from containers/cowrie/Containerfile).
-# Override per inventory (e.g. localhost/lantana-cowrie:v1.5) for local/staging tests.
-cowrie_image: "ghcr.io/lopes/lantana-cowrie:v1.5"
+# Override per inventory (e.g. localhost/lantana-cowrie:v1.5.1) for local/staging tests.
+cowrie_image: "ghcr.io/lopes/lantana-cowrie:v1.5.1"

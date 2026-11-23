@@ -36,7 +36,7 @@
     state: directory
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
-    mode: "0755"
+    mode: "0700"
   tags: [dionaea]
 
 - name: "Create Dionaea artifact directories"
@@ -46,7 +46,7 @@
     state: directory
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
-    mode: "0755"
+    mode: "0700"
   loop:
     - /var/lib/lantana/sensor/dionaea/binaries
     - /var/lib/lantana/sensor/dionaea/bistreams
@@ -56,23 +56,20 @@
     loop_var: _dionaea_dir
   tags: [dionaea]
 
-- name: "Grant collector POSIX ACL on Dionaea scratch directories (single-node)"
-  become: true
-  ansible.builtin.command:
-    cmd: >-
-      /usr/local/sbin/lantana-grant-read
-      /var/lib/lantana/sensor/dionaea/binaries
-      /var/lib/lantana/sensor/dionaea/bistreams
-      /var/lib/lantana/sensor/dionaea/tmp
-  when: lantana.mode != "multi"
-  changed_when: false
-  tags: [dionaea]
-
 - name: "Enable linger for sensor-user"
   become: true
   ansible.builtin.command: "loginctl enable-linger {{ system.users.sensor.name }}"
   args:
     creates: "/var/lib/systemd/linger/{{ system.users.sensor.name }}"
+  tags: [dionaea]
+
+- name: "Import pinned Dionaea image offline into sensor store"
+  ansible.builtin.include_role:
+    name: profile_sensor_low
+    tasks_from: import_sensor_image.yml
+  vars:
+    sensor_image: "{{ dionaea_image }}"
+    sensor_restart_handler: "Restart Dionaea container"
   tags: [dionaea]
 
 # --- CONFIGURATION FILES ---
@@ -245,9 +242,8 @@
     XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
   tags: [dionaea]
 
-# Re-apply Vector and collector POSIX ACLs after container start so any newly
-# created subdirectories or log files inherit immediate read/prune access
-# without waiting for the 00:10 UTC cron.
+# Re-apply Vector read-only POSIX ACL after container start so any newly
+# created log files inherit immediate read access for Vector.
 - name: "Re-apply Vector read-only POSIX ACL on Dionaea log directory after start"
   become: true
   ansible.builtin.shell: |
@@ -256,18 +252,6 @@
     setfacl -d -m u:vector:rX /var/log/lantana/sensor/dionaea
   changed_when: false
   tags: [dionaea, vector]
-
-- name: "Re-apply collector POSIX ACL on Dionaea scratch directories after start (single-node)"
-  become: true
-  ansible.builtin.command:
-    cmd: >-
-      /usr/local/sbin/lantana-grant-read
-      /var/lib/lantana/sensor/dionaea/binaries
-      /var/lib/lantana/sensor/dionaea/bistreams
-      /var/lib/lantana/sensor/dionaea/tmp
-  when: lantana.mode != "multi"
-  changed_when: false
-  tags: [dionaea]
 
 - name: "Publish the Dionaea ports (single-node)"
   become: true
@@ -297,21 +281,14 @@
   notify: "Reload nftables"
   tags: [dionaea, nftables]
 
-# --- PIPELINE BRIDGE ---
-# Refresh POSIX ACLs (u:nectar:rwX via lantana-grant-read) at 00:10 UTC so
-# nectar has read and prune rights before 00:15 prune and 01:00 enrich without
-# altering stigma ownership or mode bits.
-- name: "Schedule daily ACL refresh for Dionaea scratch directories (single-node)"
+# --- LEGACY ACL CLEANUP ---
+# Sensor scratch is pruned strictly by stigma via lantana-sensor-prune.timer;
+# nectar never accesses /var/lib/lantana/sensor.
+- name: "Remove legacy Dionaea ACL refresh cron job"
   become: true
-  ansible.builtin.copy:
-    dest: /etc/cron.d/lantana-dionaea-binaries
-    content: |
-      # Grant nectar rwX ACL on Dionaea scratch dirs before 00:15 prune and 01:00 enrich.
-      10 0 * * * root /usr/local/sbin/lantana-grant-read /var/lib/lantana/sensor/dionaea/binaries /var/lib/lantana/sensor/dionaea/bistreams /var/lib/lantana/sensor/dionaea/tmp
-    owner: root
-    group: root
-    mode: "0644"
-  when: lantana.mode != "multi"
+  ansible.builtin.file:
+    path: /etc/cron.d/lantana-dionaea-binaries
+    state: absent
   tags: [dionaea]
 
 # --- LOGGING ---

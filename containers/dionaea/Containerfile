@@ -90,15 +90,18 @@ RUN apt-get update && \
 COPY dionaea.cfg /opt/dionaea/etc/dionaea/dionaea.cfg
 COPY lantana_json.py /opt/dionaea/lib/dionaea/python/dionaea/lantana_json.py
 COPY patch_http.py /tmp/patch_http.py
+COPY patch_ftp.py /tmp/patch_ftp.py
 COPY entrypoint.sh /usr/local/sbin/entrypoint.sh
 
 RUN python3 /tmp/patch_http.py && \
-    rm -f /tmp/patch_http.py && \
+    python3 /tmp/patch_ftp.py && \
+    rm -f /tmp/patch_http.py /tmp/patch_ftp.py && \
     chmod 0755 /usr/local/sbin/entrypoint.sh && \
     chmod 0644 /opt/dionaea/etc/dionaea/dionaea.cfg \
                /opt/dionaea/lib/dionaea/python/dionaea/lantana_json.py && \
     python3 -m py_compile \
         /opt/dionaea/lib/dionaea/python/dionaea/http.py \
+        /opt/dionaea/lib/dionaea/python/dionaea/ftp.py \
         /opt/dionaea/lib/dionaea/python/dionaea/lantana_json.py
 
 ARG SOURCE_DATE_EPOCH

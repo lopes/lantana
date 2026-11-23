@@ -26,7 +26,7 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/lopes/lantana-cowrie
-  CHANNEL_TAG: v1.5
+  CHANNEL_TAG: v1.5.1
   COWRIE_REF: 8e36327f6a24abe379dac807cc7e8b2d2fb01248
   COWRIE_VERSION: 3.1.7
 
@@ -70,6 +70,27 @@ jobs:
           set -euo pipefail
           docker run --rm --entrypoint /cowrie/cowrie-env/bin/python3 lantana-cowrie:ci-test -c \
             'import os, cowrie; assert os.getuid() == 999 and os.getgid() == 999, (os.getuid(), os.getgid()); print("UID/GID 999:999 OK")'
+
+          # Verify zero-egress build-time offline patches (no DNS/TCP/UDP calls)
+          docker run --rm --entrypoint /cowrie/cowrie-env/bin/python3 lantana-cowrie:ci-test -c '
+          from pathlib import Path
+          import twisted.names.client as dns_client
+          from cowrie.core import network
+
+          def _forbid(*args, **kwargs):
+              raise AssertionError("Outbound DNS must never be invoked")
+
+          dns_client.lookupAddress = _forbid
+          d1 = network.resolve_allowed("example.com")
+          d2 = network.resolve_allowed("203.0.113.10")
+          d3 = network.communication_allowed("example.com")
+          assert d1.called and d1.result is None, (d1.called, getattr(d1, "result", None))
+          assert d2.called and d2.result is None, (d2.called, getattr(d2, "result", None))
+          assert d3.called and d3.result is False, (d3.called, getattr(d3, "result", None))
+          tftp_src = Path("/cowrie/cowrie-git/src/cowrie/commands/tftp.py").read_text(encoding="utf-8")
+          assert "reactor.resolve(" not in tftp_src
+          print("Cowrie offline zero-egress patch OK")
+          '
 
           TMPDIR=$(mktemp -d)
           mkdir -p "$TMPDIR/log" "$TMPDIR/var/keys" "$TMPDIR/var/tty" "$TMPDIR/var/downloads" "$TMPDIR/var/misc"
