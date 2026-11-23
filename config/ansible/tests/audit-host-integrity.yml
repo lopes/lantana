@@ -40,12 +40,26 @@
       ansible.builtin.shell: |
         set -euo pipefail
         findings=""
-        for base in /root/.config/systemd/user /etc/systemd/user /home/*/.config/systemd/user; do
+        for base in /root/.config/systemd/user /home/*/.config/systemd/user; do
           [ -d "$base" ] || continue
           while IFS= read -r entry; do
             [ -n "$entry" ] && findings="${findings}${entry}"$'\n'
           done < <(find "$base" \( -type f -o -type l \) \( -name '*.service' -o -name '*.timer' -o -name '*.socket' -o -name '*.path' -o -name '*.target' -o -name '*.mount' -o -name '*.conf' \) 2>/dev/null || true)
         done
+        if [ -d /etc/systemd/user ]; then
+          # Allow stock Debian package symlinks into /usr/lib/systemd/user/ (e.g. gpg-agent, ssh-agent);
+          # flag any regular file or any symlink pointing outside /usr/lib/systemd/user/.
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            if [ -L "$entry" ]; then
+              target="$(readlink -f "$entry" 2>/dev/null || true)"
+              case "$target" in
+                /usr/lib/systemd/user/*) continue ;;
+              esac
+            fi
+            findings="${findings}${entry}"$'\n'
+          done < <(find /etc/systemd/user \( -type f -o -type l \) \( -name '*.service' -o -name '*.timer' -o -name '*.socket' -o -name '*.path' -o -name '*.target' -o -name '*.mount' -o -name '*.conf' \) 2>/dev/null || true)
+        fi
         for qbase in /root/.config/containers/systemd /home/*/.config/containers/systemd /run/user/*/containers/systemd; do
           [ -d "$qbase" ] || continue
           while IFS= read -r entry; do
@@ -347,9 +361,10 @@
         ss -tulnp
         echo "=== TMP & DEV/SHM FILES ==="
         find /tmp /dev/shm -maxdepth 2 -mindepth 1 -ls 2>/dev/null | head -n 40 || true
-        echo "=== NON-STANDARD SUID/SGID (outside /usr/bin /usr/sbin /usr/lib) ==="
+        echo "=== NON-STANDARD SUID/SGID (outside /usr/{bin,sbin,lib,libexec} & container overlays) ==="
         find / -xdev \( -perm -4000 -o -perm -2000 \) \
           ! -path '/usr/bin/*' ! -path '/usr/sbin/*' ! -path '/usr/lib/*' ! -path '/usr/libexec/*' \
+          ! -path '/var/lib/containers/*' ! -path '/home/*/.local/share/containers/*' \
           -ls 2>/dev/null || true
       args:
         executable: /bin/bash

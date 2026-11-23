@@ -63,6 +63,7 @@
       podman load
   args:
     executable: /bin/bash
+    chdir: /tmp
   when: >-
     _lantana_sensor_image_id.rc != 0 or
     (_lantana_sensor_image_id.stdout | trim) != (_lantana_root_image_id.stdout | trim)

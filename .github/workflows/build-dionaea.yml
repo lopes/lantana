@@ -140,13 +140,15 @@ jobs:
           s.settimeout(3)
           banner = s.recv(1024).decode("ascii", errors="replace")
           assert banner.startswith("220"), banner
+          s.sendall(b"USER anonymous\r\n")
+          user_resp = s.recv(1024).decode("ascii", errors="replace")
+          assert user_resp.startswith("331"), user_resp
+          s.sendall(b"PASS test@example.com\r\n")
+          pass_resp = s.recv(1024).decode("ascii", errors="replace")
+          assert pass_resp.startswith("230"), pass_resp
           s.sendall(b"FEAT\r\n")
           feat = s.recv(1024).decode("ascii", errors="replace")
           assert "PASV" in feat and "PORT" not in feat, feat
-          s.sendall(b"USER anonymous\r\n")
-          s.recv(1024)
-          s.sendall(b"PASS test@example.com\r\n")
-          s.recv(1024)
           s.sendall(b"PORT 127,0,0,1,0,80\r\n")
           port_resp = s.recv(1024).decode("ascii", errors="replace")
           assert port_resp.startswith("502"), port_resp

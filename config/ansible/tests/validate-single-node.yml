@@ -346,6 +346,7 @@
 
     - name: "Verify strict one-way privilege boundary between stigma and nectar"
       ansible.builtin.shell:
+        chdir: /tmp
         cmd: |
           set -eu
           # 1. nectar must have zero read/write/traverse access on /var/lib/lantana/sensor (0700 stigma)
