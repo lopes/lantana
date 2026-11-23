@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+# Root-owned systemd unit running strictly as the unprivileged sensor user
+# (stigma) so scratch pruning never crosses the stigma -> nectar trust boundary
+# and cannot be disabled by modifying stigma's home directory.
+
+[Unit]
+Description=Lantana sensor scratch prune (stigma-owned, 14d normal / 3d emergency)
+Documentation=https://github.com/lopes/lantana
+
+[Service]
+Type=oneshot
+User={{ system.users.sensor.name }}
+Group={{ system.users.sensor.name }}
+ExecStart=/usr/local/libexec/lantana-sensor-prune
+TimeoutStartSec=900
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/lantana/sensor
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal

@@ -48,17 +48,24 @@
     - /etc/lantana/sensor
   tags: [honeypots]
 
-- name: "Create sensor collector directories"
+- name: "Create sensor log directory"
   become: true
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: /var/log/lantana/sensor
     state: directory
     owner: "{{ system.users.sensor.name }}"
     group: "{{ system.users.sensor.name }}"
     mode: "0755"
-  loop:
-    - /var/log/lantana/sensor
-    - /var/lib/lantana/sensor
+  tags: [honeypots]
+
+- name: "Create private sensor state directory (strictly stigma-only)"
+  become: true
+  ansible.builtin.file:
+    path: /var/lib/lantana/sensor
+    state: directory
+    owner: "{{ system.users.sensor.name }}"
+    group: "{{ system.users.sensor.name }}"
+    mode: "0700"
   tags: [honeypots]
 
 # --- HONEYPOTS LOG ROTATION --
@@ -79,21 +86,78 @@
     name: podman
   tags: [honeypots]
 
-- name: "Configure 14-day sensor scratch cleanup via systemd-tmpfiles (multi-node)"
+# --- UNPRIVILEGED SENSOR SCRATCH PRUNING ---
+# Runs strictly as stigma under a root-owned systemd unit (/etc/systemd/system)
+# on both single-node and multi-node deployments, keeping stigma -> nectar
+# isolation strictly one-way (nectar never traverses or unlinks sensor trees).
+- name: "Ensure /usr/local/libexec directory exists"
+  become: true
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [honeypots]
+
+- name: "Deploy unprivileged sensor scratch prune script"
   become: true
   ansible.builtin.copy:
-    dest: /etc/tmpfiles.d/lantana-sensor.conf
-    content: |
-      # Managed by Ansible (multi-node sensor hosts without local collector/nectar)
-      e /var/lib/lantana/sensor/cowrie/downloads - - - 14d
-      e /var/lib/lantana/sensor/cowrie/tty - - - 14d
-      e /var/lib/lantana/sensor/dionaea/binaries - - - 14d
-      e /var/lib/lantana/sensor/dionaea/bistreams - - - 14d
-      e /var/lib/lantana/sensor/dionaea/tmp - - - 14d
+    src: lantana-sensor-prune
+    dest: /usr/local/libexec/lantana-sensor-prune
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [honeypots]
+
+- name: "Deploy lantana-sensor-prune systemd service unit"
+  become: true
+  ansible.builtin.template:
+    src: lantana-sensor-prune.service.j2
+    dest: /etc/systemd/system/lantana-sensor-prune.service
     owner: root
     group: root
     mode: "0644"
-  when: lantana.mode == "multi"
+  notify: "Reload systemd"
+  tags: [honeypots]
+
+- name: "Deploy lantana-sensor-prune systemd timer unit"
+  become: true
+  ansible.builtin.template:
+    src: lantana-sensor-prune.timer.j2
+    dest: /etc/systemd/system/lantana-sensor-prune.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Reload systemd"
+  tags: [honeypots]
+
+- name: "Enable and start lantana-sensor-prune systemd timer"
+  become: true
+  ansible.builtin.systemd:
+    name: lantana-sensor-prune.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [honeypots]
+
+- name: "Remove legacy root-run systemd-tmpfiles sensor cleanup config"
+  become: true
+  ansible.builtin.file:
+    path: /etc/tmpfiles.d/lantana-sensor.conf
+    state: absent
+  tags: [honeypots]
+
+- name: "Strip stale collector POSIX ACLs from sensor state tree (upgrade cleanup)"
+  become: true
+  become_user: "{{ system.users.sensor.name }}"
+  ansible.builtin.shell: |
+    set -eu
+    if [ -d /var/lib/lantana/sensor ]; then
+      setfacl -R -P -x "u:{{ system.users.collector.name }}" /var/lib/lantana/sensor 2>/dev/null || true
+      setfacl -R -P -x "d:u:{{ system.users.collector.name }}" /var/lib/lantana/sensor 2>/dev/null || true
+    fi
+  changed_when: false
   tags: [honeypots]
 
 # --- LOG FORWARDING ---

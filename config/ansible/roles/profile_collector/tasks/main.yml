@@ -185,7 +185,7 @@
     mode: "0644"
   loop:
     - { binary: "lantana-prune",
-        description: "Lantana prune (14d verified bronze & sensor scratch, 180d silver/gold)" }
+        description: "Lantana prune (14d verified bronze, 180d silver/gold)" }
     - { binary: "lantana-enrich",
         description: "Lantana enrichment (bronze→silver)" }
     - { binary: "lantana-transform",
@@ -210,7 +210,7 @@
     mode: "0644"
   loop:
     - { binary: "lantana-prune",
-        description: "Lantana prune (14d verified bronze & sensor scratch, 180d silver/gold)",
+        description: "Lantana prune (14d verified bronze, 180d silver/gold)",
         calendar: "*-*-* 00:15:00" }
     - { binary: "lantana-enrich",
         description: "Lantana enrichment (bronze→silver)",

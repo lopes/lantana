@@ -2,12 +2,14 @@
 
 Supports:
 - Inbound source IPs (`extract_ips`)
-- Malware SHA-256 hashes from bronze (`extract_hashes_from_bronze`) and date-scoped
-  symlink-safe sensor disk scans (`extract_hashes_from_disk`, `extract_dionaea_binary_events`)
+- Malware SHA-256 hashes from bronze (`extract_hashes_from_bronze`)
 - Post-auth outbound stager URLs (`extract_outbound_urls`), stager domains
   (`extract_stager_domains`), outbound C2 IPs (`extract_outbound_c2_ips`), and
   persistent OpenSSH public-key fingerprints (`extract_ssh_public_keys`)
 - OPSEC & non-routable IP filtering (`filter_internal_ips`)
+
+Strict one-way isolation: collector IOC extraction operates strictly on Bronze/Silver
+DataFrames and never reads ``/var/lib/lantana/sensor``.
 """
 
 from __future__ import annotations
@@ -17,11 +19,8 @@ import binascii
 import contextlib
 import hashlib
 import ipaddress
-import os
 import re
-import stat
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse
 
 import polars as pl
@@ -30,9 +29,6 @@ import structlog
 from lantana.common.redact import derive_ip_variants
 
 if TYPE_CHECKING:
-    from datetime import date
-    from pathlib import Path
-
     from lantana.common.redact import RedactionConfig
 
 logger = structlog.get_logger()
@@ -45,10 +41,7 @@ _FILE_EVENT_IDS: frozenset[str] = frozenset(
     }
 )
 
-_BINARY_MAX_BYTES: int = 100 * 1024 * 1024  # 100 MiB cap shared with disk-scan
-_SSH_KEY_FILE_MAX_BYTES: int = 1024 * 1024  # 1 MiB cap for persistence files
 _CMD_SCAN_MAX_CHARS: int = 65536  # Hard cap per shell line to bound regex work
-_READ_CHUNK_BYTES: int = 65536
 
 # Non-routable IPv4/IPv6 ranges that should never be sent to a threat-intel
 # provider or exported as outbound C2 indicators. Deliberately does NOT include
@@ -82,7 +75,6 @@ _OUTBOUND_TOOL_KW_RE = re.compile(
     r"(?i)\b(?:tftp|nc|ncat|netcat|scp|rsync|curl|wget|busybox\s+(?:wget|tftp))\b"
 )
 _IPV4_TOKEN_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-_SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _LDH_DOMAIN_RE = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
 )
@@ -108,81 +100,6 @@ def _unwrap_ip(
     return addr
 
 
-def _open_dir_chain_nofollow(base: Path, *parts: str) -> int | None:
-    """Open ``base / parts...`` traversing every relative component with ``O_NOFOLLOW``."""
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    try:
-        cur_fd = os.open(str(base), flags)
-    except OSError:
-        return None
-    for part in parts:
-        try:
-            next_fd = os.open(part, flags, dir_fd=cur_fd)
-        except OSError:
-            os.close(cur_fd)
-            return None
-        os.close(cur_fd)
-        cur_fd = next_fd
-    return cur_fd
-
-
-def _hash_regular_file_at(
-    dir_fd: int,
-    name: str,
-    *,
-    max_bytes: int,
-    target_date: date | None = None,
-) -> tuple[str, datetime] | None:
-    """Atomically open, validate, and SHA-256 hash a regular file via ``dir_fd`` + ``O_NOFOLLOW``.
-
-    Guards against symlink TOCTOU, FIFO/device opens (``O_NONBLOCK`` + ``S_ISREG``),
-    and unbounded growth past ``max_bytes``.
-    """
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
-            return None
-        mtime_dt = datetime.fromtimestamp(st.st_mtime, tz=UTC)
-        if target_date is not None and mtime_dt.date() != target_date:
-            return None
-        hasher = hashlib.sha256()
-        total = 0
-        while True:
-            chunk = os.read(fd, _READ_CHUNK_BYTES)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > max_bytes:
-                return None
-            hasher.update(chunk)
-        return hasher.hexdigest(), mtime_dt
-    finally:
-        os.close(fd)
-
-
-def _read_regular_text_at(dir_fd: int, name: str, *, max_bytes: int) -> str | None:
-    """Atomically read a bounded UTF-8 regular file via ``dir_fd`` + ``O_NOFOLLOW``."""
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
-            return None
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(fd, _READ_CHUNK_BYTES)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > max_bytes:
-                return None
-            chunks.append(chunk)
-        return b"".join(chunks).decode("utf-8", errors="ignore")
-    finally:
-        os.close(fd)
-
-
 def extract_ips(df: pl.DataFrame) -> set[str]:
     """Return unique non-null src_ip values from a bronze DataFrame."""
     if "src_ip" not in df.columns:
@@ -192,125 +109,17 @@ def extract_ips(df: pl.DataFrame) -> set[str]:
 
 
 def extract_hashes_from_bronze(df: pl.DataFrame) -> set[str]:
-    """Return unique non-null shasum values from file_download/file_upload events only.
+    """Return unique non-null shasum values from file_download/file_upload/binary events only.
 
-    Filters to cowrie.session.file_download and cowrie.session.file_upload
-    specifically. cowrie.log.closed events also carry a shasum (SHA256 of the
-    TTY recording file) which is not a malware artifact.
+    Filters to cowrie.session.file_download, cowrie.session.file_upload, and
+    dionaea.binary.captured specifically. cowrie.log.closed events also carry a
+    shasum (SHA256 of the TTY recording file) which is not a malware artifact.
     """
     if "shasum" not in df.columns or "eventid" not in df.columns:
         return set()
     filtered = df.filter(pl.col("eventid").is_in(list(_FILE_EVENT_IDS)))
     values = filtered.get_column("shasum").drop_nulls().unique().cast(pl.Utf8).to_list()
     return {h for h in values if h}
-
-
-def extract_dionaea_binary_events(
-    sensor_dir: Path,
-    target_date: date,
-    default_server: str = "unknown",
-    default_operation: str = "unknown",
-    exclude_hashes: set[str] | None = None,
-) -> list[dict[str, Any]]:
-    """Build synthetic fallback OCSF-bound events for unattributed dionaea binaries.
-
-    Each regular file under ``<sensor_dir>/dionaea/binaries`` whose UTC mtime
-    matches ``target_date`` and whose SHA-256 is not already in ``exclude_hashes``
-    (emitted directly by ``lantana_json`` with per-session ``src_ip`` &
-    ``download_url``) yields one fallback ``dionaea.binary.captured`` event.
-    Uses ``dir_fd`` + ``O_NOFOLLOW`` + ``O_NONBLOCK`` so compromised sensor
-    symlinks or FIFOs cannot hijack collector reads.
-    """
-    dir_fd = _open_dir_chain_nofollow(sensor_dir, "dionaea", "binaries")
-    if dir_fd is None:
-        return []
-
-    excluded = exclude_hashes or set()
-    events: list[dict[str, Any]] = []
-    try:
-        entries = list(os.scandir(dir_fd))
-        for entry in entries:
-            try:
-                hashed = _hash_regular_file_at(
-                    dir_fd,
-                    entry.name,
-                    max_bytes=_BINARY_MAX_BYTES,
-                    target_date=target_date,
-                )
-            except OSError as exc:
-                logger.warning(
-                    "dionaea_binary_skipped",
-                    path=str(sensor_dir / "dionaea" / "binaries" / entry.name),
-                    reason=type(exc).__name__,
-                )
-                continue
-            if hashed is None:
-                continue
-            sha, mtime_dt = hashed
-            if sha in excluded:
-                continue
-            events.append(
-                {
-                    "eventid": "dionaea.binary.captured",
-                    "timestamp": mtime_dt.replace(tzinfo=None),
-                    "shasum": sha,
-                    "binary_file_name": entry.name,
-                    "dataset": "dionaea",
-                    "server": default_server,
-                    "operation": default_operation,
-                }
-            )
-    finally:
-        os.close(dir_fd)
-    return events
-
-
-def extract_hashes_from_disk(
-    sensor_dir: Path,
-    target_date: date | None = None,
-) -> set[str]:
-    """Compute SHA256 for artifacts under <sensor>/<honeypot>/{downloads,binaries}.
-
-    When ``target_date`` is provided, scopes hashing strictly to files whose
-    UTC mtime falls on ``target_date`` so nightly runs do not re-hash weeks of
-    historical files. Uses ``dir_fd`` + ``O_NOFOLLOW`` + ``O_NONBLOCK`` to
-    defend against symlinks and FIFOs; files > 100 MiB are skipped.
-    """
-    sensor_fd = _open_dir_chain_nofollow(sensor_dir)
-    if sensor_fd is None:
-        return set()
-
-    hashes: set[str] = set()
-    try:
-        sensor_entries = list(os.scandir(sensor_fd))
-        for sensor_entry in sensor_entries:
-            for leaf in ("downloads", "binaries"):
-                dir_fd = _open_dir_chain_nofollow(sensor_dir, sensor_entry.name, leaf)
-                if dir_fd is None:
-                    continue
-                try:
-                    for entry in os.scandir(dir_fd):
-                        try:
-                            hashed = _hash_regular_file_at(
-                                dir_fd,
-                                entry.name,
-                                max_bytes=_BINARY_MAX_BYTES,
-                                target_date=target_date,
-                            )
-                        except OSError as exc:
-                            logger.warning(
-                                "disk_hash_skipped",
-                                path=str(sensor_dir / sensor_entry.name / leaf / entry.name),
-                                reason=type(exc).__name__,
-                            )
-                            continue
-                        if hashed is not None:
-                            hashes.add(hashed[0])
-                finally:
-                    os.close(dir_fd)
-    finally:
-        os.close(sensor_fd)
-    return hashes
 
 
 def _parse_infra_sets(
@@ -576,16 +385,11 @@ def _format_ssh_pubkey_fingerprint(key_type: str, key_blob: str) -> str | None:
     return f"{key_type} SHA256:{digest_b64}"
 
 
-def extract_ssh_public_keys(
-    df: pl.DataFrame,
-    sensor_dir: Path | None = None,
-) -> set[str]:
-    """Extract canonical OpenSSH public-key fingerprints from commands and persistence files.
+def extract_ssh_public_keys(df: pl.DataFrame) -> set[str]:
+    """Extract canonical OpenSSH public-key fingerprints from post-auth commands.
 
     Matches ``ssh-rsa``, ``ssh-ed25519``, and ``ssh-ecdsa-sha2-nistp*`` blobs
-    written via shell commands (e.g. ``echo "ssh-ed25519 AAAA..." >> ~/.ssh/authorized_keys``)
-    and optionally from Cowrie persistence downloads when ``sensor_dir`` is given.
-    Enforces strict 64-hex SHA-256 filenames and ``dir_fd`` + ``O_NOFOLLOW`` opens.
+    written via shell commands (e.g. ``echo "ssh-ed25519 AAAA..." >> ~/.ssh/authorized_keys``).
     """
     if df.is_empty():
         return set()
@@ -596,46 +400,5 @@ def extract_ssh_public_keys(
             fp = _format_ssh_pubkey_fingerprint(key_type, key_blob)
             if fp is not None:
                 fingerprints.add(fp)
-
-    if sensor_dir is not None and "file_hash_sha256" in df.columns:
-        persistence_df = df
-        if "file_intent" in df.columns:
-            persistence_df = df.filter(pl.col("file_intent") == "persistence")
-        elif "destfile" in df.columns:
-            persistence_df = df.filter(
-                pl.col("destfile").fill_null("").str.contains("authorized_keys")
-            )
-        else:
-            persistence_df = df.clear()
-
-        if not persistence_df.is_empty():
-            dir_fd = _open_dir_chain_nofollow(sensor_dir, "cowrie", "downloads")
-            if dir_fd is not None:
-                try:
-                    shas = (
-                        persistence_df.get_column("file_hash_sha256")
-                        .drop_nulls()
-                        .unique()
-                        .cast(pl.Utf8)
-                        .to_list()
-                    )
-                    for sha in shas:
-                        sha_str = str(sha)
-                        if not _SHA256_HEX_RE.fullmatch(sha_str):
-                            continue
-                        try:
-                            text = _read_regular_text_at(
-                                dir_fd, sha_str, max_bytes=_SSH_KEY_FILE_MAX_BYTES
-                            )
-                        except OSError:
-                            continue
-                        if not text:
-                            continue
-                        for key_type, key_blob in _SSH_PUBKEY_RE.findall(text):
-                            fp = _format_ssh_pubkey_fingerprint(key_type, key_blob)
-                            if fp is not None:
-                                fingerprints.add(fp)
-                finally:
-                    os.close(dir_fd)
 
     return fingerprints

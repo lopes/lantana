@@ -3,25 +3,16 @@
 from __future__ import annotations
 
 import hashlib
-import os
-from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING
 
 import polars as pl
 
 from lantana.common.redact import RedactionConfig
+from lantana.enrichment import ioc as ioc_mod
 from lantana.enrichment.ioc import (
-    extract_dionaea_binary_events,
     extract_hashes_from_bronze,
-    extract_hashes_from_disk,
     extract_ips,
     filter_internal_ips,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    import pytest
 
 
 def _config() -> RedactionConfig:
@@ -90,171 +81,11 @@ class TestExtractHashesFromBronze:
         assert extract_hashes_from_bronze(df) == set()
 
 
-class TestExtractHashesFromDisk:
-    def test_hashes_files_in_downloads(self, tmp_path: Path) -> None:
-        sensor_dir = tmp_path / "sensor"
-        (sensor_dir / "cowrie" / "downloads").mkdir(parents=True)
-        payload = b"malware-bytes"
-        (sensor_dir / "cowrie" / "downloads" / "payload.bin").write_bytes(payload)
-        expected = hashlib.sha256(payload).hexdigest()
-
-        assert extract_hashes_from_disk(sensor_dir) == {expected}
-
-    def test_skips_oversized_files(self, tmp_path: Path) -> None:
-        sensor_dir = tmp_path / "sensor"
-        (sensor_dir / "cowrie" / "downloads").mkdir(parents=True)
-        # Create a file > 100 MiB. Use a sparse write so the test stays fast.
-        too_big = sensor_dir / "cowrie" / "downloads" / "huge.bin"
-        with too_big.open("wb") as f:
-            f.seek(100 * 1024 * 1024 + 1)
-            f.write(b"\x00")
-
-        assert extract_hashes_from_disk(sensor_dir) == set()
-
-    def test_missing_dirs_treated_as_empty(self, tmp_path: Path) -> None:
-        assert extract_hashes_from_disk(tmp_path / "nonexistent") == set()
-
-    def test_unreadable_file_skipped(self, tmp_path: Path) -> None:
-        """Permission-denied on a file is logged and skipped, not raised.
-
-        Production defect 2026-05-25: cowrie writes downloads as stigma;
-        the enrichment runner runs as nectar; nectar can iterdir the
-        parent but cannot read individual payload files.
-        """
-        sensor_dir = tmp_path / "sensor"
-        (sensor_dir / "cowrie" / "downloads").mkdir(parents=True)
-
-        readable = sensor_dir / "cowrie" / "downloads" / "readable.bin"
-        readable.write_bytes(b"ok")
-        expected = hashlib.sha256(b"ok").hexdigest()
-
-        unreadable = sensor_dir / "cowrie" / "downloads" / "unreadable.bin"
-        unreadable.write_bytes(b"secret")
-        unreadable.chmod(0o000)
-        try:
-            result = extract_hashes_from_disk(sensor_dir)
-        finally:
-            # Restore so tmp_path cleanup doesn't error
-            unreadable.chmod(0o644)
-
-        assert result == {expected}
-
-    def test_file_vanishes_mid_scan_skipped(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """If cowrie deletes a file between scandir() and O_NOFOLLOW open(),
-        treat as a benign race and continue.
-        """
-        from lantana.enrichment import ioc as ioc_mod
-
-        sensor_dir = tmp_path / "sensor"
-        (sensor_dir / "cowrie" / "downloads").mkdir(parents=True)
-        (sensor_dir / "cowrie" / "downloads" / "missing.bin").write_bytes(b"data")
-
-        def _vanishing_hash(*_args: object, **_kwargs: object) -> None:
-            raise FileNotFoundError("missing.bin")
-
-        monkeypatch.setattr(ioc_mod, "_hash_regular_file_at", _vanishing_hash)
-        result = extract_hashes_from_disk(sensor_dir)
-
-        assert result == set()
-
-
-class TestExtractDionaeaBinaryEvents:
-    """Synthetic file-activity events for dionaea SMB/FTP captures.
-
-    Dionaea's ``store`` ihandler writes binaries to
-    ``var/lib/dionaea/binaries/`` (MD5-named) but never emits a hash
-    event into ``dionaea.json``. Without this scanner, the 192 ELF
-    samples op_alpha had captured by 2026-06-19 were completely invisible
-    to silver → gold → brief. The scanner closes the gap.
-    """
-
-    @staticmethod
-    def _set_mtime(path: Path, when: datetime) -> None:
-        ts = when.timestamp()
-        os.utime(path, (ts, ts))
-
-    def test_returns_one_event_per_binary_dated_target(self, tmp_path: Path) -> None:
-        sensor_dir = tmp_path / "sensor"
-        binaries = sensor_dir / "dionaea" / "binaries"
-        binaries.mkdir(parents=True)
-        payload = b"\x7fELF\x02\x01\x01"  # minimal ELF magic, enough for the test
-        f = binaries / "00aabbcc11ddeeff"
-        f.write_bytes(payload)
-        self._set_mtime(f, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
-
-        events = extract_dionaea_binary_events(sensor_dir, date(2026, 6, 18))
-        assert len(events) == 1
-        ev = events[0]
-        assert ev["eventid"] == "dionaea.binary.captured"
-        assert ev["shasum"] == hashlib.sha256(payload).hexdigest()
-        assert ev["binary_file_name"] == "00aabbcc11ddeeff"
-        assert ev["dataset"] == "dionaea"
-        # timestamp is a naive UTC datetime, matching the Datetime dtype
-        # read_bronze_ndjson gives every other dataset's timestamp column
-        assert ev["timestamp"] == datetime(2026, 6, 18, 12, 0, 0)
-        assert ev["timestamp"].tzinfo is None
-
-    def test_filters_files_outside_target_date(self, tmp_path: Path) -> None:
-        sensor_dir = tmp_path / "sensor"
-        binaries = sensor_dir / "dionaea" / "binaries"
-        binaries.mkdir(parents=True)
-
-        today_file = binaries / "today"
-        today_file.write_bytes(b"today")
-        self._set_mtime(today_file, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
-
-        yesterday_file = binaries / "yesterday"
-        yesterday_file.write_bytes(b"yesterday")
-        self._set_mtime(yesterday_file, datetime(2026, 6, 17, 23, 30, 0, tzinfo=UTC))
-
-        tomorrow_file = binaries / "tomorrow"
-        tomorrow_file.write_bytes(b"tomorrow")
-        self._set_mtime(tomorrow_file, datetime(2026, 6, 19, 0, 30, 0, tzinfo=UTC))
-
-        events = extract_dionaea_binary_events(sensor_dir, date(2026, 6, 18))
-        names = {ev["binary_file_name"] for ev in events}
-        assert names == {"today"}
-
-    def test_no_binaries_dir_returns_empty(self, tmp_path: Path) -> None:
-        assert extract_dionaea_binary_events(tmp_path / "sensor", date(2026, 6, 18)) == []
-
-    def test_skips_oversized_files(self, tmp_path: Path) -> None:
-        sensor_dir = tmp_path / "sensor"
-        binaries = sensor_dir / "dionaea" / "binaries"
-        binaries.mkdir(parents=True)
-        huge = binaries / "huge"
-        with huge.open("wb") as fh:
-            fh.seek(100 * 1024 * 1024 + 1)
-            fh.write(b"\x00")
-        self._set_mtime(huge, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
-
-        events = extract_dionaea_binary_events(sensor_dir, date(2026, 6, 18))
-        assert events == []
-
-    def test_unreadable_file_skipped(self, tmp_path: Path) -> None:
-        sensor_dir = tmp_path / "sensor"
-        binaries = sensor_dir / "dionaea" / "binaries"
-        binaries.mkdir(parents=True)
-
-        readable = binaries / "readable"
-        readable.write_bytes(b"ok")
-        self._set_mtime(readable, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
-
-        unreadable = binaries / "unreadable"
-        unreadable.write_bytes(b"secret")
-        self._set_mtime(unreadable, datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC))
-        unreadable.chmod(0o000)
-        try:
-            events = extract_dionaea_binary_events(sensor_dir, date(2026, 6, 18))
-        finally:
-            unreadable.chmod(0o644)
-
-        names = {ev["binary_file_name"] for ev in events}
-        assert names == {"readable"}
+class TestBronzeOnlyIsolation:
+    def test_ioc_module_has_no_sensor_disk_scanners(self) -> None:
+        """One-way trust boundary: collector IOC extraction never reads /var/lib/lantana/sensor."""
+        assert not hasattr(ioc_mod, "extract_hashes_from_disk")
+        assert not hasattr(ioc_mod, "extract_dionaea_binary_events")
 
 
 class TestFilterInternalIps:
@@ -307,23 +138,7 @@ class TestFilterInternalIps:
 
 
 class TestV15DurableExtractors:
-    """Tests for date-scoped disk hashing and outbound C2/URL/domain/SSH-key extractors."""
-
-    def test_extract_hashes_from_disk_scoped_to_target_date(self, tmp_path: Path) -> None:
-        sensor_dir = tmp_path / "sensor"
-        dl = sensor_dir / "cowrie" / "downloads"
-        dl.mkdir(parents=True)
-        today_file = dl / "today.bin"
-        today_file.write_bytes(b"fresh")
-        old_file = dl / "old.bin"
-        old_file.write_bytes(b"stale")
-        today_ts = datetime(2026, 7, 10, 12, 0, tzinfo=UTC).timestamp()
-        old_ts = datetime(2026, 7, 1, 12, 0, tzinfo=UTC).timestamp()
-        os.utime(today_file, (today_ts, today_ts))
-        os.utime(old_file, (old_ts, old_ts))
-
-        hashes = extract_hashes_from_disk(sensor_dir, target_date=date(2026, 7, 10))
-        assert hashes == {hashlib.sha256(b"fresh").hexdigest()}
+    """Tests for Bronze-only outbound C2/URL/domain/SSH-key and Dionaea hash extractors."""
 
     def test_extract_outbound_urls_domains_and_c2_ips_with_opsec_filtering(self) -> None:
         from lantana.enrichment.ioc import (
@@ -390,8 +205,8 @@ class TestV15DurableExtractors:
         fps = extract_ssh_public_keys(df)
         assert fps == {expected_fp}
 
-    def test_dionaea_attributed_hashes_and_sql_download_urls(self, tmp_path: Path) -> None:
-        """Dionaea bronze binary hashes are extracted and excluded from disk fallback."""
+    def test_dionaea_attributed_hashes_and_sql_download_urls(self) -> None:
+        """Dionaea bronze binary hashes, download URLs, and SQL stagers extract cleanly."""
         from lantana.enrichment.ioc import extract_outbound_c2_ips, extract_outbound_urls
 
         payload = b"synthetic-dionaea-elf"
@@ -412,25 +227,6 @@ class TestV15DurableExtractors:
         assert "http://203.0.113.99/drop.bin" in urls
         assert "https://sql-drop.example.org/p.ps1" in urls
         assert "203.0.113.99" in extract_outbound_c2_ips(dionaea_bronze, cfg)
-
-        # Disk fallback skips any hash already attributed in bronze
-        sensor_dir = tmp_path / "sensor"
-        bin_dir = sensor_dir / "dionaea" / "binaries"
-        bin_dir.mkdir(parents=True)
-        f1 = bin_dir / "already_attributed"
-        f1.write_bytes(payload)
-        f2 = bin_dir / "unattributed_only"
-        f2.write_bytes(b"other-binary")
-        ts = datetime(2026, 7, 10, 12, 0, tzinfo=UTC).timestamp()
-        os.utime(f1, (ts, ts))
-        os.utime(f2, (ts, ts))
-
-        fallback = extract_dionaea_binary_events(
-            sensor_dir,
-            date(2026, 7, 10),
-            exclude_hashes=hashes,
-        )
-        assert [ev["binary_file_name"] for ev in fallback] == ["unattributed_only"]
 
 
 class TestSecurityHardeningIocExtraction:
@@ -505,36 +301,6 @@ class TestSecurityHardeningIocExtraction:
         t0 = time.monotonic()
         assert extract_outbound_c2_ips(df, cfg) == set()
         assert (time.monotonic() - t0) < 0.5
-
-    def test_extract_ssh_public_keys_blocks_path_traversal_and_symlinks(
-        self, tmp_path: Path
-    ) -> None:
-        import base64
-
-        from lantana.enrichment.ioc import extract_ssh_public_keys
-
-        sensor_dir = tmp_path / "sensor"
-        dl_dir = sensor_dir / "cowrie" / "downloads"
-        dl_dir.mkdir(parents=True)
-        outside = tmp_path / "secret_key.pub"
-        raw_key = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00 " + b"\x77" * 32
-        b64_blob = base64.b64encode(raw_key).decode("ascii")
-        outside.write_text(f"ssh-ed25519 {b64_blob} secret@host\n", encoding="utf-8")
-
-        sha_symlink = "a" * 64
-        (dl_dir / sha_symlink).symlink_to(outside)
-
-        df = pl.DataFrame(
-            {
-                "file_intent": ["persistence", "persistence", "persistence"],
-                "file_hash_sha256": [
-                    str(outside),
-                    "../../../secret_key.pub",
-                    sha_symlink,
-                ],
-            }
-        )
-        assert extract_ssh_public_keys(df, sensor_dir=sensor_dir) == set()
 
     def test_filter_internal_ips_unwraps_ipv4_mapped_ipv6(self) -> None:
         cfg = RedactionConfig(
