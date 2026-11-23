@@ -191,6 +191,18 @@
         that: vector_fwd.stat.exists
         fail_msg: "Vector forward config is missing"
 
+    - name: "Check unprivileged sensor scratch prune timer is enabled"
+      ansible.builtin.command: systemctl is-enabled lantana-sensor-prune.timer
+      register: multi_sensor_prune_timer
+      changed_when: false
+      failed_when: multi_sensor_prune_timer.rc != 0 or multi_sensor_prune_timer.stdout.strip() != "enabled"
+
+    - name: "Assert legacy root-run tmpfiles sensor cleanup config is absent"
+      ansible.builtin.stat:
+        path: /etc/tmpfiles.d/lantana-sensor.conf
+      register: multi_legacy_tmpfiles
+      failed_when: multi_legacy_tmpfiles.stat.exists
+
 # =========================================================
 # PLAY 3: COLLECTOR VALIDATION
 # =========================================================

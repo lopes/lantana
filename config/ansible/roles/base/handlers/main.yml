@@ -27,6 +27,12 @@
     name: rsyslog
     state: restarted
 
+- name: "Restart systemd-journald"
+  become: true
+  ansible.builtin.service:
+    name: systemd-journald
+    state: restarted
+
 - name: "Restart systemd-networkd"
   become: true
   ansible.builtin.service:

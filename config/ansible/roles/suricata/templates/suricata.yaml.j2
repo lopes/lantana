@@ -63,14 +63,13 @@ outputs:
         # fileinfo, netflow, stats — have no silver/gold consumer and were
         # disabled to keep bronze volume bounded.
         - alert:
-            payload: true
-            payload-buffer-size: 8kb
-            payload-printable: true
-            packet: true
-            http-body: true
-            http-body-printable: true
+            payload: false
+            payload-printable: false
+            packet: false
+            http-body: false
+            http-body-printable: false
             metadata: true
-            tagged-packets: true
+            tagged-packets: false
         - flow
 {% if suricata_filestore_enabled | default(false) | bool %}
         - fileinfo:

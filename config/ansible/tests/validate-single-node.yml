@@ -87,7 +87,11 @@
           - "'table ip lantana_nat' in nft_check.stdout"
           - "'set drop_log_v4' in nft_check.stdout"
           - "'set drop_log_v6' in nft_check.stdout"
-        fail_msg: "Critical firewall tables or per-source rate-limit sets are missing."
+          - "'LANTANA_OUTPUT_DROP_SENSOR_LO' in nft_check.stdout"
+          - "'LANTANA_OUTPUT_DROP_SENSOR_WAN' in nft_check.stdout"
+        fail_msg: >-
+          Critical firewall tables, per-source rate-limit sets, or stigma
+          egress containment rules are missing.
 
     - name: "Check kernel.printk suppresses info-level nftables KVM console spam"
       ansible.builtin.command: sysctl -n kernel.printk
@@ -292,6 +296,88 @@
         path: /etc/systemd/system/lantana-alert.timer
       register: lantana_alert_timer_check
       failed_when: lantana_alert_timer_check.stat.exists
+
+    - name: "Check unprivileged sensor scratch prune timer and binary"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/local/libexec/lantana-sensor-prune
+        - /etc/systemd/system/lantana-sensor-prune.service
+        - /etc/systemd/system/lantana-sensor-prune.timer
+      register: sensor_prune_files
+
+    - name: "Assert sensor scratch prune timer and binary are deployed"
+      ansible.builtin.assert:
+        that: "item.stat.exists"
+        fail_msg: "Missing sensor scratch prune artifact: {{ item.item }}"
+      loop: "{{ sensor_prune_files.results }}"
+
+    - name: "Check lantana-sensor-prune.timer is enabled"
+      ansible.builtin.command: systemctl is-enabled lantana-sensor-prune.timer
+      register: sensor_prune_timer_enabled
+      changed_when: false
+      failed_when: sensor_prune_timer_enabled.rc != 0 or sensor_prune_timer_enabled.stdout.strip() != "enabled"
+
+    - name: "Check legacy cross-user ACL helper, crons, and tmpfiles are removed"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/local/sbin/lantana-grant-read
+        - /etc/cron.d/lantana-cowrie-downloads
+        - /etc/cron.d/lantana-dionaea-binaries
+        - /etc/tmpfiles.d/lantana-sensor.conf
+      register: legacy_acl_artifacts
+
+    - name: "Assert legacy cross-user ACL artifacts are absent"
+      ansible.builtin.assert:
+        that: "not item.stat.exists"
+        fail_msg: "Legacy reverse-boundary artifact still exists: {{ item.item }}"
+      loop: "{{ legacy_acl_artifacts.results }}"
+
+    - name: "Check systemd-journald size cap drop-in"
+      ansible.builtin.slurp:
+        src: /etc/systemd/journald.conf.d/10-lantana.conf
+      register: journald_cap_cfg
+
+    - name: "Assert systemd-journald caps disk usage at 200M"
+      ansible.builtin.assert:
+        that: "'SystemMaxUse=200M' in (journald_cap_cfg.content | b64decode)"
+        fail_msg: "/etc/systemd/journald.conf.d/10-lantana.conf missing SystemMaxUse=200M."
+
+    - name: "Verify strict one-way privilege boundary between stigma and nectar"
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          # 1. nectar must have zero read/write/traverse access on /var/lib/lantana/sensor (0700 stigma)
+          if runuser -u "{{ system.users.collector.name }}" -- test -r /var/lib/lantana/sensor; then
+            echo "FAIL: nectar can read /var/lib/lantana/sensor"
+            exit 1
+          fi
+          if runuser -u "{{ system.users.collector.name }}" -- test -w /var/lib/lantana/sensor; then
+            echo "FAIL: nectar can write /var/lib/lantana/sensor"
+            exit 1
+          fi
+          if runuser -u "{{ system.users.collector.name }}" -- test -x /var/lib/lantana/sensor; then
+            echo "FAIL: nectar can traverse /var/lib/lantana/sensor"
+            exit 1
+          fi
+          # 2. stigma must not have read access to collector secrets or datalake
+          if runuser -u "{{ system.users.sensor.name }}" -- test -r /etc/lantana/collector/secrets.json; then
+            echo "FAIL: stigma can read /etc/lantana/collector/secrets.json"
+            exit 1
+          fi
+          if runuser -u "{{ system.users.sensor.name }}" -- test -r /var/lib/lantana/datalake; then
+            echo "FAIL: stigma can read /var/lib/lantana/datalake"
+            exit 1
+          fi
+          echo "OK"
+      register: boundary_check
+      changed_when: false
+
+    - name: "Assert one-way privilege boundary check passed"
+      ansible.builtin.assert:
+        that: "boundary_check.stdout | trim == 'OK'"
+        fail_msg: "Privilege boundary check failed: {{ boundary_check.stdout }}"
 
     - name: "Check if Log Files are being created"
       ansible.builtin.stat:

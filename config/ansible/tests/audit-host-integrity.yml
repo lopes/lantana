@@ -1,0 +1,371 @@
+---
+# Read-only host-integrity and pre-teardown compromise audit playbook.
+#
+# IMPORTANT CAVEAT: Live-host checks run on a potentially compromised host
+# and are TRIAGE ONLY. Always pair this playbook with external VPS-provider /
+# hypervisor network graphs (egress bytes/packets outside maintenance windows)
+# and perform a full VM burn-and-rebuild at teardown — never reuse a disk or
+# snapshot from an exposed honeypot host.
+#
+# Usage (from config/ansible/):
+#   ansible-playbook -i inventories/<op>/inventory.yml tests/audit-host-integrity.yml
+#   ansible-playbook -i inventories/<op>/inventory.yml tests/audit-host-integrity.yml --limit single_nodes
+
+- name: "AUDIT: Host Integrity & Pre-Teardown Triage"
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    audit_allowed_cron_d:
+      - e2scrub_all
+      - lantana-geoip-update
+      - lantana-logs
+      - sysstat
+    audit_expected_linger_users: "{{ [system.users.sensor.name] if ('single_nodes' in group_names or 'sensor_low_nodes' in group_names) else [] }}"
+    audit_expected_honeypots: "{{ sensor_honeypots | default(['cowrie', 'dionaea']) if ('single_nodes' in group_names or 'sensor_low_nodes' in group_names) else [] }}"
+
+  tasks:
+    - name: "Audit disclaimer (live-host triage only)"
+      ansible.builtin.debug:
+        msg: >-
+          Running read-only host-integrity audit on {{ inventory_hostname }}.
+          NOTE: On-host checks are triage only — correlate with out-of-band
+          hypervisor/VPS egress traffic graphs and burn-and-rebuild the VM at teardown.
+
+    # ---------------------------------------------------------
+    # 1. SYSTEMD USER UNITS, TIMERS & QUADLET PERSISTENCE
+    # ---------------------------------------------------------
+    - name: "Scan systemd user unit and user Quadlet directories for unauthorized persistence"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        findings=""
+        for base in /root/.config/systemd/user /etc/systemd/user /home/*/.config/systemd/user; do
+          [ -d "$base" ] || continue
+          while IFS= read -r entry; do
+            [ -n "$entry" ] && findings="${findings}${entry}"$'\n'
+          done < <(find "$base" \( -type f -o -type l \) \( -name '*.service' -o -name '*.timer' -o -name '*.socket' -o -name '*.path' -o -name '*.target' -o -name '*.mount' -o -name '*.conf' \) 2>/dev/null || true)
+        done
+        for qbase in /root/.config/containers/systemd /home/*/.config/containers/systemd /run/user/*/containers/systemd; do
+          [ -d "$qbase" ] || continue
+          while IFS= read -r entry; do
+            [ -n "$entry" ] && findings="${findings}user_quadlet:${entry}"$'\n'
+          done < <(find "$qbase" \( -type f -o -type l \) 2>/dev/null || true)
+        done
+        if [ -d /etc/containers/systemd/users ]; then
+          while IFS= read -r entry; do
+            bn="$(basename "$entry")"
+            case "$bn" in
+              cowrie.container|dionaea.container) ;;
+              *) findings="${findings}${entry}"$'\n' ;;
+            esac
+          done < <(find /etc/containers/systemd/users \( -type f -o -type l \) 2>/dev/null || true)
+        fi
+        printf '%s' "$findings"
+      args:
+        executable: /bin/bash
+      register: audit_user_units
+      changed_when: false
+
+    - name: "Assert zero unauthorized systemd user units or Quadlets"
+      ansible.builtin.assert:
+        that: "audit_user_units.stdout | trim == ''"
+        fail_msg: >-
+          Found unexpected systemd user unit(s) or Quadlet(s):
+          {{ audit_user_units.stdout }}
+
+    # ---------------------------------------------------------
+    # 2. LOGIND LINGER ALLOWLIST
+    # ---------------------------------------------------------
+    - name: "List enabled systemd linger users"
+      ansible.builtin.find:
+        paths: /var/lib/systemd/linger
+        file_type: file
+      register: audit_linger_files
+
+    - name: "Assert linger is enabled only for expected sensor user"
+      ansible.builtin.assert:
+        that: >-
+          (audit_linger_files.files | map(attribute='path') | map('basename') | sort | list)
+          == (audit_expected_linger_users | sort | list)
+        fail_msg: >-
+          Unexpected /var/lib/systemd/linger state: found
+          {{ audit_linger_files.files | map(attribute='path') | map('basename') | sort | list }},
+          expected {{ audit_expected_linger_users | sort | list }}.
+
+    # ---------------------------------------------------------
+    # 3. LD_PRELOAD, SSH & SHELL RC PERSISTENCE
+    # ---------------------------------------------------------
+    - name: "Check /etc/ld.so.preload is absent or empty"
+      ansible.builtin.stat:
+        path: /etc/ld.so.preload
+      register: audit_ld_preload
+
+    - name: "Assert /etc/ld.so.preload does not inject libraries"
+      ansible.builtin.assert:
+        that: "not audit_ld_preload.stat.exists or (audit_ld_preload.stat.size | int == 0)"
+        fail_msg: "/etc/ld.so.preload exists and is non-empty — possible userland rootkit."
+
+    - name: "Check ~/.ssh/rc and non-admin authorized_keys for persistence"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        findings=""
+        for rc in /root/.ssh/rc /home/*/.ssh/rc; do
+          [ -e "$rc" ] && findings="${findings}ssh_rc:${rc}"$'\n'
+        done
+        for ak in /root/.ssh/authorized_keys "/home/{{ system.users.sensor.name }}/.ssh/authorized_keys" "/home/{{ system.users.collector.name }}/.ssh/authorized_keys"; do
+          if [ -s "$ak" ]; then
+            non_empty=$(grep -cve '^[[:space:]]*$' -e '^[[:space:]]*#' "$ak" || true)
+            if [ "$non_empty" -gt 0 ]; then
+              findings="${findings}authorized_keys:${ak}(${non_empty})"$'\n'
+            fi
+          fi
+        done
+        printf '%s' "$findings"
+      args:
+        executable: /bin/bash
+      register: audit_ssh_persistence
+      changed_when: false
+
+    - name: "Assert zero ~/.ssh/rc hooks or unexpected authorized_keys"
+      ansible.builtin.assert:
+        that: "audit_ssh_persistence.stdout | trim == ''"
+        fail_msg: "Unexpected SSH persistence found: {{ audit_ssh_persistence.stdout }}"
+
+    - name: "Compare root and sensor shell rc files against Debian clean baselines"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        findings=""
+        for home_dir in /root "/home/{{ system.users.sensor.name }}"; do
+          [ -d "$home_dir" ] || continue
+          for rc in .bashrc .profile .bash_profile .bash_login .bash_logout .zshrc .zprofile .zshenv; do
+            target="${home_dir}/${rc}"
+            [ -e "$target" ] || continue
+            baseline=""
+            if [ "$home_dir" = "/root" ]; then
+              # Debian installs /usr/share/base-files/dot.{bashrc,profile} for /root
+              case "$rc" in
+                .bashrc) [ -f /usr/share/base-files/dot.bashrc ] && baseline="/usr/share/base-files/dot.bashrc" ;;
+                .profile) [ -f /usr/share/base-files/dot.profile ] && baseline="/usr/share/base-files/dot.profile" ;;
+              esac
+            fi
+            if [ -z "$baseline" ] && [ -f "/etc/skel/${rc}" ]; then
+              baseline="/etc/skel/${rc}"
+            fi
+            if [ -n "$baseline" ]; then
+              if ! cmp -s "$baseline" "$target"; then
+                findings="${findings}modified:${target}"$'\n'
+              fi
+            else
+              findings="${findings}unexpected:${target}"$'\n'
+            fi
+          done
+        done
+        printf '%s' "$findings"
+      args:
+        executable: /bin/bash
+      register: audit_shell_rc
+      changed_when: false
+
+    - name: "Assert root and sensor shell rc files match clean baseline"
+      ansible.builtin.assert:
+        that: "audit_shell_rc.stdout | trim == ''"
+        fail_msg: >-
+          Shell RC drift detected for root or {{ system.users.sensor.name }}:
+          {{ audit_shell_rc.stdout }}
+
+    # ---------------------------------------------------------
+    # 4. CONTAINER & IMAGE INVENTORY
+    # ---------------------------------------------------------
+    - name: "Load pinned Cowrie image default"
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/cowrie/defaults/main.yml"
+      when: "'cowrie' in audit_expected_honeypots"
+
+    - name: "Load pinned Dionaea image default"
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/dionaea/defaults/main.yml"
+      when: "'dionaea' in audit_expected_honeypots"
+
+    - name: "Check root Podman running containers (must be zero when podman is installed)"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if command -v podman >/dev/null 2>&1; then
+          podman ps --quiet
+        fi
+      args:
+        executable: /bin/bash
+      register: audit_root_containers
+      changed_when: false
+
+    - name: "Assert zero root-owned running Podman containers"
+      ansible.builtin.assert:
+        that: "audit_root_containers.stdout | trim == ''"
+        fail_msg: "Unexpected root-owned running containers: {{ audit_root_containers.stdout }}"
+
+    - name: "List running sensor-user Podman containers"
+      become_user: "{{ system.users.sensor.name }}"
+      ansible.builtin.command: podman ps --format "{{ '{{.Names}}|{{.Image}}' }}"
+      environment:
+        HOME: "/home/{{ system.users.sensor.name }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+      register: audit_sensor_containers
+      changed_when: false
+      when: "audit_expected_honeypots | length > 0"
+
+    - name: "Build expected container name|image inventory"
+      ansible.builtin.set_fact:
+        audit_expected_container_specs: >-
+          {{
+            (['sensor-cowrie|' ~ cowrie_image] if 'cowrie' in audit_expected_honeypots else [])
+            + (['sensor-dionaea|' ~ dionaea_image] if 'dionaea' in audit_expected_honeypots else [])
+          }}
+      when: "audit_expected_honeypots | length > 0"
+
+    - name: "Assert running sensor containers and pinned images match expected sensor_honeypots"
+      ansible.builtin.assert:
+        that: >-
+          (audit_sensor_containers.stdout_lines | sort | list)
+          == (audit_expected_container_specs | sort | list)
+        fail_msg: >-
+          Running sensor containers/images {{ audit_sensor_containers.stdout_lines }} do not match
+          expected {{ audit_expected_container_specs }}.
+      when: "audit_expected_honeypots | length > 0"
+
+    # ---------------------------------------------------------
+    # 5. CRON & SSHD HARDENING DRIFT
+    # ---------------------------------------------------------
+    - name: "Check /etc/cron.d and user crontabs against baseline"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        findings=""
+        if [ -d /etc/cron.d ]; then
+          for f in /etc/cron.d/*; do
+            [ -e "$f" ] || continue
+            bn="$(basename "$f")"
+            case "$bn" in
+              .placeholder|{{ audit_allowed_cron_d | join('|') }}) ;;
+              *) findings="${findings}cron.d:${f}"$'\n' ;;
+            esac
+          done
+        fi
+        if [ -d /var/spool/cron/crontabs ]; then
+          while IFS= read -r ct; do
+            [ -n "$ct" ] && findings="${findings}crontab:${ct}"$'\n'
+          done < <(find /var/spool/cron/crontabs -type f 2>/dev/null || true)
+        fi
+        printf '%s' "$findings"
+      args:
+        executable: /bin/bash
+      register: audit_cron_drift
+      changed_when: false
+
+    - name: "Assert no unauthorized cron jobs or user crontabs exist"
+      ansible.builtin.assert:
+        that: "audit_cron_drift.stdout | trim == ''"
+        fail_msg: "Unexpected cron entries detected: {{ audit_cron_drift.stdout }}"
+
+    - name: "Inspect effective sshd configuration"
+      ansible.builtin.command: sshd -T
+      register: audit_sshd_config
+      changed_when: false
+
+    - name: "Assert sshd hardening invariants (custom port, no root/password login)"
+      ansible.builtin.assert:
+        that:
+          - "'port ' ~ (ansible_port | string) in audit_sshd_config.stdout_lines"
+          - "'permitrootlogin no' in audit_sshd_config.stdout_lines"
+          - "'passwordauthentication no' in audit_sshd_config.stdout_lines"
+        fail_msg: "sshd effective configuration drifted from Lantana hardening baseline."
+
+    # ---------------------------------------------------------
+    # 6. ONE-WAY PRIVILEGE BOUNDARY CHECK
+    # ---------------------------------------------------------
+    - name: "Check legacy lantana-grant-read helper is absent"
+      ansible.builtin.stat:
+        path: /usr/local/sbin/lantana-grant-read
+      register: audit_grant_read
+
+    - name: "Assert /usr/local/sbin/lantana-grant-read is removed"
+      ansible.builtin.assert:
+        that: "not audit_grant_read.stat.exists"
+        fail_msg: "Legacy /usr/local/sbin/lantana-grant-read still exists on host."
+
+    - name: "Check collector user has zero POSIX ACLs on /var/lib/lantana/sensor"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if [ -d /var/lib/lantana/sensor ]; then
+          getfacl -R -P -p --skip-base /var/lib/lantana/sensor 2>/dev/null \
+            | grep -E "^(default:)?user:{{ system.users.collector.name }}:" || true
+        fi
+      args:
+        executable: /bin/bash
+      register: audit_collector_sensor_acls
+      changed_when: false
+
+    - name: "Assert collector user holds zero POSIX ACLs on sensor state tree"
+      ansible.builtin.assert:
+        that: "audit_collector_sensor_acls.stdout | trim == ''"
+        fail_msg: >-
+          Reverse trust boundary ACL detected for {{ system.users.collector.name }}
+          under /var/lib/lantana/sensor: {{ audit_collector_sensor_acls.stdout }}
+
+    # ---------------------------------------------------------
+    # 7. HUMAN TRIAGE SUMMARY (EGRESS COUNTERS, SOCKETS, PROCS, SUID)
+    # ---------------------------------------------------------
+    - name: "Collect nftables output chain egress counters"
+      ansible.builtin.command: nft list chain inet lantana_filter output
+      register: audit_nft_output
+      changed_when: false
+      failed_when: false
+
+    - name: "Collect recent blocked sensor egress lines from sensor-egress.log (masked SRC)"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        log_file=""
+        if [ -f /var/log/lantana/honeywall/nftables/sensor-egress.log ]; then
+          log_file="/var/log/lantana/honeywall/nftables/sensor-egress.log"
+        elif [ -f /var/log/lantana/honeywall/nftables/firewall.log ]; then
+          log_file="/var/log/lantana/honeywall/nftables/firewall.log"
+        fi
+        if [ -n "$log_file" ]; then
+          grep -E '\[LANTANA_(OUTPUT_DROP_SENSOR_(LO|WAN)|FORWARD_DROP_EGRESS)\]' "$log_file" \
+            | sed -E 's/SRC=[^ ]+/SRC=<redacted>/g' \
+            | tail -n 25 || true
+        else
+          echo "(no local sensor-egress.log or firewall.log on this host)"
+        fi
+      args:
+        executable: /bin/bash
+      register: audit_egress_logs
+      changed_when: false
+
+    - name: "Collect listening sockets, top processes, /tmp+/dev/shm, and SUID binaries"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        echo "=== LISTENING SOCKETS ==="
+        ss -tulnp
+        echo "=== TMP & DEV/SHM FILES ==="
+        find /tmp /dev/shm -maxdepth 2 -mindepth 1 -ls 2>/dev/null | head -n 40 || true
+        echo "=== NON-STANDARD SUID/SGID (outside /usr/bin /usr/sbin /usr/lib) ==="
+        find / -xdev \( -perm -4000 -o -perm -2000 \) \
+          ! -path '/usr/bin/*' ! -path '/usr/sbin/*' ! -path '/usr/lib/*' ! -path '/usr/libexec/*' \
+          -ls 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      register: audit_triage_snapshot
+      changed_when: false
+
+    - name: "Print pre-teardown host-integrity triage summary"
+      ansible.builtin.debug:
+        msg: |
+          Host {{ inventory_hostname }} PASSED all automated host-integrity assertions.
+
+          --- NFTABLES OUTPUT CHAIN (check stigma drop packet/byte counters) ---
+          {{ audit_nft_output.stdout | default('(no inet lantana_filter output chain)') }}
+
+          --- RECENT SENSOR EGRESS DROPS (SRC redacted) ---
+          {{ audit_egress_logs.stdout }}
+
+          --- RUNTIME TRIAGE SNAPSHOT ---
+          {{ audit_triage_snapshot.stdout }}

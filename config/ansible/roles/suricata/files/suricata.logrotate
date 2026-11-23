@@ -5,7 +5,8 @@
 /var/log/lantana/honeywall/suricata/*.json
 {
     su suricata suricata
-    # No 'daily': forced with cron for more determinism
+    # Forced at 00:00 UTC + hourly maxsize safety pass
+    maxsize 100M
     rotate 7
     missingok
     notifempty

@@ -8,7 +8,8 @@
 /var/log/lantana/sensor/cowrie/cowrie.json
 {
     su {{ system.users.sensor.name }} {{ system.users.sensor.name }}
-    # No 'daily': forced with cron for more determinism
+    # Forced at 00:00 UTC + hourly maxsize safety pass
+    maxsize 100M
     rotate 7
     missingok
     notifempty
@@ -30,7 +31,8 @@
 /var/log/lantana/sensor/dionaea/dionaea.json
 {
     su {{ system.users.sensor.name }} {{ system.users.sensor.name }}
-    # No 'daily': forced with cron for more determinism
+    # Forced at 00:00 UTC + hourly maxsize safety pass
+    maxsize 100M
     rotate 7
     missingok
     notifempty
