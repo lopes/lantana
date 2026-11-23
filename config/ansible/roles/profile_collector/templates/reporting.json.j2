@@ -35,5 +35,6 @@
       "{{ network.collectors.collector_01.ipv4.split('/')[0] }}": "{{ reporting.pseudonym_map.collector_01 }}",
       "{{ network.collectors.collector_01.ipv6.split('/')[0] }}": "{{ reporting.pseudonym_map.collector_01 }}"
     }
-  }
+  },
+  "stix": {{ (reporting.stix | default({}, true)) | to_json }}
 }

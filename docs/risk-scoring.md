@@ -169,16 +169,30 @@ is_benign_scanner = greynoise_riot | (greynoise_classification == "benign")
 1. **Scanner inflation:** A passive scanner with `AbuseIPDB = 100` and zero honeypot interaction scored `50.0` and flooded STIX bundles above `RISK_THRESHOLD = 40.0`. Capping pure scans at `enrichment * 0.35` (`<= 35.0`) guarantees no pure scanner ever enters STIX.
 2. **Enrichment-gap penalty:** A brand-new interactive attacker (authenticated, ran commands, dropped malware: `behavioral = 80.0`) whose IP had no enrichment data yet (`enrichment = null`) was halved down to `40.0` — lower than a passive AbuseIPDB scanner! Anchoring interactive scores at `max(behavioral, 0.5 * behavioral + 0.5 * enrichment)` guarantees that external enrichment can **confirm and elevate** real attacker behavior, never drag it down when an API is rate-limited or returns 404 (except for explicit GreyNoise RIOT/`benign` FP protection).
 
+## Outbound IOC verification & anti-poisoning thresholds
+
+The same per-provider calibration above drives the verification gate in [`enrichment/allowlist.py`](/pipeline/src/lantana/enrichment/allowlist.py) for durable outbound observables (`extracted_iocs` -> STIX 2.1), preventing attackers who fingerprint offline honeypots from poisoning downstream feeds or blocklists:
+
+| IOC type | Corroboration required for `verified` (default STIX export) | Suppression overrides (always `suppressed`, never in STIX) |
+|---|---|---|
+| `malware_hash` / `ssh_key` | First-party observed artifact (`captured_artifact`, excluding `probe`/`persistence` files) | None (already scoped to real captures / pasted keys) |
+| `stager_url` | `vt_malicious >= 1` (`VT_FILE_RISK_BUCKETS` >= 50) OR `gti_verdict` in `{VERDICT_MALICIOUS, VERDICT_SUSPICIOUS}` OR an outbound sensor download (`activity_id == 2`, non-Dionaea) whose captured SHA-256 is itself corroborated by VT (`>= 1`) or GTI | Utility/recon/package-repo/portal domains, public DNS resolver IP literals, GreyNoise RIOT/`benign` IP literals, root/uncorroborated URLs on shared-hosting platforms (`github.com`, `pastebin.com`, `cdn.discordapp.com`, S3/GCS/CloudFront, etc.), malformed/ambiguous authority URLs, operator `reporting.stix.allowlist_*` |
+| `stager_domain` | `vt_malicious >= 3` (`VT_IP_RISK_BUCKETS` >= 50 multi-source agreement) OR `gti_verdict` malicious/suspicious (domain-level only — never inherited from a compromised site's URL) | All shared-hosting domains (prevents sinkholing GitHub/Discord/CDNs even when hosting malware), utility/recon/portal domains, operator `reporting.stix.allowlist_domains` |
+| `c2_ip` | `vt_malicious >= 3` OR `gti_verdict` malicious/suspicious OR `greynoise_classification == "malicious"` OR `abuseipdb_confidence_score >= 50` OR an outbound sensor download from that IP literal whose captured SHA-256 is corroborated by VT/GTI | Public DNS resolvers (`1.1.1.1`, `8.8.8.8`, `9.9.9.9`, OpenDNS, IPv6 equivalents), GreyNoise `riot=True` or `classification == "benign"`, operator `reporting.stix.allowlist_ips` |
+
+Every non-infrastructure extraction remains visible in Gold `extracted_iocs` and Vigil `/intel` with its `verification_status` (`verified` | `unverified` | `suppressed`) and `verification_reason`. Uncorroborated non-shared outbound IOCs are omitted from STIX 2.1 by default unless the operator explicitly opts in via `reporting.stix.include_unverified_outbound: true` (exported with label `unverified`, reduced `confidence`, and 7-day `valid_until`).
+
 ## Downstream consumers
 
 Threshold constants live in [`intel/stix.py`](/pipeline/src/lantana/intel/stix.py) — `RISK_THRESHOLD = 40.0` (STIX inbound-IP gate and dashboard Medium-bucket floor) and `RISK_HIGH_THRESHOLD = 70.0` (dashboard High bucket). Every consumer imports these constants rather than hardcoding them.
 
 | Consumer | Field read | Threshold / behaviour |
 |---|---|---|
-| `intel/stix.py:_make_indicators` | `behavioral_risk_score > 0` AND `risk_score >= RISK_THRESHOLD` (not RIOT/`benign`) | Gate for transient inbound IP indicators (emitted with 7-day `valid_until`). Durable IOCs from `extracted_iocs` (outbound C2 IPs, stager URLs/domains, malware hashes, SSH keys) bypass the inbound IP gate and carry 30–90 day validity. |
+| `intel/stix.py:_make_indicators` | `behavioral_risk_score > 0` AND `risk_score >= RISK_THRESHOLD` (not RIOT/`benign`) | Gate for transient inbound IP indicators (emitted with 7-day `valid_until`). |
+| `intel/stix.py:_make_durable_ioc_objects` | `verification_status` + `should_export_ioc_to_stix()` | Gate for durable IOCs from `extracted_iocs`: first-party hashes/SSH keys (90d) and corroborated non-benign outbound C2/URLs/domains (30d, `confidence=80`); optional `unverified` outbound export behind `reporting.stix.include_unverified_outbound` (7d, `confidence=25`). |
 | `intel/stix.py:_make_indicators` | `risk_score` | STIX `confidence` field = `min(int(risk_score), 100)`. |
 | `dashboard/queries.py` + `dashboard/html.py` (`/attackers`, `/overview`) | `risk_score` | High (`>= RISK_HIGH_THRESHOLD`) / Medium (`>= RISK_THRESHOLD`) / Low buckets. Help drawers read from `notify/explanations.py`. |
-| `dashboard/queries.py` (`/intel`) | `behavioral_risk_score > 0` AND `risk_score >= RISK_THRESHOLD` | Bundle composition preview mirroring the exact STIX gate. |
+| `dashboard/queries.py` (`/intel`) | `behavioral_risk_score > 0` AND `risk_score >= RISK_THRESHOLD`, plus `should_export_ioc_to_stix()` | Bundle composition preview mirroring the exact STIX inbound + durable anti-poisoning gates. |
 | `dashboard/charts.py` (`/attackers#geo-origins`) | `risk_score` | World-map color scale (0–100). |
 | `notify/report.py` | `risk_score` (sort) + `enrichment_risk_score` + `behavioral_risk_score` + 4 per-provider scores | Top Attackers table with decomposition column. |
 

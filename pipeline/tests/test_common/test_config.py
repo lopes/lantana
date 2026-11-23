@@ -257,7 +257,7 @@ def test_load_secrets_tolerant_passes_canonical_through(tmp_path: Path) -> None:
 
 
 def test_load_reporting(reporting_file: Path) -> None:
-    """Reporting file parses correctly with nested structure."""
+    """Reporting file parses correctly with nested structure and default stix policy."""
     config = load_reporting(reporting_file)
     assert isinstance(config, ReportingConfig)
     assert config.operator.handle == "test_handle"
@@ -265,3 +265,58 @@ def test_load_reporting(reporting_file: Path) -> None:
     assert config.operation.name == "TestOp"
     assert "10.50.99.100" in config.redact.infrastructure_ips
     assert config.redact.pseudonym_map["10.50.99.100"] == "honeypot-sensor-01"
+    assert config.stix.include_unverified_outbound is False
+    assert config.stix.unverified_confidence == 25
+    assert config.stix.allowlist_domains == []
+    assert config.stix.allowlist_ips == []
+
+
+def test_load_reporting_with_stix_policy_overrides(reporting_file: Path) -> None:
+    """Optional stix export policy block parses custom allowlists and opt-in toggle."""
+    raw = json.loads(reporting_file.read_text(encoding="utf-8"))
+    raw["stix"] = {
+        "include_unverified_outbound": True,
+        "unverified_confidence": 20,
+        "allowlist_domains": ["partner.example.org"],
+        "allowlist_ips": ["198.51.100.0/24"],
+    }
+    reporting_file.write_text(json.dumps(raw), encoding="utf-8")
+    config = load_reporting(reporting_file)
+    assert config.stix.include_unverified_outbound is True
+    assert config.stix.unverified_confidence == 20
+    assert config.stix.allowlist_domains == ["partner.example.org"]
+    assert config.stix.allowlist_ips == ["198.51.100.0/24"]
+
+
+def test_load_reporting_invalid_stix_confidence_raises(reporting_file: Path) -> None:
+    """Out-of-range unverified_confidence fails Pydantic validation."""
+    raw = json.loads(reporting_file.read_text(encoding="utf-8"))
+    raw["stix"] = {"unverified_confidence": 150}
+    reporting_file.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_reporting(reporting_file)
+
+
+def test_load_reporting_null_stix_block_coerces_to_defaults(reporting_file: Path) -> None:
+    """Empty YAML `stix:` (serialized as JSON null) gracefully coerces to StixExportConfig."""
+    raw = json.loads(reporting_file.read_text(encoding="utf-8"))
+    raw["stix"] = None
+    reporting_file.write_text(json.dumps(raw), encoding="utf-8")
+    config = load_reporting(reporting_file)
+    assert config.stix.include_unverified_outbound is False
+    assert config.stix.allowlist_domains == []
+
+
+def test_load_reporting_invalid_stix_allowlist_entries_fail_fast(reporting_file: Path) -> None:
+    """Malformed operator allowlist IPs/CIDRs and domains raise ValidationError instead of
+    silently failing open."""
+    raw = json.loads(reporting_file.read_text(encoding="utf-8"))
+    raw["stix"] = {"allowlist_ips": ["198.51.100.999"]}
+    reporting_file.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_reporting(reporting_file)
+
+    raw["stix"] = {"allowlist_domains": ["https://bad-url-not-a-domain.example/x"]}
+    reporting_file.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_reporting(reporting_file)

@@ -665,7 +665,7 @@ print(f'Total STIX objects: {len(bundle.objects)}')
 **Verify the bundle contains:**
 
 - `identity` object (your operator)
-- Durable `indicator` objects from `extracted_iocs`: outbound C2 IPs (30d), post-auth stager URLs & domains (30d), malware SHA-256 hashes (with `vhash` cluster tags & `malware` SDOs), and persistent OpenSSH public-key fingerprints (90d)
+- Durable `indicator` objects from `extracted_iocs`: first-party malware SHA-256 hashes (with `vhash` cluster tags & `malware` SDOs, 90d), persistent OpenSSH public-key fingerprints (90d), and **verified** outbound C2 IPs, stager URLs, and stager domains (30d, `confidence=80`; benign resolvers, shared-hosting apex domains, utility hosts, and GreyNoise RIOT/benign IPs are suppressed, and uncorroborated outbound strings are omitted unless `reporting.stix.include_unverified_outbound: true`)
 - Transient inbound IP `indicator` objects strictly gated on `behavioral_risk_score > 0` AND `risk_score >= 40` (non-RIOT, non-`benign`) with explicit 7-day `valid_until`
 - `campaign` objects for shared credential clusters and `relationship` objects linking indicators to campaigns/malware
 - `report` wrapping all objects with TLP marking

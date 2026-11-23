@@ -76,7 +76,7 @@ _OUTBOUND_TOOL_KW_RE = re.compile(
 )
 _IPV4_TOKEN_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 _LDH_DOMAIN_RE = re.compile(
-    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
 )
 _SSH_PUBKEY_RE = re.compile(
     r"\b(ssh-(?:rsa|ed25519|ecdsa-sha2-nistp(?:256|384|521)))\s+([A-Za-z0-9+/=]{20,})"

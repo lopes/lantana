@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 from pathlib import Path
 from typing import Any
@@ -109,6 +110,70 @@ class OperationConfig(BaseModel):
 RedactConfig = RedactionConfig
 
 
+class StixExportConfig(BaseModel):
+    """Outbound IOC verification and anti-poisoning policy for STIX 2.1 export.
+
+    By default, outbound network IOCs (``c2_ip``, ``stager_url``, ``stager_domain``)
+    are exported to STIX 2.1 only when corroborated by threat-intel enrichment or a
+    corroborated sensor-captured malware download, and known benign/shared
+    infrastructure is suppressed to prevent feed poisoning.
+    """
+
+    include_unverified_outbound: bool = False
+    unverified_confidence: int = Field(default=25, ge=0, le=100)
+    allowlist_domains: list[str] = Field(default_factory=list)
+    allowlist_ips: list[str] = Field(default_factory=list)
+
+    @field_validator("allowlist_domains")
+    @classmethod
+    def _validate_allowlist_domains(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in values:
+            cleaned = raw.strip().lower()
+            while cleaned.startswith("*."):
+                cleaned = cleaned[2:]
+            cleaned = cleaned.lstrip(".").rstrip(".")
+            if (
+                not cleaned
+                or "." not in cleaned
+                or "://" in cleaned
+                or "/" in cleaned
+                or any(ch.isspace() for ch in cleaned)
+            ):
+                msg = f"Invalid stix.allowlist_domains entry: {raw!r}"
+                raise ValueError(msg)
+            normalized.append(cleaned)
+        return normalized
+
+    @field_validator("allowlist_ips")
+    @classmethod
+    def _validate_allowlist_ips(cls, values: list[str]) -> list[str]:
+        validated: list[str] = []
+        for raw in values:
+            cleaned = raw.strip()
+            if not cleaned:
+                msg = "Empty entry in stix.allowlist_ips"
+                raise ValueError(msg)
+            if "/" in cleaned:
+                try:
+                    ipaddress.ip_network(cleaned, strict=False)
+                except ValueError as exc:
+                    msg = f"Invalid stix.allowlist_ips CIDR entry: {raw!r}"
+                    raise ValueError(msg) from exc
+            else:
+                ip_part = (
+                    cleaned[1:-1] if cleaned.startswith("[") and cleaned.endswith("]") else cleaned
+                )
+                ip_part = ip_part.rstrip(".")
+                try:
+                    ipaddress.ip_address(ip_part)
+                except ValueError as exc:
+                    msg = f"Invalid stix.allowlist_ips IP entry: {raw!r}"
+                    raise ValueError(msg) from exc
+            validated.append(cleaned)
+        return validated
+
+
 class ReportingConfig(BaseModel):
     """Full reporting configuration loaded from reporting.json."""
 
@@ -116,6 +181,12 @@ class ReportingConfig(BaseModel):
     sharing: SharingConfig
     operation: OperationConfig
     redact: RedactionConfig
+    stix: StixExportConfig = Field(default_factory=StixExportConfig)
+
+    @field_validator("stix", mode="before")
+    @classmethod
+    def _coerce_null_stix(cls, value: object) -> object:
+        return StixExportConfig() if value is None else value
 
 
 def _strip_dropped_keys(raw: dict[str, Any]) -> dict[str, Any]:

@@ -284,6 +284,9 @@ class TestSecurityHardeningIocExtraction:
             {
                 "http://evil.example.org%2f..%2ffiles%2fdeadbeef/x",
                 "http://bad_underscore.example.org/x",
+                "http://01.01.01.01/x",
+                "http://1.1/x",
+                "http://0x01010101/x",
                 "https://valid-drop.example.org/payload",
             },
             cfg,

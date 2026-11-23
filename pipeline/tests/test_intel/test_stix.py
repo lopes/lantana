@@ -326,6 +326,8 @@ class TestStixV15DurablePivot:
                     "gti_score": 90,
                     "malware_family": "mirai",
                     "actor_associations": "UNC9999",
+                    "verification_status": "verified",
+                    "verification_reason": "captured_artifact",
                 },
                 {
                     "ioc_type": "c2_ip",
@@ -341,6 +343,8 @@ class TestStixV15DurablePivot:
                     "gti_score": None,
                     "malware_family": None,
                     "actor_associations": None,
+                    "verification_status": "verified",
+                    "verification_reason": "vt_malicious",
                 },
                 {
                     "ioc_type": "stager_url",
@@ -350,12 +354,14 @@ class TestStixV15DurablePivot:
                     "last_seen": _ts(2),
                     "event_count": 2,
                     "unique_src_ips": 1,
-                    "vt_status": "not_found",
-                    "vt_malicious": None,
+                    "vt_status": "found",
+                    "vt_malicious": 2,
                     "gti_verdict": None,
                     "gti_score": None,
                     "malware_family": None,
                     "actor_associations": None,
+                    "verification_status": "verified",
+                    "verification_reason": "vt_malicious",
                 },
                 {
                     "ioc_type": "stager_domain",
@@ -371,6 +377,8 @@ class TestStixV15DurablePivot:
                     "gti_score": None,
                     "malware_family": None,
                     "actor_associations": None,
+                    "verification_status": "verified",
+                    "verification_reason": "vt_malicious",
                 },
                 {
                     "ioc_type": "ssh_key",
@@ -386,6 +394,8 @@ class TestStixV15DurablePivot:
                     "gti_score": None,
                     "malware_family": None,
                     "actor_associations": None,
+                    "verification_status": "verified",
+                    "verification_reason": "captured_artifact",
                 },
             ],
             schema=EXTRACTED_IOCS_SCHEMA,
@@ -516,8 +526,8 @@ class TestStixV15DurablePivot:
                 "last_seen": [naive_ts, naive_ts],
                 "event_count": [1, 1],
                 "unique_src_ips": [1, 1],
-                "vt_status": [None, None],
-                "vt_malicious": [None, None],
+                "vt_status": ["found", None],
+                "vt_malicious": [5, None],
                 "gti_verdict": [None, None],
                 "gti_score": [None, None],
                 "malware_family": [None, None],
@@ -535,3 +545,192 @@ class TestStixV15DurablePivot:
         inds = [o for o in bundle.objects if o.type == "indicator"]
         assert len(inds) == 4
         assert all(ind.valid_until > ind.valid_from for ind in inds)
+
+
+class TestStixAntiPoisoning:
+    """Anti-feed-poisoning gating for outbound IOCs in STIX 2.1 bundles."""
+
+    def test_blocks_poisoned_benign_infra_and_unverified_outbound_by_default(self) -> None:
+        from lantana.transform.metrics import EXTRACTED_IOCS_SCHEMA
+
+        extracted = pl.DataFrame(
+            [
+                # Benign DNS resolver -> MUST NOT export even if VT/status were poisoned
+                {
+                    "ioc_type": "c2_ip",
+                    "ioc_value": "1.1.1.1",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 5,
+                    "unique_src_ips": 3,
+                    "vt_status": "found",
+                    "vt_malicious": 10,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                    "verification_status": "suppressed",
+                    "verification_reason": "benign_resolver_ip",
+                },
+                # Shared hosting apex domain -> MUST NEVER export
+                {
+                    "ioc_type": "stager_domain",
+                    "ioc_value": "raw.githubusercontent.com",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 2,
+                    "unique_src_ips": 1,
+                    "vt_status": "found",
+                    "vt_malicious": 12,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                    "verification_status": "suppressed",
+                    "verification_reason": "shared_hosting_domain",
+                },
+                # Corroborated path-specific URL on shared hosting -> MUST export
+                {
+                    "ioc_type": "stager_url",
+                    "ioc_value": "https://raw.githubusercontent.com/attacker/repo/main/drop.sh",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 2,
+                    "unique_src_ips": 1,
+                    "vt_status": "found",
+                    "vt_malicious": 4,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                    "verification_status": "verified",
+                    "verification_reason": "vt_malicious",
+                },
+                # Unverified attacker-typed bank URL -> omitted by default
+                {
+                    "ioc_type": "stager_url",
+                    "ioc_value": "https://legitimate-bank.example/x",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 1,
+                    "unique_src_ips": 1,
+                    "vt_status": "not_found",
+                    "vt_malicious": None,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                    "verification_status": "unverified",
+                    "verification_reason": "uncorroborated",
+                },
+                # Unverified domain -> omitted by default
+                {
+                    "ioc_type": "stager_domain",
+                    "ioc_value": "legitimate-bank.example",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 1,
+                    "unique_src_ips": 1,
+                    "vt_status": "not_found",
+                    "vt_malicious": None,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                    "verification_status": "unverified",
+                    "verification_reason": "uncorroborated",
+                },
+            ],
+            schema=EXTRACTED_IOCS_SCHEMA,
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            _reporting(),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            extracted_iocs=extracted,
+        )
+        inds = [o for o in bundle.objects if o.type == "indicator"]
+        assert len(inds) == 1
+        assert (
+            inds[0].pattern
+            == "[url:value = 'https://raw.githubusercontent.com/attacker/repo/main/drop.sh']"
+        )
+        assert inds[0].confidence == 80
+        assert "unverified" not in inds[0].labels
+        serialized = bundle.serialize()
+        assert "1.1.1.1" not in serialized
+        assert "legitimate-bank.example" not in serialized
+        assert "domain-name:value = 'raw.githubusercontent.com'" not in serialized
+
+    def test_opt_in_unverified_outbound_tags_label_lower_confidence_and_7d_ttl(self) -> None:
+        from datetime import timedelta
+
+        from lantana.common.config import StixExportConfig
+        from lantana.transform.metrics import EXTRACTED_IOCS_SCHEMA
+
+        reporting = _reporting()
+        reporting.stix = StixExportConfig(
+            include_unverified_outbound=True,
+            unverified_confidence=20,
+        )
+        extracted = pl.DataFrame(
+            [
+                {
+                    "ioc_type": "stager_url",
+                    "ioc_value": "http://fresh-drop.example.org/payload.sh",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 1,
+                    "unique_src_ips": 1,
+                    "vt_status": None,
+                    "vt_malicious": None,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                    "verification_status": "unverified",
+                    "verification_reason": "uncorroborated",
+                },
+                {
+                    "ioc_type": "stager_url",
+                    "ioc_value": "https://raw.githubusercontent.com/org/repo/main/README.md",
+                    "vhash": None,
+                    "first_seen": _ts(1),
+                    "last_seen": _ts(2),
+                    "event_count": 1,
+                    "unique_src_ips": 1,
+                    "vt_status": None,
+                    "vt_malicious": None,
+                    "gti_verdict": None,
+                    "gti_score": None,
+                    "malware_family": None,
+                    "actor_associations": None,
+                    "verification_status": "suppressed",
+                    "verification_reason": "shared_hosting_unverified_url",
+                },
+            ],
+            schema=EXTRACTED_IOCS_SCHEMA,
+        )
+        bundle = generate_bundle(
+            date(2026, 4, 25),
+            reporting,
+            pl.DataFrame(),
+            pl.DataFrame(),
+            pl.DataFrame(),
+            extracted_iocs=extracted,
+        )
+        inds = [o for o in bundle.objects if o.type == "indicator"]
+        assert len(inds) == 1
+        ind = inds[0]
+        assert ind.pattern == "[url:value = 'http://fresh-drop.example.org/payload.sh']"
+        assert "unverified" in ind.labels
+        assert ind.confidence == 20
+        assert ind.valid_until == datetime(2026, 4, 25, tzinfo=UTC) + timedelta(days=7)

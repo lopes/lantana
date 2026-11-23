@@ -12,10 +12,17 @@ import hashlib
 import ipaddress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import polars as pl
 
 from lantana.common.redact import RedactionConfig
+from lantana.enrichment.allowlist import (
+    GTI_CORROBORATING_VERDICTS,
+    VT_URL_MIN_MALICIOUS,
+    evaluate_ioc_verification,
+    parse_normalized_ip,
+)
 from lantana.enrichment.ioc import (
     extract_outbound_c2_ips,
     extract_outbound_urls,
@@ -34,6 +41,8 @@ from lantana.models.ocsf import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from lantana.common.config import StixExportConfig
 
 # Behavioral progression stage constants
 STAGE_SCAN: int = 1
@@ -92,6 +101,8 @@ EXTRACTED_IOCS_SCHEMA: dict[str, pl.DataType] = {
     "gti_score": pl.Int64(),
     "malware_family": pl.Utf8(),
     "actor_associations": pl.Utf8(),
+    "verification_status": pl.Utf8(),
+    "verification_reason": pl.Utf8(),
 }
 
 # Dataset-specific columns that gold aggregations reference.
@@ -736,6 +747,7 @@ def compute_extracted_iocs(
     *,
     redact_config: RedactionConfig | None = None,
     enrichment_lookup: Mapping[tuple[str, str], Mapping[str, object]] | None = None,
+    stix_config: StixExportConfig | None = None,
 ) -> pl.DataFrame:
     """Build the 7th Gold table: one row per durable daily observable.
 
@@ -745,6 +757,10 @@ def compute_extracted_iocs(
       * ``stager_url``    — external post-auth stager URLs
       * ``stager_domain`` — external domain names from post-auth stager URLs
       * ``ssh_key``       — persistent OpenSSH public-key fingerprints
+
+    Retains all raw non-infrastructure extractions for analyst visibility while
+    tagging every row with ``verification_status`` (``verified`` | ``unverified``
+    | ``suppressed``) and ``verification_reason`` to prevent STIX feed poisoning.
     """
     if silver.is_empty():
         return pl.DataFrame(schema=EXTRACTED_IOCS_SCHEMA)
@@ -752,6 +768,8 @@ def compute_extracted_iocs(
     silver = _ensure_gold_columns(silver)
     cfg = redact_config if redact_config is not None else RedactionConfig()
     lookup = enrichment_lookup or {}
+    allow_domains = stix_config.allowlist_domains if stix_config is not None else ()
+    allow_ips = stix_config.allowlist_ips if stix_config is not None else ()
 
     # Accumulator keyed by (ioc_type, ioc_value)
     acc: dict[tuple[str, str], dict[str, object]] = {}
@@ -812,9 +830,12 @@ def compute_extracted_iocs(
     file_cols = [
         c
         for c in (
+            "dataset",
             "class_uid",
+            "activity_id",
             "file_intent",
             "file_hash_sha256",
+            "file_url",
             "time",
             "src_endpoint_ip",
             "vt_file_vhash",
@@ -834,6 +855,13 @@ def compute_extracted_iocs(
         & (pl.col("file_hash_sha256") != "")
         & (~pl.col("file_intent").fill_null("malware").is_in(["probe", "persistence"]))
     )
+    # Track outbound download URLs and IP-literal hosts corroborated by an actual
+    # non-upload malware download whose SHA-256 itself has VT/GTI corroboration.
+    # Excludes inbound Dionaea HTTP/SMB uploads (dataset == "dionaea" / activity_id != 2)
+    # so an unauthenticated attacker cannot forge captured_artifact=True via an
+    # arbitrary POST request line.
+    captured_urls: set[str] = set()
+    captured_c2_ips: set[str] = set()
     for row in malware_rows.select(file_cols).iter_rows(named=True):
         sha = str(row["file_hash_sha256"])
         cached = lookup.get(("hash", sha), {})
@@ -843,15 +871,17 @@ def compute_extracted_iocs(
             or _opt_str(cached.get("vt_file_family"))
             or _opt_str(cached.get("gti_malware_families"))
         )
+        file_vt_mal = (
+            _opt_int(row.get("vt_file_malicious_count"))
+            if row.get("vt_file_malicious_count") is not None
+            else _opt_int(cached.get("vt_file_malicious_count"))
+        )
+        file_gti = _opt_str(row.get("gti_verdict")) or _opt_str(cached.get("gti_verdict"))
         meta = {
             "vhash": _opt_str(row.get("vt_file_vhash")) or _opt_str(cached.get("vt_file_vhash")),
             "vt_status": _opt_str(row.get("vt_status")) or _opt_str(cached.get("vt_status")),
-            "vt_malicious": (
-                _opt_int(row.get("vt_file_malicious_count"))
-                if row.get("vt_file_malicious_count") is not None
-                else _opt_int(cached.get("vt_file_malicious_count"))
-            ),
-            "gti_verdict": _opt_str(row.get("gti_verdict")) or _opt_str(cached.get("gti_verdict")),
+            "vt_malicious": file_vt_mal,
+            "gti_verdict": file_gti,
             "gti_score": (
                 _opt_int(row.get("gti_score"))
                 if row.get("gti_score") is not None
@@ -869,6 +899,31 @@ def compute_extracted_iocs(
             _opt_str(row.get("src_endpoint_ip")),
             meta,
         )
+
+        # Corroborate the source download URL/IP only on outbound file downloads
+        # (OCSF activity_id == 2, non-Dionaea) whose captured hash is itself
+        # corroborated malicious by VT or GTI.
+        row_dataset = _opt_str(row.get("dataset")) or ""
+        row_activity = _opt_int(row.get("activity_id"))
+        row_file_url = _opt_str(row.get("file_url"))
+        hash_corroborated = (file_vt_mal is not None and file_vt_mal >= VT_URL_MIN_MALICIOUS) or (
+            (file_gti or "").upper() in GTI_CORROBORATING_VERDICTS
+        )
+        if row_file_url and row_dataset != "dionaea" and row_activity == 2 and hash_corroborated:
+            cap_frame = pl.DataFrame(
+                {"file_url": [row_file_url], "file_intent": [row.get("file_intent")]},
+                schema={"file_url": pl.Utf8, "file_intent": pl.Utf8},
+            )
+            for cap_url in extract_outbound_urls(cap_frame, cfg):
+                captured_urls.add(cap_url)
+                try:
+                    cap_host = urlparse(cap_url).hostname
+                except ValueError:
+                    cap_host = None
+                if cap_host:
+                    cap_addr = parse_normalized_ip(cap_host)
+                    if cap_addr is not None:
+                        captured_c2_ips.add(str(cap_addr))
 
     # 2. Outbound URLs, stager domains, C2 IPs, and SSH public keys
     text_rows = silver.filter(
@@ -966,10 +1021,45 @@ def compute_extracted_iocs(
     for entry in acc.values():
         ips_set = entry["src_ips"]
         unique_srcs = len(ips_set) if isinstance(ips_set, set) else 0
+        ioc_type = str(entry["ioc_type"])
+        ioc_value = str(entry["ioc_value"])
+
+        # Hydrate IP-level GreyNoise / AbuseIPDB signals from enrichment cache
+        # for outbound C2 IPs (and IP-literal stager URLs).
+        ip_cache: Mapping[str, object] = {}
+        if ioc_type == "c2_ip":
+            norm_c2 = parse_normalized_ip(ioc_value)
+            ip_cache = lookup.get(("ip", str(norm_c2) if norm_c2 is not None else ioc_value), {})
+        elif ioc_type == "stager_url":
+            try:
+                url_host = urlparse(ioc_value).hostname
+            except ValueError:
+                url_host = None
+            if url_host:
+                url_addr = parse_normalized_ip(url_host)
+                if url_addr is not None:
+                    ip_cache = lookup.get(("ip", str(url_addr)), {})
+
+        is_captured = (ioc_type == "stager_url" and ioc_value in captured_urls) or (
+            ioc_type == "c2_ip" and ioc_value in captured_c2_ips
+        )
+        verif_status, verif_reason = evaluate_ioc_verification(
+            ioc_type,
+            ioc_value,
+            vt_malicious=_opt_int(entry["vt_malicious"]),
+            gti_verdict=_opt_str(entry["gti_verdict"]),
+            captured_artifact=is_captured,
+            greynoise_riot=bool(ip_cache.get("greynoise_riot") is True),
+            greynoise_class=_opt_str(ip_cache.get("greynoise_classification")),
+            abuseipdb_confidence=_opt_int(ip_cache.get("abuseipdb_confidence_score")),
+            allowlist_domains=allow_domains,
+            allowlist_ips=allow_ips,
+        )
+
         rows.append(
             {
-                "ioc_type": entry["ioc_type"],
-                "ioc_value": entry["ioc_value"],
+                "ioc_type": ioc_type,
+                "ioc_value": ioc_value,
                 "vhash": entry["vhash"],
                 "first_seen": entry["first_seen"],
                 "last_seen": entry["last_seen"],
@@ -981,6 +1071,8 @@ def compute_extracted_iocs(
                 "gti_score": entry["gti_score"],
                 "malware_family": entry["malware_family"],
                 "actor_associations": entry["actor_associations"],
+                "verification_status": verif_status,
+                "verification_reason": verif_reason,
             }
         )
 

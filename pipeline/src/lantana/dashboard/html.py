@@ -276,6 +276,7 @@ def render_badge(value: object) -> str:
         "suspicious",
         "c2_ip",
         "stager_url",
+        "unverified",
         "warning",
         "warning (rate limit)",
         "degraded",
@@ -287,6 +288,7 @@ def render_badge(value: object) -> str:
         "low",
         "benign",
         "ssh_key",
+        "verified",
         "ok",
         "healthy",
         "active",
@@ -448,12 +450,12 @@ _CONSOLE_JS = """
       cls += " badge-high";
     } else if (
       low === "medium" || low === "suspicious" ||
-      low === "c2_ip" || low === "stager_url" ||
+      low === "c2_ip" || low === "stager_url" || low === "unverified" ||
       low === "warning" || low === "warning (rate limit)" || low === "degraded"
     ) {
       cls += " badge-med";
     } else if (
-      low === "low" || low === "benign" || low === "ssh_key" ||
+      low === "low" || low === "benign" || low === "ssh_key" || low === "verified" ||
       low === "ok" || low === "healthy" || low === "active" || low === "success"
     ) {
       cls += " badge-low";

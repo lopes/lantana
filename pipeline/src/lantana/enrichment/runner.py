@@ -41,6 +41,7 @@ from lantana.common.redact import (
     scrub_infra_strings,
     validate_no_leaks,
 )
+from lantana.enrichment.allowlist import classify_static_suppression
 from lantana.enrichment.ioc import (
     extract_hashes_from_bronze,
     extract_ips,
@@ -321,13 +322,15 @@ def _set_cached(
 
 def load_enrichment_cache_lookup(
     cache_db_path: Path = CACHE_DB_PATH,
-    provider: str = "virustotal",
+    provider: str | None = None,
 ) -> dict[tuple[str, str], dict[str, str | int | float | bool | None]]:
     """Read active cached enrichment records keyed by ``(ioc_type, ioc_value)``.
 
-    Used at the IO edge by ``transform/runner.py`` to hydrate VT/GTI verdicts
-    for durable outbound IOCs (C2 IPs, stager URLs, stager domains, hashes)
-    into the ``extracted_iocs`` gold table without adding extra silver tables.
+    When ``provider`` is ``None`` (the default), merges active cache rows across
+    all providers (VirusTotal/GTI, GreyNoise, AbuseIPDB, Shodan) whose field
+    namespaces are disjoint. Pass ``provider="virustotal"`` to scope to a single
+    provider. Used at the IO edge by ``transform/runner.py`` to hydrate verdicts
+    and GreyNoise RIOT/benign flags into ``extracted_iocs``.
     """
     if not cache_db_path.exists():
         return {}
@@ -336,18 +339,26 @@ def load_enrichment_cache_lookup(
     conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(f"file:{cache_db_path}?mode=ro", uri=True)
-        rows = conn.execute(
-            "SELECT ioc_type, ioc_value, data FROM cache "
-            "WHERE provider = ? AND (expires_at IS NULL OR expires_at > ?)",
-            (provider, now_iso),
-        ).fetchall()
+        if provider is None:
+            rows = conn.execute(
+                "SELECT ioc_type, ioc_value, data FROM cache "
+                "WHERE expires_at IS NULL OR expires_at > ?",
+                (now_iso,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ioc_type, ioc_value, data FROM cache "
+                "WHERE provider = ? AND (expires_at IS NULL OR expires_at > ?)",
+                (provider, now_iso),
+            ).fetchall()
         for ioc_type, ioc_value, data_json in rows:
             try:
                 parsed = json.loads(data_json)
             except (ValueError, json.JSONDecodeError):
                 continue
             if isinstance(parsed, dict):
-                lookup[(str(ioc_type), str(ioc_value))] = parsed
+                key = (str(ioc_type), str(ioc_value))
+                lookup.setdefault(key, {}).update(parsed)
     except sqlite3.Error as exc:
         logger.warning("cache_lookup_read_failed", path=str(cache_db_path), exc_repr=repr(exc))
     finally:
@@ -882,6 +893,47 @@ async def run_enrichment(
         unique_ips = filter_internal_ips(raw_ips, redact_config)
         stager_domains = extract_stager_domains(outbound_urls, redact_config)
 
+        # Quota hygiene: skip burning external API quota on static benign/shared
+        # infrastructure (public DNS resolvers, utility hosts, shared-host apex
+        # domains, operator allowlist). Path-specific URLs on shared hosts still
+        # enrich, and Gold extracted_iocs retains every raw row tagged suppressed.
+        allow_domains = reporting.stix.allowlist_domains
+        allow_ips = reporting.stix.allowlist_ips
+        enrich_c2_ips = {
+            ip
+            for ip in outbound_c2_ips
+            if classify_static_suppression(
+                "c2_ip", ip, allowlist_domains=allow_domains, allowlist_ips=allow_ips
+            )
+            is None
+        }
+        enrich_urls = {
+            url
+            for url in outbound_urls
+            if classify_static_suppression(
+                "stager_url", url, allowlist_domains=allow_domains, allowlist_ips=allow_ips
+            )
+            is None
+        }
+        enrich_domains = {
+            dom
+            for dom in stager_domains
+            if classify_static_suppression(
+                "stager_domain", dom, allowlist_domains=allow_domains, allowlist_ips=allow_ips
+            )
+            is None
+        }
+        skipped_c2 = len(outbound_c2_ips) - len(enrich_c2_ips)
+        skipped_urls = len(outbound_urls) - len(enrich_urls)
+        skipped_domains = len(stager_domains) - len(enrich_domains)
+        if skipped_c2 or skipped_urls or skipped_domains:
+            logger.info(
+                "benign_infra_enrichment_skipped",
+                c2_ips=skipped_c2,
+                stager_urls=skipped_urls,
+                stager_domains=skipped_domains,
+            )
+
         if len(raw_ips) != len(unique_ips):
             logger.info("internal_ips_filtered", count=len(raw_ips) - len(unique_ips))
         logger.info("unique_iocs_found", ioc_type=IOC_TYPE_IP, count=len(unique_ips))
@@ -897,8 +949,8 @@ async def run_enrichment(
         # Phase B: enrich each IOC type once with behavioral priority ranking
         provider_state = _load_provider_state(provider_state_path)
         event_counts = _compute_ip_event_counts(dfs)
-        priority_map = _compute_ip_priority(dfs, c2_ips=outbound_c2_ips)
-        all_target_ips = sorted(unique_ips | outbound_c2_ips)
+        priority_map = _compute_ip_priority(dfs, c2_ips=enrich_c2_ips)
+        all_target_ips = sorted(unique_ips | enrich_c2_ips)
 
         hash_results: list[EnrichmentResult] = []
         url_results: list[EnrichmentResult] = []
@@ -963,7 +1015,7 @@ async def run_enrichment(
                 sorted(unique_hashes),
                 f"virustotal:{IOC_TYPE_HASH}",
             )
-            c2_sorted = sorted(outbound_c2_ips)
+            c2_sorted = sorted(enrich_c2_ips)
             if c2_sorted:
                 c2_vt_results = await _run_vt_stage(
                     IOC_TYPE_IP,
@@ -974,12 +1026,12 @@ async def run_enrichment(
                 vt_c2_done.update(c2_sorted)
             url_results = await _run_vt_stage(
                 IOC_TYPE_URL,
-                sorted(outbound_urls),
+                sorted(enrich_urls),
                 f"virustotal:{IOC_TYPE_URL}",
             )
             await _run_vt_stage(
                 IOC_TYPE_DOMAIN,
-                sorted(stager_domains),
+                sorted(enrich_domains),
                 f"virustotal:{IOC_TYPE_DOMAIN}",
             )
 
