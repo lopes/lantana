@@ -213,9 +213,15 @@ reporting:
     tlp: "GREEN"                              # CLEAR (or legacy alias WHITE) / GREEN / AMBER / RED
     community: "Lantana Threat Intel"
     discord_channel: "lantana-intel"          # channel name shown in reports
+
+  stix:                                       # optional — outbound IOC anti-poisoning defaults shown
+    include_unverified_outbound: false        # require VT/GTI/GreyNoise/AbuseIPDB or captured binary
+    unverified_confidence: 25                 # STIX confidence if include_unverified_outbound: true
+    allowlist_domains: []                     # extra domains (exact + subdomains) to suppress
+    allowlist_ips: []                         # extra IPs or CIDRs to suppress
 ```
 
-The Discord webhook URL itself lives in the vault (step 5), not here. Leave the `pseudonym_map` block alone — those labels are what your real WAN and internal IPs get rewritten to in shared output.
+The Discord webhook URL itself lives in the vault (step 5), not here. Leave the `pseudonym_map` block alone — those labels are what your real WAN and internal IPs get rewritten to in shared output. The optional `stix` block controls outbound IOC feed-poisoning suppression and defaults safely if omitted.
 
 ---
 

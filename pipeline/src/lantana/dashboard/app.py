@@ -81,6 +81,7 @@ from lantana.dashboard.queries import (
     risk_level_label,
 )
 from lantana.dashboard.theme import VIGIL_LIGHT
+from lantana.enrichment.allowlist import should_export_ioc_to_stix
 from lantana.intel.stix import RISK_HIGH_THRESHOLD, RISK_THRESHOLD
 
 if TYPE_CHECKING:
@@ -1014,24 +1015,30 @@ def _render_intel_view(
             KpiCard("Stager Domains", f"{counts['stager_domain']:,}", tone="info"),
             KpiCard("SSH Public Keys", f"{counts['ssh_key']:,}", tone="low"),
         ]
-        ioc_rows: list[dict[str, object]] = [
-            {
-                "ioc_type": str(row.get("ioc_type") or ""),
-                "ioc_value": str(row.get("ioc_value") or ""),
-                "vhash": str(row.get("vhash") or "—"),
-                "malware_family": str(row.get("malware_family") or "—"),
-                "vt_malicious": row.get("vt_malicious"),
-                "gti_verdict": str(row.get("gti_verdict") or "—"),
-                "actor_associations": str(row.get("actor_associations") or "—"),
-                "event_count": int(row.get("event_count") or 0),
-                "unique_src_ips": int(row.get("unique_src_ips") or 0),
-                "first_seen": _fmt_ts(row.get("first_seen")),
-            }
-            for row in extracted.iter_rows(named=True)
-        ]
+        ioc_rows: list[dict[str, object]] = []
+        for row in extracted.iter_rows(named=True):
+            _, eff_status, eff_reason = should_export_ioc_to_stix(row, reporting.stix)
+            ioc_rows.append(
+                {
+                    "ioc_type": str(row.get("ioc_type") or ""),
+                    "ioc_value": str(row.get("ioc_value") or ""),
+                    "verification_status": eff_status,
+                    "verification_reason": eff_reason,
+                    "vhash": str(row.get("vhash") or "—"),
+                    "malware_family": str(row.get("malware_family") or "—"),
+                    "vt_malicious": row.get("vt_malicious"),
+                    "gti_verdict": str(row.get("gti_verdict") or "—"),
+                    "actor_associations": str(row.get("actor_associations") or "—"),
+                    "event_count": int(row.get("event_count") or 0),
+                    "unique_src_ips": int(row.get("unique_src_ips") or 0),
+                    "first_seen": _fmt_ts(row.get("first_seen")),
+                }
+            )
         ioc_cols = [
             TableColumn("ioc_type", "Type", badge=True),
             TableColumn("ioc_value", "Observable (SHA-256 / URL / Host / IP / SSH Key)", mono=True),
+            TableColumn("verification_status", "Status", badge=True),
+            TableColumn("verification_reason", "Reason", mono=True),
             TableColumn("vhash", "vhash", mono=True),
             TableColumn("malware_family", "Family"),
             TableColumn("vt_malicious", "VT Det.", numeric=True),
@@ -1078,7 +1085,7 @@ def _render_intel_view(
             + '<div class="callout">No Gold data available to export for this window.</div>'
         )
     else:
-        comp = count_stix_composition(reputation, clusters, extracted)
+        comp = count_stix_composition(reputation, clusters, extracted, stix_config=reporting.stix)
         durable_total = (
             comp["malware_hashes"]
             + comp["c2_ips"]

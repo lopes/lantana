@@ -24,6 +24,12 @@ from lantana.common.datalake import (
     read_gold_table,
     read_silver_partition,
 )
+from lantana.enrichment.allowlist import (
+    VERIFICATION_STATUS_SUPPRESSED,
+    VERIFICATION_STATUS_UNVERIFIED,
+    VERIFICATION_STATUS_VERIFIED,
+    should_export_ioc_to_stix,
+)
 from lantana.intel.iocs import build_raw_ioc_export
 from lantana.intel.stix import RISK_HIGH_THRESHOLD, RISK_THRESHOLD, generate_bundle
 from lantana.transform.metrics import STAGE_LABELS
@@ -33,7 +39,7 @@ if TYPE_CHECKING:
 
     import stix2
 
-    from lantana.common.config import ReportingConfig
+    from lantana.common.config import ReportingConfig, StixExportConfig
 
 VALID_WINDOW_MODES: tuple[str, ...] = ("latest", "7d", "30d", "custom", "all")
 
@@ -304,6 +310,30 @@ def aggregate_extracted_iocs(dates: list[date], gold_root: Path = GOLD_ROOT) -> 
     for col in ("vt_malicious", "gti_score"):
         if col in df.columns:
             aggs.append(pl.col(col).max().alias(col))
+    if "verification_status" in df.columns:
+        rank_expr = (
+            pl.when(pl.col("verification_status") == VERIFICATION_STATUS_SUPPRESSED)
+            .then(pl.lit(3))
+            .when(pl.col("verification_status") == VERIFICATION_STATUS_VERIFIED)
+            .then(pl.lit(2))
+            .when(pl.col("verification_status") == VERIFICATION_STATUS_UNVERIFIED)
+            .then(pl.lit(1))
+            .otherwise(pl.lit(0))
+        )
+        df = df.with_columns(rank_expr.alias("_verif_rank"))
+        aggs.append(
+            pl.col("verification_status")
+            .sort_by("_verif_rank", descending=True)
+            .first()
+            .alias("verification_status")
+        )
+        if "verification_reason" in df.columns:
+            aggs.append(
+                pl.col("verification_reason")
+                .sort_by("_verif_rank", descending=True)
+                .first()
+                .alias("verification_reason")
+            )
     if "report_date" in df.columns:
         aggs.append(pl.col("report_date").n_unique().alias("active_days"))
 
@@ -565,6 +595,8 @@ def count_stix_composition(
     reputation: pl.DataFrame,
     clusters: pl.DataFrame,
     extracted_iocs: pl.DataFrame,
+    *,
+    stix_config: StixExportConfig | None = None,
 ) -> dict[str, int]:
     """Count every STIX object category emitted by ``intel/stix.py`` for preview KPIs."""
     ip_count = 0
@@ -586,10 +618,13 @@ def count_stix_composition(
         "ssh_key": 0,
     }
     if not extracted_iocs.is_empty() and "ioc_type" in extracted_iocs.columns:
-        for row in extracted_iocs.group_by("ioc_type").len().iter_rows(named=True):
-            t = str(row["ioc_type"])
-            if t in ioc_counts:
-                ioc_counts[t] = int(row["len"])
+        for row in extracted_iocs.iter_rows(named=True):
+            t = str(row.get("ioc_type") or "")
+            if t not in ioc_counts:
+                continue
+            eligible, _, _ = should_export_ioc_to_stix(row, stix_config)
+            if eligible:
+                ioc_counts[t] += 1
 
     return {
         "inbound_ips": ip_count,

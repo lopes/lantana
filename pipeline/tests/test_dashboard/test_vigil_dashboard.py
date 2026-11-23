@@ -208,6 +208,8 @@ def _seed_datalake(tmp_path: Path) -> tuple[Path, Path, Path]:
                         "stager_url",
                         "stager_domain",
                         "ssh_key",
+                        "c2_ip",
+                        "stager_domain",
                     ],
                     "ioc_value": [
                         sha1,
@@ -215,18 +217,46 @@ def _seed_datalake(tmp_path: Path) -> tuple[Path, Path, Path]:
                         "http://drop.example.org/bot.elf",
                         "drop.example.org",
                         "ssh-ed25519 SHA256:SyntheticTestFingerprint0000000000000",
+                        "1.1.1.1",
+                        "raw.githubusercontent.com",
                     ],
-                    "vhash": ["vhash123456", None, None, None, None],
-                    "first_seen": [ts, ts, ts, ts, ts],
-                    "last_seen": [ts, ts, ts, ts, ts],
-                    "event_count": [2, 1, 1, 1, 1],
-                    "unique_src_ips": [1, 1, 1, 1, 1],
-                    "vt_status": ["found", "found", "not_found", "not_found", None],
-                    "vt_malicious": [42, 10, None, None, None],
-                    "gti_verdict": ["VERDICT_MALICIOUS", None, None, None, None],
-                    "gti_score": [95, None, None, None, None],
-                    "malware_family": ["Mirai", None, None, None, None],
-                    "actor_associations": ["UNC0000", None, None, None, None],
+                    "vhash": ["vhash123456", None, None, None, None, None, None],
+                    "first_seen": [ts, ts, ts, ts, ts, ts, ts],
+                    "last_seen": [ts, ts, ts, ts, ts, ts, ts],
+                    "event_count": [2, 1, 1, 1, 1, 1, 1],
+                    "unique_src_ips": [1, 1, 1, 1, 1, 1, 1],
+                    "vt_status": [
+                        "found",
+                        "found",
+                        "found",
+                        "found",
+                        None,
+                        None,
+                        None,
+                    ],
+                    "vt_malicious": [42, 10, 3, 5, None, None, None],
+                    "gti_verdict": ["VERDICT_MALICIOUS", None, None, None, None, None, None],
+                    "gti_score": [95, None, None, None, None, None, None],
+                    "malware_family": ["Mirai", None, None, None, None, None, None],
+                    "actor_associations": ["UNC0000", None, None, None, None, None, None],
+                    "verification_status": [
+                        "verified",
+                        "verified",
+                        "verified",
+                        "verified",
+                        "verified",
+                        "suppressed",
+                        "suppressed",
+                    ],
+                    "verification_reason": [
+                        "captured_artifact",
+                        "vt_malicious",
+                        "vt_malicious",
+                        "vt_malicious",
+                        "captured_artifact",
+                        "benign_resolver_ip",
+                        "shared_hosting_domain",
+                    ],
                 }
             ),
             "extracted_iocs",
@@ -481,8 +511,18 @@ class TestAirGappedVigilServer:
         assert "http-request-ext" not in serialized
         assert "203.0.113.88" in serialized
         assert "drop.example.org" in serialized
+        assert "1.1.1.1" not in serialized
+        assert "raw.githubusercontent.com" not in serialized
         assert "192.0.2.10" not in serialized
         assert "vps-hidden.example.net" not in serialized
+
+        # /intel view still shows suppressed IOCs in Observable Inventory with badges/reasons
+        intel_status, _, intel_raw = _fetch(f"{live_dashboard}/intel?window=all")
+        assert intel_status == 200
+        intel_html = intel_raw.decode("utf-8")
+        assert "benign_resolver_ip" in intel_html
+        assert "shared_hosting_domain" in intel_html
+        assert "suppressed" in intel_html
 
         csv_status, csv_headers, gz_bytes = _fetch(
             f"{live_dashboard}/download/iocs.csv.gz?window=all"
@@ -828,3 +868,95 @@ def test_health_dashboard_surfaces_live_same_day_egress_drop(tmp_path: Path) -> 
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_stix_composition_and_multiday_verification_status_precedence(tmp_path: Path) -> None:
+    """count_stix_composition mirrors the STIX anti-poisoning gate, and multi-day
+    rollups enforce suppressed > verified > unverified status precedence."""
+    from lantana.common.config import StixExportConfig
+    from lantana.dashboard.queries import aggregate_extracted_iocs, count_stix_composition
+
+    gold_root = tmp_path / "gold"
+    d1, d2 = date(2026, 7, 10), date(2026, 7, 11)
+    t1 = datetime(2026, 7, 10, 12, 0, 0, tzinfo=UTC)
+    t2 = datetime(2026, 7, 11, 12, 0, 0, tzinfo=UTC)
+
+    # Day 1: unverified URL + verified C2 IP + unverified C2 IP
+    write_gold_table(
+        pl.DataFrame(
+            {
+                "ioc_type": ["stager_url", "c2_ip", "c2_ip"],
+                "ioc_value": [
+                    "http://drop.example.org/stage.sh",
+                    "198.51.100.55",
+                    "198.51.100.77",
+                ],
+                "vhash": [None, None, None],
+                "first_seen": [t1, t1, t1],
+                "last_seen": [t1, t1, t1],
+                "event_count": [1, 1, 1],
+                "unique_src_ips": [1, 1, 1],
+                "vt_status": ["not_found", "found", None],
+                "vt_malicious": [None, 5, None],
+                "gti_verdict": [None, None, None],
+                "gti_score": [None, None, None],
+                "malware_family": [None, None, None],
+                "actor_associations": [None, None, None],
+                "verification_status": ["unverified", "verified", "unverified"],
+                "verification_reason": ["uncorroborated", "vt_malicious", "uncorroborated"],
+            }
+        ),
+        "extracted_iocs",
+        d1,
+        gold_root=gold_root,
+    )
+    # Day 2: URL becomes verified; .55 becomes suppressed (GreyNoise RIOT); .77 stays unverified
+    write_gold_table(
+        pl.DataFrame(
+            {
+                "ioc_type": ["stager_url", "c2_ip", "c2_ip"],
+                "ioc_value": [
+                    "http://drop.example.org/stage.sh",
+                    "198.51.100.55",
+                    "198.51.100.77",
+                ],
+                "vhash": [None, None, None],
+                "first_seen": [t2, t2, t2],
+                "last_seen": [t2, t2, t2],
+                "event_count": [2, 1, 1],
+                "unique_src_ips": [1, 1, 1],
+                "vt_status": ["found", "found", None],
+                "vt_malicious": [3, 5, None],
+                "gti_verdict": [None, None, None],
+                "gti_score": [None, None, None],
+                "malware_family": [None, None, None],
+                "actor_associations": [None, None, None],
+                "verification_status": ["verified", "suppressed", "unverified"],
+                "verification_reason": ["vt_malicious", "greynoise_riot", "uncorroborated"],
+            }
+        ),
+        "extracted_iocs",
+        d2,
+        gold_root=gold_root,
+    )
+
+    rolled = aggregate_extracted_iocs([d1, d2], gold_root=gold_root)
+    by_val = {r["ioc_value"]: r for r in rolled.iter_rows(named=True)}
+    assert by_val["http://drop.example.org/stage.sh"]["verification_status"] == "verified"
+    assert by_val["http://drop.example.org/stage.sh"]["verification_reason"] == "vt_malicious"
+    assert by_val["198.51.100.55"]["verification_status"] == "suppressed"
+    assert by_val["198.51.100.55"]["verification_reason"] == "greynoise_riot"
+    assert by_val["198.51.100.77"]["verification_status"] == "unverified"
+
+    comp_default = count_stix_composition(pl.DataFrame(), pl.DataFrame(), rolled)
+    assert comp_default["stager_urls"] == 1
+    assert comp_default["c2_ips"] == 0
+
+    comp_opt_in = count_stix_composition(
+        pl.DataFrame(),
+        pl.DataFrame(),
+        rolled,
+        stix_config=StixExportConfig(include_unverified_outbound=True),
+    )
+    assert comp_opt_in["stager_urls"] == 1
+    assert comp_opt_in["c2_ips"] == 1

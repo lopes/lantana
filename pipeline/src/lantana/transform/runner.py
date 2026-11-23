@@ -17,7 +17,7 @@ from pathlib import Path
 
 import structlog
 
-from lantana.common.config import load_reporting
+from lantana.common.config import StixExportConfig, load_reporting
 from lantana.common.datalake import (
     GOLD_ROOT,
     SILVER_ROOT,
@@ -115,12 +115,15 @@ def run_transform(
     logger.info("silver_loaded", rows=len(silver), columns=len(silver.columns))
 
     effective_redact = redact_config
-    if effective_redact is None:
+    effective_stix = StixExportConfig()
+    if effective_redact is None or reporting_path is not None:
         try:
             reporting = (
                 load_reporting(reporting_path) if reporting_path is not None else load_reporting()
             )
-            effective_redact = reporting.redact
+            if effective_redact is None:
+                effective_redact = reporting.redact
+            effective_stix = reporting.stix
         except FileNotFoundError:
             # Fail closed on production datalake paths or explicit reporting_path;
             # allow empty fallback only for isolated temp-dir unit tests.
@@ -130,7 +133,8 @@ def run_transform(
                 "transform_reporting_missing_fallback",
                 silver_root=str(silver_root),
             )
-            effective_redact = RedactionConfig()
+            if effective_redact is None:
+                effective_redact = RedactionConfig()
 
     enrichment_lookup = load_enrichment_cache_lookup(cache_db_path)
 
@@ -153,6 +157,7 @@ def run_transform(
                 frame,
                 redact_config=effective_redact,
                 enrichment_lookup=enrichment_lookup,
+                stix_config=effective_stix,
             ),
         ),
     ]

@@ -26,8 +26,12 @@ from datetime import UTC, date, datetime, timedelta
 import polars as pl
 import stix2
 
-from lantana.common.config import ReportingConfig  # noqa: TC001 — runtime parameter type
+from lantana.common.config import ReportingConfig, StixExportConfig
 from lantana.common.redact import derive_ip_variants
+from lantana.enrichment.allowlist import (
+    VERIFICATION_STATUS_UNVERIFIED,
+    should_export_ioc_to_stix,
+)
 
 # Risk-score level thresholds shared by STIX export, dashboard buckets, and brief.
 RISK_THRESHOLD: float = 40.0
@@ -35,7 +39,9 @@ RISK_HIGH_THRESHOLD: float = 70.0
 
 INBOUND_IP_VALID_DAYS: int = 7
 OUTBOUND_INFRA_VALID_DAYS: int = 30
+UNVERIFIED_OUTBOUND_VALID_DAYS: int = 7
 MALWARE_PERSISTENCE_VALID_DAYS: int = 90
+VERIFIED_OUTBOUND_CONFIDENCE: int = 80
 
 _IPV4_EXTRACT_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _IPV6_EXTRACT_RE = re.compile(r"\b(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}\b")
@@ -433,13 +439,27 @@ def _make_durable_ioc_objects(
     identity: stix2.Identity,
     tlp: stix2.MarkingDefinition,
     default_ts: datetime | None = None,
+    *,
+    stix_config: StixExportConfig | None = None,
 ) -> list[object]:
-    """Create STIX 2.1 SDOs and Relationships from the ``extracted_iocs`` Gold table."""
+    """Create STIX 2.1 SDOs and Relationships from the ``extracted_iocs`` Gold table.
+
+    Applies defense-in-depth anti-poisoning gating via ``should_export_ioc_to_stix``:
+    - Benign resolvers, shared-hosting apex domains, utility hosts, GreyNoise
+      RIOT/benign IPs, and operator-allowlisted entries are never exported.
+    - By default, outbound network IOCs (``c2_ip``, ``stager_url``,
+      ``stager_domain``) require corroboration (``verified``). When
+      ``stix_config.include_unverified_outbound`` is explicitly enabled,
+      non-shared ``unverified`` rows are exported with an ``unverified`` label,
+      reduced confidence, and 7-day ``valid_until``.
+    """
     if extracted_iocs.is_empty():
         return []
 
+    effective_stix = stix_config if stix_config is not None else StixExportConfig()
     fallback_ts = default_ts if default_ts is not None else datetime.now(tz=UTC)
     infra_valid_until = fallback_ts + timedelta(days=OUTBOUND_INFRA_VALID_DAYS)
+    unverified_valid_until = fallback_ts + timedelta(days=UNVERIFIED_OUTBOUND_VALID_DAYS)
     artifact_valid_until = fallback_ts + timedelta(days=MALWARE_PERSISTENCE_VALID_DAYS)
 
     objects: list[object] = []
@@ -466,12 +486,22 @@ def _make_durable_ioc_objects(
         if not ioc_value:
             continue
 
+        eligible, eff_status, eff_reason = should_export_ioc_to_stix(row, effective_stix)
+        if not eligible:
+            continue
+
+        is_unverified = eff_status == VERIFICATION_STATUS_UNVERIFIED
         valid_from = _ensure_utc_dt(row.get("first_seen"), fallback_ts)
         row_infra_until = _ensure_valid_until(
-            valid_from, infra_valid_until, OUTBOUND_INFRA_VALID_DAYS
+            valid_from,
+            unverified_valid_until if is_unverified else infra_valid_until,
+            UNVERIFIED_OUTBOUND_VALID_DAYS if is_unverified else OUTBOUND_INFRA_VALID_DAYS,
         )
         row_artifact_until = _ensure_valid_until(
             valid_from, artifact_valid_until, MALWARE_PERSISTENCE_VALID_DAYS
+        )
+        outbound_confidence = (
+            effective_stix.unverified_confidence if is_unverified else VERIFIED_OUTBOUND_CONFIDENCE
         )
 
         vhash = row.get("vhash")
@@ -491,6 +521,7 @@ def _make_durable_ioc_objects(
             meta_parts.append(f"VT detections: {vt_mal}")
         if gti_verdict:
             meta_parts.append(f"GTI verdict: {gti_verdict}")
+        meta_parts.append(f"Verification: {eff_status} ({eff_reason})")
         meta_desc = ". ".join(meta_parts)
 
         if ioc_type == "malware_hash":
@@ -549,6 +580,9 @@ def _make_durable_ioc_objects(
                     )
 
         elif ioc_type == "c2_ip":
+            c2_labels = ["malicious-activity", "command-and-control"]
+            if is_unverified:
+                c2_labels.append("unverified")
             objects.append(
                 stix2.Indicator(
                     name=f"c2-{ioc_value}",
@@ -558,13 +592,17 @@ def _make_durable_ioc_objects(
                     valid_from=valid_from,
                     valid_until=row_infra_until,
                     created=fallback_ts,
-                    labels=["malicious-activity", "command-and-control"],
+                    labels=c2_labels,
+                    confidence=outbound_confidence,
                     created_by_ref=identity.id,
                     object_marking_refs=[tlp.id],
                 )
             )
 
         elif ioc_type == "stager_url":
+            url_labels = ["malicious-activity", "malware-staging"]
+            if is_unverified:
+                url_labels.append("unverified")
             objects.append(
                 stix2.Indicator(
                     name=f"url-{hashlib.sha256(ioc_value.encode('utf-8')).hexdigest()[:12]}",
@@ -574,13 +612,17 @@ def _make_durable_ioc_objects(
                     valid_from=valid_from,
                     valid_until=row_infra_until,
                     created=fallback_ts,
-                    labels=["malicious-activity", "malware-staging"],
+                    labels=url_labels,
+                    confidence=outbound_confidence,
                     created_by_ref=identity.id,
                     object_marking_refs=[tlp.id],
                 )
             )
 
         elif ioc_type == "stager_domain":
+            dom_labels = ["malicious-activity", "malware-staging"]
+            if is_unverified:
+                dom_labels.append("unverified")
             objects.append(
                 stix2.Indicator(
                     name=f"domain-{ioc_value}",
@@ -590,7 +632,8 @@ def _make_durable_ioc_objects(
                     valid_from=valid_from,
                     valid_until=row_infra_until,
                     created=fallback_ts,
-                    labels=["malicious-activity", "malware-staging"],
+                    labels=dom_labels,
+                    confidence=outbound_confidence,
                     created_by_ref=identity.id,
                     object_marking_refs=[tlp.id],
                 )
@@ -668,6 +711,7 @@ def generate_bundle(
                 identity,
                 tlp,
                 default_ts=default_ts,
+                stix_config=reporting.stix,
             )
         )
     elif summary is not None:

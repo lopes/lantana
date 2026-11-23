@@ -165,11 +165,11 @@ BRIEF_SECTIONS: Final[dict[str, WhatWhyHow]] = {
         how="generate_bundle() in intel/stix.py + build_raw_ioc_export() in intel/iocs.py.",
     ),
     "Bundle Composition": WhatWhyHow(
-        what="counts of durable IOC and interactive inbound IP objects in the STIX 2.1 bundle.",
-        why="mirrors the gates in intel/stix.py so the analyst can preview what ships.",
+        what="counts of verified durable IOCs and interactive inbound IPs in the STIX 2.1 bundle.",
+        why="mirrors the anti-poisoning and behavioral gates in intel/stix.py before export.",
         how=(
-            f"extracted_iocs (hashes, C2 IPs, URLs, domains, SSH keys) plus interactive "
-            f"inbound IPs with behavioral > 0 and risk_score >= {_MED} (7d valid_until)."
+            f"verified extracted_iocs (hashes, SSH keys, corroborated non-benign C2/URLs/domains) "
+            f"+ interactive inbound IPs with behavioral > 0, risk_score >= {_MED}, non-RIOT (7d)."
         ),
     ),
     "Raw IOC Export": WhatWhyHow(
@@ -389,19 +389,19 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
     ),
     # STIX Export page metric cards
     "IP Indicators": WhatWhyHow(
-        what=f"attacker IPs above the STIX risk threshold ({_MED}).",
-        why="become STIX [ipv4-addr:value = ...] Indicators; drive the OpenCTI feed.",
-        how=f"reputation.filter(risk_score >= {_MED}).",
+        what=(
+            f"interactive attacker IPs above the STIX threshold ({_MED}), excluding RIOT/benign."
+        ),
+        why="emit short-lived (7d) STIX IP Indicators without exporting passive scanners.",
+        how=(
+            f"reputation where behavioral_risk_score > 0, risk_score >= {_MED}, "
+            "not greynoise_riot, and greynoise_class != 'benign'."
+        ),
     ),
     "Hash Indicators": WhatWhyHow(
-        what="file SHA256s captured from cowrie downloads.",
-        why="each emits a STIX [file:hashes.'SHA-256' = ...] Indicator + matching Malware SDO.",
-        how="length of summary.top_download_hashes.",
-    ),
-    "Network-rule Indicators": WhatWhyHow(
-        what="Suricata rules triggered by >= 5 unique source IPs.",
-        why="broad enough to be worth sharing as intel; one STIX Indicator per rule.",
-        how="detection_findings.filter(unique_ips >= 5).",
+        what="non-probe, non-persistence SHA-256 malware captures from Cowrie and Dionaea.",
+        why="each emits a 90d STIX file-hash Indicator + Malware SDO (grouped by VT vhash).",
+        how="extracted_iocs rows with ioc_type == 'malware_hash' (verified captured artifacts).",
     ),
     "Campaigns": WhatWhyHow(
         what="credential-stuffing clusters: username:password pairs reused by >= 2 IPs.",
@@ -437,13 +437,16 @@ METRICS: Final[dict[str, WhatWhyHow]] = {
     ),
     "Outbound C2 & Stagers": WhatWhyHow(
         what="outbound C2 IPs, stager URLs, and staging domains extracted post-auth.",
-        why="durable attacker infrastructure that outlives rotating botnet source IPs.",
-        how="extracted_iocs rows with ioc_type in {c2_ip, stager_url, stager_domain}.",
+        why="durable attacker infra; Gold retains all rows while STIX gates on verification.",
+        how=(
+            "extracted_iocs rows in {c2_ip, stager_url, stager_domain} tagged "
+            "verified / unverified / suppressed."
+        ),
     ),
     "Durable IOCs": WhatWhyHow(
         what="all durable daily observables: malware hashes, C2 IPs, URLs, domains, SSH keys.",
-        why="high-shelf-life threat intelligence ready for OpenCTI, MISP, and retro-hunting.",
-        how="row count of the extracted_iocs Gold table across the active window.",
+        why="full raw analyst visibility in Gold with anti-poisoning verification gating for STIX.",
+        how="row count of extracted_iocs across the active window (STIX exports verified rows).",
     ),
     "Usable Disk": WhatWhyHow(
         what="non-root usable filesystem usage percentage matching df.",

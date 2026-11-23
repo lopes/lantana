@@ -23,3 +23,15 @@ reporting:
     lan: "honeypot-lan"
     sensor_01: "honeypot-sensor-01"
     collector_01: "honeypot-collector-01"
+
+  # STIX 2.1 outbound IOC anti-poisoning & verification policy (optional; defaults shown)
+  stix:
+    # By default, outbound c2_ip / stager_url / stager_domain require corroboration
+    # (VT/GTI/GreyNoise/AbuseIPDB or sensor-captured binary) and benign/shared infra
+    # is suppressed. Set true only if running without enrichment keys and accepting
+    # unverified outbound indicators (tagged 'unverified', lower confidence, 7d TTL).
+    include_unverified_outbound: false
+    unverified_confidence: 25
+    # Additional operator-specific domains or IPs/CIDRs to suppress from STIX & API quota
+    allowlist_domains: []
+    allowlist_ips: []
