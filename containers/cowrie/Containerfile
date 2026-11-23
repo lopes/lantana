@@ -54,6 +54,9 @@ RUN git init "${COWRIE_HOME}/cowrie-git" && \
     git checkout --detach FETCH_HEAD && \
     rm -rf .git
 
+COPY --chown=999:999 patch_offline.py /tmp/patch_offline.py
+RUN python3 /tmp/patch_offline.py && rm -f /tmp/patch_offline.py
+
 RUN python3 -m venv "${COWRIE_HOME}/cowrie-env" && \
     . "${COWRIE_HOME}/cowrie-env/bin/activate" && \
     pip install -q --no-cache-dir --upgrade pip setuptools setuptools-scm wheel && \

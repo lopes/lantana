@@ -57,23 +57,23 @@ When debugging volume mounts in the `.container` files, verify the correct flags
 
 - `UserNS=keep-id:uid=<N>,gid=<N>`: Maps the host sensor user (`stigma`) to the container's worker UID (`999` for Cowrie) so host-mounted logs and artifacts stay cleanly owned by `stigma`.
 - `:Z`: SELinux/AppArmor private container security label. Prevents cross-container data leakage.
-- **Avoid `,U` on Lantana sensor bind mounts:** `,U` recursively `chown`s the host directory at container start, which races Dionaea's entrypoint and wipes host POSIX ACLs (`u:vector:rX`, `u:nectar:rwX`). Both Cowrie and Dionaea omit `,U` intentionally — see [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints).
+- **Avoid `,U` on Lantana sensor bind mounts:** `,U` recursively `chown`s the host directory at container start, which races Dionaea's entrypoint and wipes host `u:vector:rX` POSIX ACLs on log dirs. Both Cowrie and Dionaea omit `,U` intentionally — see [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints).
 
 ---
 
 ## Dionaea Sensor
 
-Lantana v1.5 runs our self-owned pinned image `ghcr.io/lopes/lantana-dionaea:v1.5` (with baked `dionaea.cfg`, `lantana_json`, `patch_http.py`, non-destructive `entrypoint.sh`, and app-layer `healthcheck.py` + `HealthOnFailure=kill`). The checks below help diagnose capability, ASCII YAML, or ownership issues if a host drifts. See [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints) for the load-bearing invariants.
+Lantana v1.5.1 runs our self-owned pinned, non-egressing image `ghcr.io/lopes/lantana-dionaea:v1.5.1` (with baked `dionaea.cfg` setting `modules=python,emu` + `processors=filter_emu`, `lantana_json`, `patch_http.py`, `patch_ftp.py`, non-destructive `entrypoint.sh`, `Pull=never`, and app-layer `healthcheck.py` + `HealthOnFailure=kill`). The checks below help diagnose capability, ASCII YAML, or ownership issues if a host drifts. See [`honeypots.md`](/docs/honeypots.md#container-model-and-constraints) for the load-bearing invariants.
 
 ### Symptom: Dionaea fails to bind privileged ports (`21`, `80`, `135`, `445`) or exits on startup
 
-Lantana v1.5 runs `ghcr.io/lopes/lantana-dionaea:v1.5` strictly non-root as `USER 1000:1000` with `DropCapability=ALL`, `UserNS=keep-id:uid=1000,gid=1000`, and `Sysctl=net.ipv4.ip_unprivileged_port_start=0`. Confirm the Quadlet carries both keys:
+Lantana v1.5.1 runs `ghcr.io/lopes/lantana-dionaea:v1.5.1` strictly non-root as `USER 1000:1000` with `Pull=never`, `DropCapability=ALL`, `UserNS=keep-id:uid=1000,gid=1000`, and `Sysctl=net.ipv4.ip_unprivileged_port_start=0`. Confirm the Quadlet carries all keys:
 
 ```bash
-grep -E '^(UserNS|DropCapability|Sysctl)=' /etc/containers/systemd/users/2001/dionaea.container
+grep -E '^(Pull|UserNS|DropCapability|Sysctl)=' /etc/containers/systemd/users/2001/dionaea.container
 ```
 
-Should show `UserNS=keep-id:uid=1000,gid=1000`, `DropCapability=ALL`, and `Sysctl=net.ipv4.ip_unprivileged_port_start=0`. If an older host still runs a legacy root-entrypoint image (`exit 133`), pull or rebuild the v1.5 image and re-deploy the `dionaea` role.
+Should show `Pull=never`, `UserNS=keep-id:uid=1000,gid=1000`, `DropCapability=ALL`, and `Sysctl=net.ipv4.ip_unprivileged_port_start=0`. If an older host still runs a legacy root-entrypoint image (`exit 133`), re-deploy the `dionaea` role so root imports the `:v1.5.1` image offline into `stigma`'s store.
 
 ### Symptom: dionaea runs but binds zero ports
 
@@ -129,7 +129,7 @@ options.
 
 Trigger: a container start where an existing `dionaea.json` on the host is owned by a UID other than `stigma` (for example after a manual root edit, an upgrade from a legacy subuid `100999` container, or a stale `,U` flag). Because v1.5 maps `USER 1000:1000` to host `stigma` via `UserNS=keep-id:uid=1000,gid=1000`, any non-`stigma` log file cannot be reopened for append/write, disabling the JSON ihandler for the process lifetime.
 
-The historical `,U` flag on bind mounts was the recurring trigger. Lantana no longer uses `,U`, and our self-owned unprivileged `entrypoint.sh` preserves host POSIX ACLs (`u:vector:rX` / `u:nectar:rwX`). If an older host hits this state:
+The historical `,U` flag on bind mounts was the recurring trigger. Lantana no longer uses `,U`, and our self-owned unprivileged `entrypoint.sh` preserves host `u:vector:rX` POSIX ACLs on log dirs. If an older host hits this state:
 
 ```bash
 # 1. Log file timestamps stuck at the last container start.
@@ -200,7 +200,7 @@ are unusual and worth pasting into a bug report.
 
 ## Cowrie Sensor
 
-Lantana v1.5 pins our self-owned `ghcr.io/lopes/lantana-cowrie:v1.5` image (`UID=999`, `GID=999`) with `UserNS=keep-id:uid=999,gid=999` in the Quadlet (see [`deploy-sensors`](/.agents/skills/deploy-sensors/SKILL.md)). Historical rolling tags (`cowrie/cowrie:latest`) bumped the in-container UID (`998 -> 999`), breaking mounts whose host files were not owned by `stigma`. Two failure modes flow from ownership drift — the second is silent:
+Lantana v1.5.1 pins our self-owned, non-egressing `ghcr.io/lopes/lantana-cowrie:v1.5.1` image (`UID=999`, `GID=999`, `patch_offline.py`) with `Pull=never` and `UserNS=keep-id:uid=999,gid=999` in the Quadlet (see [`deploy-sensors`](/.agents/skills/deploy-sensors/SKILL.md)). Historical rolling tags (`cowrie/cowrie:latest`) bumped the in-container UID (`998 -> 999`), breaking mounts whose host files were not owned by `stigma`. Two failure modes flow from ownership drift — the second is silent:
 
 ### Symptom: cowrie accepts logins but logs zero `cowrie.command.*` events
 
@@ -324,7 +324,7 @@ The `outputs[].eve-log.types` block in `roles/suricata/templates/suricata.yaml.j
 
 **What's kept and why:**
 
-- **`alert`** — the only event type the pipeline consumes today. `models/normalize.py` dispatches `event_type == "alert"` to OCSF Detection Finding (2004) with `alert_signature`, `alert_signature_id`, `alert_severity`, `alert_category`, `alert_action` flattened into silver. `transform/metrics.py` filters silver to `class_uid == CLASS_DETECTION_FINDING` to compute the detection findings gold table.
+- **`alert`** — the only event type the pipeline consumes today. `models/normalize.py` dispatches `event_type == "alert"` to OCSF Detection Finding (2004) with `alert_signature`, `alert_signature_id`, `alert_severity`, `alert_category`, `alert_action` flattened into silver. `transform/metrics.py` filters silver to `class_uid == CLASS_DETECTION_FINDING` to compute the detection findings gold table. Unconsumed raw packet/payload alert dumps (`payload`, `payload-printable`, `packet`, `http-body`, `http-body-printable`, `tagged-packets`) are disabled (`false`) to keep `eve.json` and Bronze 10–25× smaller with zero intel loss.
 - **`flow`** — retained for planned behavioural-engagement analytics. Carries fields nftables logs cannot provide: `app_proto` (Suricata's application-protocol classification — useful for understanding what attackers tried on non-honeypotted ports), `bytes_toserver` / `bytes_toclient` (volume discriminator between casual scanners and active engagement), `state` (clean-close vs. RST vs. timeout), and `community_id` (deterministic 5-tuple hash for cross-tool correlation). No gold consumer wired yet.
 
 **Why everything else is dropped:**

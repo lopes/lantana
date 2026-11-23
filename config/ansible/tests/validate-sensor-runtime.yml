@@ -96,6 +96,14 @@
           incident pattern. Drop the suffix.
       when: "'cowrie' in active_honeypots"
 
+    - name: "Assert cowrie Quadlet enforces offline Pull=never"
+      ansible.builtin.assert:
+        that: "(cowrie_quadlet.content | b64decode) is regex('(?m)^Pull=never$')"
+        fail_msg: >-
+          cowrie.container is missing Pull=never. Under Lantana's dark stigma
+          egress policy, images must be imported offline by root during deploy.
+      when: "'cowrie' in active_honeypots"
+
     # === 2. Quadlet drift: dionaea carries UserNS=keep-id, no ,U ===
     - name: "Read deployed dionaea Quadlet"
       become: true
@@ -119,6 +127,14 @@
         fail_msg: >-
           dionaea.container carries a ,U volume flag. With UserNS=keep-id
           this is redundant and breaks host POSIX ACLs; drop the suffix.
+      when: "'dionaea' in active_honeypots"
+
+    - name: "Assert dionaea Quadlet enforces offline Pull=never"
+      ansible.builtin.assert:
+        that: "(dionaea_quadlet.content | b64decode) is regex('(?m)^Pull=never$')"
+        fail_msg: >-
+          dionaea.container is missing Pull=never. Under Lantana's dark stigma
+          egress policy, images must be imported offline by root during deploy.
       when: "'dionaea' in active_honeypots"
 
     # === 3. Container state: running + healthy + RestartCount=0 ===

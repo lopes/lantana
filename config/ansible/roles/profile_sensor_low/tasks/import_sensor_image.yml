@@ -1,0 +1,72 @@
+---
+# Idempotent offline image delivery into stigma's rootless Podman store.
+# Pulls as root (maintaining 100% dark runtime egress for stigma) and streams
+# `podman save | runuser -u stigma -- podman load` only when the image ID
+# differs or is missing in stigma's store.
+#
+# Expected vars:
+#   sensor_image: full image reference (e.g. ghcr.io/lopes/lantana-cowrie:v1.5.1)
+#   sensor_restart_handler: handler name to notify when the image is refreshed
+
+- name: "Pull pinned sensor image as root ({{ sensor_image }})"
+  become: true
+  ansible.builtin.command:
+    argv:
+      - podman
+      - pull
+      - --quiet
+      - "{{ sensor_image }}"
+  when: "sensor_image is not match('^localhost/')"
+  changed_when: false
+  tags: [honeypots]
+
+- name: "Read root-store image ID ({{ sensor_image }})"
+  become: true
+  ansible.builtin.command:
+    argv:
+      - podman
+      - image
+      - inspect
+      - --format
+      - "{{ '{{.Id}}' }}"
+      - "{{ sensor_image }}"
+  register: _lantana_root_image_id
+  changed_when: false
+  tags: [honeypots]
+
+- name: "Read sensor-user image ID ({{ sensor_image }})"
+  become: true
+  become_user: "{{ system.users.sensor.name }}"
+  ansible.builtin.command:
+    argv:
+      - podman
+      - image
+      - inspect
+      - --format
+      - "{{ '{{.Id}}' }}"
+      - "{{ sensor_image }}"
+  environment:
+    HOME: "/home/{{ system.users.sensor.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ system.users.sensor.uid }}"
+  register: _lantana_sensor_image_id
+  changed_when: false
+  failed_when: false
+  tags: [honeypots]
+
+- name: "Import sensor image offline into {{ system.users.sensor.name }} store ({{ sensor_image }})"
+  become: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    podman save {{ sensor_image | quote }} | runuser -u {{ system.users.sensor.name | quote }} -- \
+      env HOME={{ ('/home/' ~ system.users.sensor.name) | quote }} \
+      XDG_RUNTIME_DIR={{ ('/run/user/' ~ (system.users.sensor.uid | string)) | quote }} \
+      podman load
+  args:
+    executable: /bin/bash
+    chdir: /tmp
+  when: >-
+    _lantana_sensor_image_id.rc != 0 or
+    (_lantana_sensor_image_id.stdout | trim) != (_lantana_root_image_id.stdout | trim)
+  changed_when: true
+  notify: "{{ sensor_restart_handler }}"
+  tags: [honeypots]

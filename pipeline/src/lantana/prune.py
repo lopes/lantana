@@ -1,26 +1,25 @@
-"""Prune old datalake partitions and sensor artifacts based on retention policy.
+"""Prune old collector datalake partitions based on retention policy.
 
-Retention defaults (v1.5):
+Retention defaults (v1.5.1):
 - Bronze NDJSON: 14 days (deleted ONLY after the corresponding Silver partition
   is verified non-empty).
-- Silver & Gold Parquet: 180 days.
-- Sensor scratch (cowrie downloads/tty, dionaea binaries/bistreams/tmp): 14 days
-  via one-way POSIX ACLs (`u:nectar:rwX`) and symlink-safe `O_NOFOLLOW`/`dir_fd`
-  traversal so a compromised `stigma` cannot redirect deletes outside sensor trees.
-- Emergency prune (>80% non-root usable disk via `statvfs`): step down verified
-  Bronze and sensor scratch to 3 days and always send Disk Critical alert even if
-  individual deletions fail.
+- Silver & Gold Parquet: 180 days (plus 180-day trimming of ``enrichment_errors.json``).
+- Emergency prune (>80% non-root usable disk via ``statvfs``): step down verified
+  Bronze to 3 days and always send a Disk Critical alert.
+
+Strict one-way isolation: ``lantana-prune`` runs as ``nectar`` and operates
+exclusively on ``nectar``-owned datalake storage under ``/var/lib/lantana/datalake``.
+Sensor scratch directories under ``/var/lib/lantana/sensor`` are pruned independently
+by ``lantana-sensor-prune.timer`` running as ``User=stigma``.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import os
 import shutil
-import stat
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -29,34 +28,17 @@ import structlog
 logger = structlog.get_logger()
 
 DEFAULT_LAKE_DIR = Path("/var/lib/lantana/datalake")
-DEFAULT_SENSOR_DIR = Path("/var/lib/lantana/sensor")
 BRONZE_RETENTION_DAYS = 14
 SILVER_GOLD_RETENTION_DAYS = 180
-SENSOR_RETENTION_DAYS = 14
 EMERGENCY_BRONZE_RETENTION_DAYS = 3
-EMERGENCY_SENSOR_RETENTION_DAYS = 3
 ERRORS_RETENTION_DAYS = 180
 DISK_WARNING_THRESHOLD = 70.0
 DISK_CRITICAL_THRESHOLD = 80.0
-MAX_PRUNE_DEPTH = 32
-
-DEFAULT_SENSOR_SUBDIRS: tuple[str, ...] = (
-    "cowrie/downloads",
-    "cowrie/tty",
-    "dionaea/binaries",
-    "dionaea/bistreams",
-    "dionaea/tmp",
-)
 
 
 def _cutoff_date(retention_days: int) -> date:
     """Compute the UTC cutoff date: items older than this are pruned."""
     return datetime.now(UTC).date() - timedelta(days=retention_days)
-
-
-def _cutoff_epoch_utc(cutoff: date) -> float:
-    """Convert a UTC cutoff date to POSIX epoch seconds at 00:00:00 UTC."""
-    return datetime(cutoff.year, cutoff.month, cutoff.day, tzinfo=UTC).timestamp()
 
 
 def _silver_partition_verified(silver_root: Path, dataset: str, date_str: str) -> bool:
@@ -148,223 +130,6 @@ def _prune_date_partitions(root: Path, cutoff: date, *, dry_run: bool = False) -
     return deleted
 
 
-def _open_dir_nofollow(path: Path) -> int | None:
-    """Open a directory without following symlinks on any path component from path."""
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    try:
-        return os.open(str(path), flags)
-    except OSError:
-        return None
-
-
-def _prune_dir_fd(
-    root_fd: int,
-    cutoff_epoch: float,
-    *,
-    rel_display: str,
-    dry_run: bool,
-    max_depth: int = MAX_PRUNE_DEPTH,
-) -> tuple[int, bool]:
-    """Iteratively prune regular files older than cutoff_epoch using dir_fd + O_NOFOLLOW.
-
-    Uses an explicit stack capped at ``max_depth`` so deeply nested directories
-    planted by a compromised sensor user can never exhaust recursion depth or
-    file descriptors. Never follows symlinks on files or subdirectories.
-    Returns ``(deleted_count, root_is_empty)``.
-    """
-    deleted = 0
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-
-    # Each frame: [fd, rel_path, parent_fd, entry_name, depth, child_iter, remaining, owns_fd]
-    # Use a typed list of mutable frame objects via a small helper list structure.
-    class _Frame:
-        __slots__ = (
-            "depth",
-            "entries",
-            "entry_name",
-            "fd",
-            "idx",
-            "owns_fd",
-            "parent_fd",
-            "rel_path",
-            "remaining",
-        )
-
-        def __init__(
-            self,
-            fd: int,
-            rel_path: str,
-            parent_fd: int | None,
-            entry_name: str | None,
-            depth: int,
-            entries: list[str],
-            *,
-            owns_fd: bool,
-        ) -> None:
-            self.fd = fd
-            self.rel_path = rel_path
-            self.parent_fd = parent_fd
-            self.entry_name = entry_name
-            self.depth = depth
-            self.entries = entries
-            self.idx = 0
-            self.remaining = 0
-            self.owns_fd = owns_fd
-
-    try:
-        root_entries = [e.name for e in os.scandir(root_fd)]
-    except OSError as exc:
-        logger.error("prune_scandir_failed", path=rel_display, error=repr(exc))
-        return 0, False
-
-    stack: list[_Frame] = [_Frame(root_fd, rel_display, None, None, 0, root_entries, owns_fd=False)]
-    root_empty = False
-
-    try:
-        while stack:
-            frame = stack[-1]
-            if frame.idx >= len(frame.entries):
-                stack.pop()
-                is_empty = frame.remaining == 0
-                if frame.owns_fd:
-                    os.close(frame.fd)
-                if frame.parent_fd is not None and frame.entry_name is not None:
-                    parent = stack[-1]
-                    if is_empty and not dry_run:
-                        try:
-                            os.rmdir(frame.entry_name, dir_fd=frame.parent_fd)
-                        except OSError:
-                            parent.remaining += 1
-                    elif not is_empty:
-                        parent.remaining += 1
-                else:
-                    root_empty = is_empty
-                continue
-
-            name = frame.entries[frame.idx]
-            frame.idx += 1
-            child_display = f"{frame.rel_path}/{name}"
-            try:
-                st = os.stat(name, dir_fd=frame.fd, follow_symlinks=False)
-            except OSError as exc:
-                logger.error("prune_stat_failed", path=child_display, error=repr(exc))
-                frame.remaining += 1
-                continue
-
-            mode = st.st_mode
-            if stat.S_ISLNK(mode):
-                logger.warning("prune_symlink_skipped", path=child_display)
-                frame.remaining += 1
-                continue
-
-            if stat.S_ISDIR(mode):
-                if frame.depth >= max_depth:
-                    logger.warning(
-                        "prune_max_depth_reached",
-                        path=child_display,
-                        max_depth=max_depth,
-                    )
-                    frame.remaining += 1
-                    continue
-                try:
-                    child_fd = os.open(name, flags, dir_fd=frame.fd)
-                except OSError as exc:
-                    logger.error("prune_open_subdir_failed", path=child_display, error=repr(exc))
-                    frame.remaining += 1
-                    continue
-                try:
-                    child_entries = [e.name for e in os.scandir(child_fd)]
-                except OSError as exc:
-                    os.close(child_fd)
-                    logger.error("prune_scandir_failed", path=child_display, error=repr(exc))
-                    frame.remaining += 1
-                    continue
-                stack.append(
-                    _Frame(
-                        child_fd,
-                        child_display,
-                        frame.fd,
-                        name,
-                        frame.depth + 1,
-                        child_entries,
-                        owns_fd=True,
-                    )
-                )
-                continue
-
-            if stat.S_ISREG(mode) and st.st_mtime < cutoff_epoch:
-                if dry_run:
-                    deleted += 1
-                    continue
-                try:
-                    os.unlink(name, dir_fd=frame.fd)
-                    deleted += 1
-                except OSError as exc:
-                    logger.error("prune_unlink_failed", path=child_display, error=repr(exc))
-                    frame.remaining += 1
-            else:
-                frame.remaining += 1
-    finally:
-        for leftover in stack:
-            if leftover.owns_fd:
-                with contextlib.suppress(OSError):
-                    os.close(leftover.fd)
-
-    return deleted, root_empty
-
-
-def _open_relative_subdir_nofollow(root: Path, rel_subdir: str) -> int | None:
-    """Walk path components under root opening each directory strictly with O_NOFOLLOW."""
-    current_fd = _open_dir_nofollow(root)
-    if current_fd is None:
-        return None
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    parts = [p for p in Path(rel_subdir).parts if p not in ("", ".", "*")]
-    for part in parts:
-        try:
-            next_fd = os.open(part, flags, dir_fd=current_fd)
-        except OSError:
-            os.close(current_fd)
-            return None
-        os.close(current_fd)
-        current_fd = next_fd
-    return current_fd
-
-
-def _prune_old_files(
-    root: Path,
-    cutoff: date,
-    subdirs: list[str] | tuple[str, ...],
-    *,
-    dry_run: bool = False,
-) -> int:
-    """Delete files older than cutoff inside explicit sensor scratch subdirs (symlink-safe)."""
-    deleted = 0
-    if not root.exists():
-        return deleted
-
-    cutoff_epoch = _cutoff_epoch_utc(cutoff)
-    for subdir in subdirs:
-        cleaned = subdir.rstrip("/*")
-        dir_fd = _open_relative_subdir_nofollow(root, cleaned)
-        if dir_fd is None:
-            continue
-        try:
-            sub_deleted, _ = _prune_dir_fd(
-                dir_fd,
-                cutoff_epoch,
-                rel_display=str(root / cleaned),
-                dry_run=dry_run,
-            )
-            deleted += sub_deleted
-        except OSError as exc:
-            logger.error("prune_subdir_failed", path=str(root / cleaned), error=repr(exc))
-        finally:
-            os.close(dir_fd)
-
-    return deleted
-
-
 def _prune_enrichment_errors(
     errors_path: Path,
     cutoff: date,
@@ -439,17 +204,14 @@ def _cleanup_empty_dirs(root: Path, *, dry_run: bool = False) -> int:
 
 def run_prune(
     lake_dir: Path = DEFAULT_LAKE_DIR,
-    sensor_dir: Path = DEFAULT_SENSOR_DIR,
     retention_days: int = SILVER_GOLD_RETENTION_DAYS,
     *,
     bronze_retention_days: int = BRONZE_RETENTION_DAYS,
-    sensor_retention_days: int = SENSOR_RETENTION_DAYS,
     dry_run: bool = False,
 ) -> int:
-    """Prune verified Bronze (14d), Silver/Gold (180d), sensor scratch (14d), and error logs."""
+    """Prune verified Bronze (14d), Silver/Gold (180d), and error logs under lake_dir."""
     bronze_cutoff = _cutoff_date(bronze_retention_days)
     silver_gold_cutoff = _cutoff_date(retention_days)
-    sensor_cutoff = _cutoff_date(sensor_retention_days)
     errors_cutoff = _cutoff_date(ERRORS_RETENTION_DAYS)
 
     total = 0
@@ -458,7 +220,6 @@ def run_prune(
     )
     total += _prune_date_partitions(lake_dir / "silver", silver_gold_cutoff, dry_run=dry_run)
     total += _prune_date_partitions(lake_dir / "gold", silver_gold_cutoff, dry_run=dry_run)
-    total += _prune_old_files(sensor_dir, sensor_cutoff, DEFAULT_SENSOR_SUBDIRS, dry_run=dry_run)
     _prune_enrichment_errors(lake_dir / "enrichment_errors.json", errors_cutoff, dry_run=dry_run)
     _cleanup_empty_dirs(lake_dir, dry_run=dry_run)
 
@@ -467,16 +228,15 @@ def run_prune(
         deleted=total,
         bronze_days=bronze_retention_days,
         silver_gold_days=retention_days,
-        sensor_days=sensor_retention_days,
         dry_run=dry_run,
     )
     return total
 
 
 def check_disk_usage(path: Path) -> float:
-    """Return non-root usable disk usage percentage (0.0-100.0) matching `df`.
+    """Return non-root usable disk usage percentage (0.0-100.0) matching ``df``.
 
-    Uses `os.statvfs` with `f_bavail` instead of `shutil.disk_usage` so ext4's
+    Uses ``os.statvfs`` with ``f_bavail`` instead of ``shutil.disk_usage`` so ext4's
     root-reserved blocks (~3-5%) do not mask unprivileged ENOSPC as ~95-97%.
     """
     st = os.statvfs(path)
@@ -488,7 +248,7 @@ def check_disk_usage(path: Path) -> float:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prune Lantana datalake and sensor scratch.")
+    parser = argparse.ArgumentParser(description="Prune Lantana collector datalake.")
     parser.add_argument("--dry-run", action="store_true", help="Report deletions without removing.")
     parser.add_argument(
         "--bronze-days",
@@ -502,12 +262,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=SILVER_GOLD_RETENTION_DAYS,
         help=f"Silver and Gold retention in days (default: {SILVER_GOLD_RETENTION_DAYS}).",
     )
-    parser.add_argument(
-        "--sensor-days",
-        type=int,
-        default=SENSOR_RETENTION_DAYS,
-        help=f"Sensor scratch retention in days (default: {SENSOR_RETENTION_DAYS}).",
-    )
     return parser
 
 
@@ -515,15 +269,12 @@ def main(argv: list[str] | None = None) -> None:
     """CLI entry point for lantana-prune."""
     args = _build_parser().parse_args(argv)
     lake_dir = DEFAULT_LAKE_DIR
-    sensor_dir = DEFAULT_SENSOR_DIR
 
     try:
         deleted = run_prune(
             lake_dir,
-            sensor_dir,
             retention_days=args.silver_days,
             bronze_retention_days=args.bronze_days,
-            sensor_retention_days=args.sensor_days,
             dry_run=args.dry_run,
         )
         logger.info("standard_prune_done", deleted=deleted, dry_run=args.dry_run)
@@ -550,7 +301,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if usage > DISK_CRITICAL_THRESHOLD:
         emergency_bronze = 0
-        emergency_sensor = 0
         try:
             emergency_bronze = _prune_bronze_partitions(
                 lake_dir / "bronze",
@@ -559,24 +309,14 @@ def main(argv: list[str] | None = None) -> None:
             )
         except Exception as exc:
             logger.error("emergency_bronze_prune_failed", error=repr(exc))
-        try:
-            emergency_sensor = _prune_old_files(
-                sensor_dir,
-                _cutoff_date(EMERGENCY_SENSOR_RETENTION_DAYS),
-                DEFAULT_SENSOR_SUBDIRS,
-            )
-        except Exception as exc:
-            logger.error("emergency_sensor_prune_failed", error=repr(exc))
 
-        emergency_deleted = emergency_bronze + emergency_sensor
         after_usage = check_disk_usage(lake_dir)
         logger.warning(
             "emergency_prune",
             before=round(usage, 1),
             after=round(after_usage, 1),
-            deleted=emergency_deleted,
+            deleted=emergency_bronze,
             bronze_deleted=emergency_bronze,
-            sensor_deleted=emergency_sensor,
         )
 
         if webhook_url:
@@ -588,9 +328,8 @@ def main(argv: list[str] | None = None) -> None:
                     level="critical",
                     title="Lantana: Disk Critical",
                     message=(
-                        f"Usable disk usage at {usage:.1f}%. Emergency prune executed.\n"
-                        f"Deleted {emergency_bronze} verified Bronze partition(s) and "
-                        f"{emergency_sensor} sensor artifact(s) "
+                        f"Usable disk usage at {usage:.1f}%. Emergency datalake prune executed.\n"
+                        f"Deleted {emergency_bronze} verified Bronze partition(s) "
                         f"(stepped down to {EMERGENCY_BRONZE_RETENTION_DAYS} days).\n"
                         f"Usage after prune: {after_usage:.1f}%."
                     ),

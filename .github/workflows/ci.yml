@@ -48,10 +48,13 @@ jobs:
         run: uv run mypy --strict src tests
 
       - name: ruff check (scripts)
-        run: uv run ruff check ../scripts/*.py
+        run: uv run ruff check ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
+
+      - name: ruff format check (scripts)
+        run: uv run ruff format --check ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
 
       - name: mypy --strict (scripts)
-        run: uv run mypy --strict ../scripts/*.py
+        run: uv run mypy --strict ../scripts/*.py ../config/ansible/roles/profile_sensor_low/files/lantana-sensor-prune ../containers/cowrie/patch_offline.py
 
   terraform:
     name: Terraform (fmt + validate)
@@ -89,7 +92,7 @@ jobs:
           fetch-depth: 1
 
       - name: shellcheck
-        run: shellcheck scripts/*.sh config/ansible/roles/base/files/lantana-grant-read containers/dionaea/entrypoint.sh
+        run: shellcheck scripts/*.sh containers/dionaea/entrypoint.sh
 
   ansible-lint:
     name: Ansible-lint

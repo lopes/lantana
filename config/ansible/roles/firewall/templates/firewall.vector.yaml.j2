@@ -89,8 +89,11 @@ transforms:
       # with empty `src`) pass through `filter_nftables` directly so parse
       # failures stay observable at bronze without bypassing OPSEC via `tag_*`.
       source: |-
+        msg = to_string(.message) ?? ""
         src = replace(downcase(to_string(.src_ip) ?? ""), r'^::ffff:', "")
-        if .nftables_parse_failed == true && src == "" {
+        if contains(msg, "[LANTANA_OUTPUT_DROP") || .chain == "output" {
+            false
+        } else if .nftables_parse_failed == true && src == "" {
             true
         } else {
             src != "" && !(ip_cidr_contains("127.0.0.0/8", src) ?? false) && !(ip_cidr_contains("::1/128", src) ?? false) && !(ip_cidr_contains("10.0.0.0/8", src) ?? false) && !(ip_cidr_contains("172.16.0.0/12", src) ?? false) && !(ip_cidr_contains("192.168.0.0/16", src) ?? false) && !(ip_cidr_contains("169.254.0.0/16", src) ?? false) && !(ip_cidr_contains("fe80::/10", src) ?? false) && !(ip_cidr_contains("fc00::/7", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv4 }}", src) ?? false) && !(ip_cidr_contains("{{ network.prefixes.ipv6 }}", src) ?? false) && !(ip_cidr_contains("{{ network.honeywall.wan.ipv4.split('/')[0] }}/32", src) ?? false) && !(ip_cidr_contains("{{ network.honeywall.wan.ipv6.split('/')[0] }}/128", src) ?? false)

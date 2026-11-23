@@ -106,6 +106,7 @@ class TestCategorizeErrors:
                     "sensor_silent_critical",
                     "disk_critical",
                     "step_failed",
+                    "sensor_egress_blocked",
                 }
             )
             == CRITICAL_ERROR_TYPES
@@ -304,6 +305,32 @@ class TestEvaluateLivenessAlerts:
         assert bc.has_critical is True
         types = {r["error_type"] for r in bc.critical}
         assert {"disk_critical", "step_failed"} <= types
+
+    def test_sensor_egress_blocked_escalates_as_critical(self, tmp_path: Path) -> None:
+        import polars as pl
+
+        from lantana.notify.egress import SensorEgressSummary
+
+        d1 = date(2026, 7, 16)
+        self._write_silver(tmp_path, "cowrie", d1)
+        summary = pl.DataFrame({"total_events": [100]})
+
+        egress = SensorEgressSummary(
+            wan_drops=2,
+            local_drops=1,
+            canary_drops=0,
+            top_targets={("tcp", 443): 2, ("tcp", 8501): 1},
+        )
+        rows = evaluate_liveness_alerts(
+            target_date=d1,
+            summary=summary,
+            expected_datasets=["cowrie"],
+            silver_root=tmp_path,
+            egress_summary=egress,
+        )
+        buckets = categorize_errors(rows)
+        assert buckets.has_critical is True
+        assert any(r["error_type"] == "sensor_egress_blocked" for r in buckets.critical)
 
 
 # ---------------------------------------------------------------------------

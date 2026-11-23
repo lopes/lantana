@@ -1,11 +1,9 @@
 """Main enrichment orchestrator — IOC-first, priority-ranked, rate-limited.
 
 Daily workflow:
-1. Load every dataset's bronze NDJSON for the target date (plus synthetic
-   Dionaea binary captures).
-2. Extract IOCs globally across datasets: inbound IPs, malware SHA-256 hashes
-   (bronze + date-scoped sensor disk sweep), outbound C2 IPs, and post-auth
-   stager URLs & domains.
+1. Load every dataset's bronze NDJSON for the target date.
+2. Extract IOCs globally across datasets from Bronze telemetry only: inbound IPs,
+   malware SHA-256 hashes, outbound C2 IPs, and post-auth stager URLs & domains.
 3. OPSEC-filter all IPs, URLs, and domains against infrastructure ranges and
    hostnames before any external API lookup.
 4. Enrich cache-first with token-bucket rate limiting and behavioral priority
@@ -44,9 +42,7 @@ from lantana.common.redact import (
     validate_no_leaks,
 )
 from lantana.enrichment.ioc import (
-    extract_dionaea_binary_events,
     extract_hashes_from_bronze,
-    extract_hashes_from_disk,
     extract_ips,
     extract_outbound_c2_ips,
     extract_outbound_urls,
@@ -805,29 +801,9 @@ def _ensure_ip_score_columns(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
 
 
-def _infer_default_server(dfs: dict[str, pl.DataFrame]) -> str:
-    """Infer sensor hostname from dionaea bronze first, falling back to any loaded dataset."""
-    ordered = ["dionaea", *[k for k in dfs if k != "dionaea"]]
-    for name in ordered:
-        df = dfs.get(name)
-        if df is not None and not df.is_empty() and "server" in df.columns:
-            non_null = [
-                str(s).strip()
-                for s in df.get_column("server").drop_nulls().to_list()
-                if str(s).strip()
-            ]
-            if non_null:
-                return non_null[0]
-    return "unknown"
-
-
-# -- Orchestration -----------------------------------------------------------
-
-
 async def run_enrichment(
     target_date: date,
     cache_db_path: Path = CACHE_DB_PATH,
-    sensor_dir: Path = Path("/var/lib/lantana/sensor"),
     errors_path: Path = ERRORS_PATH,
     provider_state_path: Path = PROVIDER_STATE_PATH,
 ) -> None:
@@ -889,34 +865,6 @@ async def run_enrichment(
                 continue
             dfs[dataset] = df
 
-        # Phase A.1: synthesise fallback dionaea file-activity rows from disk
-        # only for hashes not already attributed in bronze by lantana_json.
-        default_server = _infer_default_server(dfs)
-        attributed_dionaea_hashes = (
-            extract_hashes_from_bronze(dfs["dionaea"]) if "dionaea" in dfs else set()
-        )
-        binary_events = extract_dionaea_binary_events(
-            sensor_dir,
-            target_date,
-            default_server=default_server,
-            default_operation=reporting.operation.name,
-            exclude_hashes=attributed_dionaea_hashes,
-        )
-        if binary_events:
-            synth_df = pl.DataFrame(binary_events)
-            if "dionaea" in dfs:
-                dfs["dionaea"] = pl.concat(
-                    [dfs["dionaea"], synth_df],
-                    how="diagonal_relaxed",
-                )
-            else:
-                dfs["dionaea"] = synth_df
-            logger.info(
-                "dionaea_binaries_synthesised",
-                count=len(binary_events),
-                date=target_date.isoformat(),
-            )
-
         if not dfs:
             logger.info("enrichment_no_data", date=target_date.isoformat())
             return
@@ -933,7 +881,6 @@ async def run_enrichment(
 
         unique_ips = filter_internal_ips(raw_ips, redact_config)
         stager_domains = extract_stager_domains(outbound_urls, redact_config)
-        unique_hashes.update(extract_hashes_from_disk(sensor_dir, target_date=target_date))
 
         if len(raw_ips) != len(unique_ips):
             logger.info("internal_ips_filtered", count=len(raw_ips) - len(unique_ips))

@@ -427,12 +427,13 @@ The platform runs itself from here. Pipeline jobs are systemd `oneshot` services
 | Time (UTC) | Job | What it does |
 |---|---|---|
 | Continuous | Vector | Reads honeypot logs, enriches with GeoIP, writes bronze NDJSON |
-| 00:10 daily | `lantana-grant-read` (cron) | Refreshes symlink-safe `u:nectar:rwX` POSIX ACLs on Cowrie & Dionaea scratch dirs |
-| 00:15 daily | `lantana-prune` | Enforces 14d verified Bronze, 180d Silver/Gold, 14d sensor scratch; 3d emergency prune at >80% disk |
-| 01:00 daily | `lantana-enrich` | Bronze → silver: IOC extraction, optional API enrichment, OCSF normalisation, redaction, atomic Parquet |
-| 05:30 daily | `lantana-transform` | Silver → gold: computes the 7 aggregated gold Parquet tables (incl. `extracted_iocs`) |
-| 06:00 daily | `lantana-report` | Merged daily flow: dead-man's-switch liveness, live disk %, error severity, full intel brief attached; always posts |
+| Hourly (`*:10`) | `lantana-sensor-prune` (`User=stigma`) | Symlink-safe 14d sensor scratch cleanup (3d emergency prune at `>80%` disk) |
+| 00:15 daily | `lantana-prune` (`User=nectar`) | Enforces 14d verified Bronze, 180d Silver/Gold; 3d emergency Bronze prune at `>80%` disk |
+| 01:00 daily | `lantana-enrich` (`User=nectar`) | Bronze → silver: IOC extraction, optional API enrichment, OCSF normalisation, redaction, atomic Parquet |
+| 05:30 daily | `lantana-transform` (`User=nectar`) | Silver → gold: computes the 7 aggregated gold Parquet tables (incl. `extracted_iocs`) |
+| 06:00 daily | `lantana-report` (`User=nectar`) | Merged daily flow: dead-man's-switch liveness, sensor egress check, live disk %, error severity, full intel brief attached; always posts |
 | 02:30 (1st of month) | `lantana-geoip-update` (cron) | Refreshes MaxMind City + ASN databases |
+| 00:00 daily + `*:15` hourly | `lantana-logs` (cron) | Deterministic midnight `logrotate -f` + hourly `maxsize 100M` safety pass |
 
 **Day one** — bronze accumulates from live traffic. Enrichment has nothing to process yet (it runs against yesterday's data).
 
@@ -455,7 +456,7 @@ ansible-playbook -i inventories/op_<name>/inventory.yml \
 Two common follow-ups:
 
 - **Rotate the narrative on the same host.** Edit `narrative.yml`, then re-run `deploy_single.yml` (add `--diff --check` first for a dry-run preview of the rendered banners, MOTD, and certs). The infrastructure is untouched; only the deception layer changes.
-- **Destroy and rebuild.** If using Terraform: `terraform destroy` in `infra/terraform/environments/proxmox/`. If manually provisioned: just wipe the VM. Ansible state is captured entirely by the inventory, so a fresh provision + re-deploy reproduces the operation bit-for-bit.
+- **Pre-teardown compromise triage & full burn-and-rebuild.** Before destroying a long-running host, run the read-only host-integrity audit playbook (`tests/audit-host-integrity.yml`) to check for systemd user persistence (`~/.config/systemd/user/`), linger drift, shell/SSH RC tampering, `/etc/ld.so.preload`, unexpected containers/crons, and `nftables` `stigma` egress counters. **Always treat live-host checks as triage only** — correlate with your VPS/hypervisor out-of-band egress traffic graphs, pull your final datalake backup, and perform a full VM burn-and-rebuild (`terraform destroy` or full provider wipe; never reuse a disk or snapshot).
 
 ---
 
@@ -473,6 +474,7 @@ Two common follow-ups:
 | Validate sensor runtime | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-sensor-runtime.yml --ask-vault-pass` (run ~30 s after `deploy_honeypots.yml`) |
 | Validate active canaries | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-canaries.yml --ask-vault-pass` |
 | Validate pipeline cycle | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/validate-pipeline-cycle.yml --ask-vault-pass` |
+| Host-integrity audit | `ansible-playbook -i inventories/op_<name>/inventory.yml tests/audit-host-integrity.yml --ask-vault-pass` |
 | Dashboard tunnel | `ssh -p <PORT> -L 8501:localhost:8501 lantana@<SN01>` → on collector: `sudo -u nectar /opt/lantana/pipeline/venv/bin/lantana-dashboard` → browse to <http://localhost:8501> |
 | Export STIX bundle | Vigil Dashboard → Intel & Export (`/intel`) → pick date/window → **Download STIX 2.1 Bundle** (`.json`) |
 | Baseline snapshot | `scripts/backup-vps.sh <host> <user> <key> <port> ./backups/<op_name>/baseline` |

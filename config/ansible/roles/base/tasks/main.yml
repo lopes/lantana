@@ -85,14 +85,36 @@
     - /var/lib/lantana
   tags: [base]
 
-- name: "Deploy lantana-grant-read utility"
+- name: "Remove legacy lantana-grant-read utility"
   become: true
-  ansible.builtin.copy:
-    src: lantana-grant-read
-    dest: /usr/local/sbin/lantana-grant-read
+  ansible.builtin.file:
+    path: /usr/local/sbin/lantana-grant-read
+    state: absent
+  tags: [base]
+
+- name: "Create systemd-journald drop-in directory"
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
     owner: root
     group: root
-    mode: "0750"
+    mode: "0755"
+  tags: [base]
+
+- name: "Cap systemd-journald disk footprint"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/10-lantana.conf
+    content: |
+      # Managed by Ansible
+      [Journal]
+      SystemMaxUse=200M
+      MaxRetentionSec=14day
+    owner: root
+    group: root
+    mode: "0644"
+  notify: "Restart systemd-journald"
   tags: [base]
 
 - name: "Setup log rotation"
@@ -100,8 +122,10 @@
   ansible.builtin.copy:
     dest: /etc/cron.d/lantana-logs
     content: |
-      # Process all logs scheduled for 00:00 (Midnight)
+      # Deterministic midnight rotation (forced)
       0 0 * * * root find /etc/lantana/logrotate.d/00_00 -maxdepth 1 -type f -exec /usr/sbin/logrotate -f {} +
+      # Hourly mid-day maxsize safety pass (rotates only if a log exceeds maxsize)
+      15 * * * * root find /etc/lantana/logrotate.d/00_00 -maxdepth 1 -type f -exec /usr/sbin/logrotate {} +
     owner: root
     group: root
     mode: "0644"

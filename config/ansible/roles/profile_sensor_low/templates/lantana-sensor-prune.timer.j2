@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# Hourly sensor scratch retention timer (stigma-owned directories only).
+
+[Unit]
+Description=Lantana sensor scratch prune (hourly schedule)
+Documentation=https://github.com/lopes/lantana
+
+[Timer]
+OnCalendar=*-*-* *:10:00 UTC
+Persistent=true
+Unit=lantana-sensor-prune.service
+
+[Install]
+WantedBy=timers.target

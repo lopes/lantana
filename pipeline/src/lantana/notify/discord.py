@@ -109,6 +109,7 @@ def generate_and_send(argv: list[str] | None = None) -> None:
         evaluate_liveness_alerts,
         load_errors_for_date,
     )
+    from lantana.notify.egress import collect_sensor_egress_summary
     from lantana.notify.report import generate_daily_brief, generate_embed_summary
     from lantana.notify.timing import collect_step_timings
     from lantana.prune import DEFAULT_LAKE_DIR, check_disk_usage
@@ -176,6 +177,7 @@ def generate_and_send(argv: list[str] | None = None) -> None:
     geographic = read_gold_table("geographic_summary", target_date)
     detection = read_gold_table("detection_findings", target_date)
 
+    egress_summary = collect_sensor_egress_summary(target_date)
     liveness_rows = evaluate_liveness_alerts(
         target_date=target_date,
         summary=summary,
@@ -183,6 +185,7 @@ def generate_and_send(argv: list[str] | None = None) -> None:
         silver_root=SILVER_ROOT,
         timings=timings,
         disk_usage_pct=disk_usage_pct,
+        egress_summary=egress_summary,
     )
     buckets = categorize_errors([*error_rows, *liveness_rows])
 

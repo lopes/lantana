@@ -751,3 +751,80 @@ def test_health_dashboard_surfaces_integrations_errors_storage_and_never_leaks_s
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_health_dashboard_surfaces_sensor_egress_violation_without_wan_ip_leak(
+    tmp_path: Path,
+) -> None:
+    """/health flags non-canary sensor egress drops as Critical and never renders host WAN IP."""
+    gold_root, silver_root, reporting_path = _seed_datalake(tmp_path)
+    firewall_log = tmp_path / "firewall.log"
+    synthetic_wan = "192.0.2.10"
+    firewall_log.write_text(
+        f"Jul 11 04:15:00 sn-test kernel: [LANTANA_OUTPUT_DROP_SENSOR_WAN] IN= OUT=enp2s0 "
+        f"SRC={synthetic_wan} DST=198.51.100.77 LEN=60 PROTO=TCP SPT=51000 DPT=443 SYN\n"
+        "Jul 11 04:16:00 sn-test kernel: [LANTANA_OUTPUT_DROP_SENSOR_LO] IN= OUT=lo "
+        "SRC=127.0.0.1 DST=127.0.0.1 LEN=60 PROTO=TCP SPT=51001 DPT=8501 SYN\n",
+        encoding="utf-8",
+    )
+
+    server = create_server(
+        host="127.0.0.1",
+        port=0,
+        gold_root=gold_root,
+        silver_root=silver_root,
+        reporting_path=reporting_path,
+        datalake_root=tmp_path,
+        firewall_log_path=firewall_log,
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, raw = _fetch(f"http://127.0.0.1:{port}/health?window=latest")
+        assert status == 200
+        body = raw.decode("utf-8")
+        assert "Sensor Egress" in body
+        assert "sensor_egress_blocked" in body
+        assert "Critical" in body
+        assert synthetic_wan not in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_health_dashboard_surfaces_live_same_day_egress_drop(tmp_path: Path) -> None:
+    """Same-day UTC egress drops surface immediately on /health even when Gold is D-1."""
+    gold_root, silver_root, reporting_path = _seed_datalake(tmp_path)
+    egress_log = tmp_path / "sensor-egress.log"
+    today_iso = datetime.now(tz=UTC).date().isoformat()
+    egress_log.write_text(
+        f"{today_iso}T02:30:00Z sn-test kernel: [LANTANA_OUTPUT_DROP_SENSOR_WAN] "
+        "IN= OUT=enp2s0 SRC=192.0.2.10 DST=198.51.100.77 LEN=60 PROTO=TCP SPT=51000 DPT=443 SYN\n",
+        encoding="utf-8",
+    )
+
+    server = create_server(
+        host="127.0.0.1",
+        port=0,
+        gold_root=gold_root,
+        silver_root=silver_root,
+        reporting_path=reporting_path,
+        datalake_root=tmp_path,
+        firewall_log_path=egress_log,
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, raw = _fetch(f"http://127.0.0.1:{port}/health?window=latest")
+        assert status == 200
+        body = raw.decode("utf-8")
+        assert "1 Blocked" in body
+        assert "sensor_egress_blocked" in body
+        assert "Critical" in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

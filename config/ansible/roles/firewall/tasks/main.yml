@@ -29,6 +29,27 @@
   changed_when: true
   tags: [nftables]
 
+- name: "Ensure firewall log directory exists"
+  become: true
+  ansible.builtin.file:
+    path: /var/log/lantana/honeywall/nftables
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [nftables]
+
+- name: "Initialize dedicated sensor-egress log file"
+  become: true
+  ansible.builtin.copy:
+    content: ""
+    dest: /var/log/lantana/honeywall/nftables/sensor-egress.log
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [nftables]
+
 - name: "Setup firewall connections logging"
   become: true
   ansible.builtin.copy:

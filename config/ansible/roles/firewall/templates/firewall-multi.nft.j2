@@ -87,7 +87,7 @@ table inet lantana_filter {
 
         # Strict egress containment: block new outbound from sensors
         iifname $LAN_IF oifname $WAN_IF ct state new limit rate 10/minute burst 5 packets log prefix "[LANTANA_FORWARD_DROP_EGRESS] " level info
-        iifname $LAN_IF oifname $WAN_IF ct state new drop
+        iifname $LAN_IF oifname $WAN_IF ct state new counter drop
     }
 
     # 3. OUTPUT: Traffic initiated by the honeywall itself

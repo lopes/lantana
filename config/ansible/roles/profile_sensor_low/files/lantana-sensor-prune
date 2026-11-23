@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""Symlink-safe sensor scratch pruner running strictly as the sensor user (stigma).
+
+Deployed by Ansible role ``profile_sensor_low`` to ``/usr/local/libexec/lantana-sensor-prune``
+and scheduled via root-owned ``lantana-sensor-prune.timer`` running with ``User=stigma``,
+preserving strict one-way privilege isolation (neither ``nectar`` nor ``root`` ever
+traverses or unlinks files inside ``stigma``-owned directories).
+
+Retention defaults:
+- Normal: 14 days on Cowrie (downloads, tty) and Dionaea (binaries, bistreams, tmp).
+- Emergency (>80% non-root usable disk via ``os.statvfs``): 3 days.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import os
+import stat
+import sys
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+
+DEFAULT_SENSOR_DIR = Path("/var/lib/lantana/sensor")
+SENSOR_RETENTION_DAYS = 14
+EMERGENCY_SENSOR_RETENTION_DAYS = 3
+DISK_CRITICAL_THRESHOLD = 80.0
+MAX_PRUNE_DEPTH = 32
+
+DEFAULT_SENSOR_SUBDIRS: tuple[str, ...] = (
+    "cowrie/downloads",
+    "cowrie/tty",
+    "dionaea/binaries",
+    "dionaea/bistreams",
+    "dionaea/tmp",
+)
+
+
+def _cutoff_date(retention_days: int) -> date:
+    """Compute the UTC cutoff date: files older than this are pruned."""
+    return datetime.now(UTC).date() - timedelta(days=retention_days)
+
+
+def _cutoff_epoch_utc(cutoff: date) -> float:
+    """Convert a UTC cutoff date to POSIX epoch seconds at 00:00:00 UTC."""
+    return datetime(cutoff.year, cutoff.month, cutoff.day, tzinfo=UTC).timestamp()
+
+
+def check_disk_usage(path: Path) -> float:
+    """Return non-root usable disk usage percentage (0.0-100.0) matching ``df``."""
+    st = os.statvfs(path)
+    used = st.f_blocks - st.f_bfree
+    denom = used + st.f_bavail
+    if denom <= 0:
+        return 100.0
+    return (used / denom) * 100.0
+
+
+def _open_dir_nofollow(path: Path) -> int | None:
+    """Open a directory without following symlinks on the final path component."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        return os.open(str(path), flags)
+    except OSError:
+        return None
+
+
+def _open_relative_subdir_nofollow(root: Path, rel_subdir: str) -> int | None:
+    """Walk path components under root opening each directory strictly with O_NOFOLLOW."""
+    rel_path = Path(rel_subdir)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        return None
+    current_fd = _open_dir_nofollow(root)
+    if current_fd is None:
+        return None
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parts = [p for p in rel_path.parts if p not in ("", ".", "*")]
+    for part in parts:
+        try:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+        except OSError:
+            os.close(current_fd)
+            return None
+        os.close(current_fd)
+        current_fd = next_fd
+    return current_fd
+
+
+class _Frame:
+    __slots__ = (
+        "depth",
+        "entries",
+        "entry_name",
+        "fd",
+        "idx",
+        "owns_fd",
+        "parent_fd",
+        "rel_path",
+        "remaining",
+    )
+
+    def __init__(
+        self,
+        fd: int,
+        rel_path: str,
+        parent_fd: int | None,
+        entry_name: str | None,
+        depth: int,
+        entries: list[str],
+        *,
+        owns_fd: bool,
+    ) -> None:
+        self.fd = fd
+        self.rel_path = rel_path
+        self.parent_fd = parent_fd
+        self.entry_name = entry_name
+        self.depth = depth
+        self.entries = entries
+        self.idx = 0
+        self.remaining = 0
+        self.owns_fd = owns_fd
+
+
+def _prune_dir_fd(
+    root_fd: int,
+    cutoff_epoch: float,
+    *,
+    rel_display: str,
+    dry_run: bool,
+    max_depth: int = MAX_PRUNE_DEPTH,
+) -> tuple[int, bool]:
+    """Iteratively prune regular files older than cutoff_epoch using dir_fd + O_NOFOLLOW."""
+    deleted = 0
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    try:
+        with os.scandir(root_fd) as it:
+            root_entries = [e.name for e in it]
+    except OSError as exc:
+        print(f"prune_scandir_failed path={rel_display} error={exc!r}", file=sys.stderr)
+        return 0, False
+
+    stack: list[_Frame] = [_Frame(root_fd, rel_display, None, None, 0, root_entries, owns_fd=False)]
+    root_empty = False
+
+    try:
+        while stack:
+            frame = stack[-1]
+            if frame.idx >= len(frame.entries):
+                stack.pop()
+                is_empty = frame.remaining == 0
+                if frame.owns_fd:
+                    os.close(frame.fd)
+                if frame.parent_fd is not None and frame.entry_name is not None:
+                    parent = stack[-1]
+                    if is_empty and not dry_run:
+                        try:
+                            os.rmdir(frame.entry_name, dir_fd=frame.parent_fd)
+                        except OSError:
+                            parent.remaining += 1
+                    elif not is_empty:
+                        parent.remaining += 1
+                else:
+                    root_empty = is_empty
+                continue
+
+            name = frame.entries[frame.idx]
+            frame.idx += 1
+            child_display = f"{frame.rel_path}/{name}"
+            try:
+                st = os.stat(name, dir_fd=frame.fd, follow_symlinks=False)
+            except OSError as exc:
+                print(f"prune_stat_failed path={child_display} error={exc!r}", file=sys.stderr)
+                frame.remaining += 1
+                continue
+
+            mode = st.st_mode
+            if stat.S_ISLNK(mode):
+                print(f"prune_symlink_skipped path={child_display}", file=sys.stderr)
+                frame.remaining += 1
+                continue
+
+            if stat.S_ISDIR(mode):
+                if frame.depth >= max_depth:
+                    print(
+                        f"prune_max_depth_reached path={child_display} max_depth={max_depth}",
+                        file=sys.stderr,
+                    )
+                    frame.remaining += 1
+                    continue
+                try:
+                    child_fd = os.open(name, flags, dir_fd=frame.fd)
+                except OSError as exc:
+                    print(
+                        f"prune_open_subdir_failed path={child_display} error={exc!r}",
+                        file=sys.stderr,
+                    )
+                    frame.remaining += 1
+                    continue
+                try:
+                    with os.scandir(child_fd) as it:
+                        child_entries = [e.name for e in it]
+                except OSError as exc:
+                    os.close(child_fd)
+                    print(
+                        f"prune_scandir_failed path={child_display} error={exc!r}",
+                        file=sys.stderr,
+                    )
+                    frame.remaining += 1
+                    continue
+                stack.append(
+                    _Frame(
+                        child_fd,
+                        child_display,
+                        frame.fd,
+                        name,
+                        frame.depth + 1,
+                        child_entries,
+                        owns_fd=True,
+                    )
+                )
+                continue
+
+            if stat.S_ISREG(mode) and st.st_mtime < cutoff_epoch:
+                if dry_run:
+                    deleted += 1
+                    continue
+                try:
+                    os.unlink(name, dir_fd=frame.fd)
+                    deleted += 1
+                except OSError as exc:
+                    print(
+                        f"prune_unlink_failed path={child_display} error={exc!r}", file=sys.stderr
+                    )
+                    frame.remaining += 1
+            else:
+                frame.remaining += 1
+    finally:
+        for leftover in stack:
+            if leftover.owns_fd:
+                with contextlib.suppress(OSError):
+                    os.close(leftover.fd)
+
+    return deleted, root_empty
+
+
+def prune_sensor_tree(
+    sensor_dir: Path = DEFAULT_SENSOR_DIR,
+    *,
+    retention_days: int = SENSOR_RETENTION_DAYS,
+    subdirs: tuple[str, ...] = DEFAULT_SENSOR_SUBDIRS,
+    dry_run: bool = False,
+) -> int:
+    """Delete files older than retention_days inside explicit sensor scratch subdirs."""
+    if not sensor_dir.exists():
+        return 0
+    cutoff_epoch = _cutoff_epoch_utc(_cutoff_date(retention_days))
+    deleted = 0
+    for subdir in subdirs:
+        cleaned = subdir.rstrip("/*")
+        dir_fd = _open_relative_subdir_nofollow(sensor_dir, cleaned)
+        if dir_fd is None:
+            continue
+        try:
+            sub_deleted, _ = _prune_dir_fd(
+                dir_fd,
+                cutoff_epoch,
+                rel_display=str(sensor_dir / cleaned),
+                dry_run=dry_run,
+            )
+            deleted += sub_deleted
+        except OSError as exc:
+            print(
+                f"prune_subdir_failed path={sensor_dir / cleaned} error={exc!r}",
+                file=sys.stderr,
+            )
+        finally:
+            os.close(dir_fd)
+    return deleted
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Prune Lantana sensor scratch artifacts as the unprivileged sensor user."
+    )
+    parser.add_argument(
+        "--sensor-dir",
+        type=Path,
+        default=DEFAULT_SENSOR_DIR,
+        help=f"Sensor state root directory (default: {DEFAULT_SENSOR_DIR}).",
+    )
+    parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=SENSOR_RETENTION_DAYS,
+        help=f"Normal scratch retention in days (default: {SENSOR_RETENTION_DAYS}).",
+    )
+    parser.add_argument(
+        "--emergency-days",
+        type=int,
+        default=EMERGENCY_SENSOR_RETENTION_DAYS,
+        help=f"Emergency retention when disk >80%% (default: {EMERGENCY_SENSOR_RETENTION_DAYS}).",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Report deletions without removing.")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for lantana-sensor-prune."""
+    args = _build_parser().parse_args(argv)
+    sensor_dir: Path = args.sensor_dir
+
+    deleted = prune_sensor_tree(
+        sensor_dir,
+        retention_days=args.retention_days,
+        dry_run=args.dry_run,
+    )
+    if not sensor_dir.exists():
+        print(
+            f"sensor_prune_complete deleted={deleted} disk_pct=unavailable dry_run={args.dry_run}"
+        )
+        return 0
+
+    usage = check_disk_usage(sensor_dir)
+    emergency_deleted = 0
+    if usage > DISK_CRITICAL_THRESHOLD and not args.dry_run:
+        emergency_deleted = prune_sensor_tree(
+            sensor_dir,
+            retention_days=args.emergency_days,
+            dry_run=False,
+        )
+        after_usage = check_disk_usage(sensor_dir)
+        print(
+            f"sensor_emergency_prune before={usage:.1f} after={after_usage:.1f} "
+            f"deleted={emergency_deleted} emergency_days={args.emergency_days}",
+            file=sys.stderr,
+        )
+
+    print(
+        f"sensor_prune_complete deleted={deleted} emergency_deleted={emergency_deleted} "
+        f"disk_pct={usage:.1f} dry_run={args.dry_run}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1170,6 +1170,7 @@ def _render_health_view(
     datalake_root: Path | None = None,
     secrets_path: Path | None = None,
     geoip_dir: Path | None = None,
+    firewall_log_path: Path | None = None,
 ) -> str:
     snap = collect_health_snapshot(
         dates=window.dates,
@@ -1179,6 +1180,7 @@ def _render_health_view(
         datalake_root=datalake_root,
         secrets_path=secrets_path,
         geoip_dir=geoip_dir,
+        firewall_log_path=firewall_log_path,
     )
 
     configured_cnt = sum(1 for i in snap.integrations if i.config_mode != "Not Configured")
@@ -1209,6 +1211,22 @@ def _render_health_view(
     if snap.target_date is not None:
         status_sub = f"{status_sub} ({snap.target_date.isoformat()})"
 
+    if snap.egress is None:
+        egress_val = "Remote"
+        egress_sub = "No local sensor-egress.log (multi-node collector)"
+        egress_tone = ""
+    elif snap.egress.total_violations > 0:
+        egress_val = f"{snap.egress.total_violations:,} Blocked"
+        egress_sub = (
+            f"{snap.egress.wan_drops} WAN · {snap.egress.local_drops} local "
+            f"({snap.egress.canary_drops} canary)"
+        )
+        egress_tone = "high"
+    else:
+        egress_val = "0 Blocked"
+        egress_sub = f"Dark policy intact ({snap.egress.canary_drops} canary)"
+        egress_tone = "low"
+
     kpis = [
         KpiCard(
             "Overall Status",
@@ -1223,6 +1241,13 @@ def _render_health_view(
             sub=disk_sub,
             tone=disk_tone,
             metric_key="Usable Disk",
+        ),
+        KpiCard(
+            "Sensor Egress",
+            egress_val,
+            sub=egress_sub,
+            tone=egress_tone,
+            metric_key="Sensor Egress",
         ),
         KpiCard(
             "Integrations Active",
@@ -1474,6 +1499,7 @@ class DashboardServer(ThreadingHTTPServer):
         secrets_path: Path | None = None,
         datalake_root: Path | None = None,
         geoip_dir: Path | None = None,
+        firewall_log_path: Path | None = None,
     ) -> None:
         self.gold_root = gold_root
         self.silver_root = silver_root
@@ -1481,6 +1507,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.secrets_path = secrets_path
         self.datalake_root = datalake_root
         self.geoip_dir = geoip_dir
+        self.firewall_log_path = firewall_log_path
         super().__init__(server_address, DashboardRequestHandler)
 
 
@@ -1601,6 +1628,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     datalake_root=self.server.datalake_root,
                     secrets_path=self.server.secrets_path,
                     geoip_dir=self.server.geoip_dir,
+                    firewall_log_path=self.server.firewall_log_path,
                 )
             )
             return
@@ -1692,6 +1720,7 @@ def create_server(
     secrets_path: Path | None = None,
     datalake_root: Path | None = None,
     geoip_dir: Path | None = None,
+    firewall_log_path: Path | None = None,
 ) -> DashboardServer:
     """Create a configured ``DashboardServer`` bound strictly to ``host:port``."""
     resolved_gold = (
@@ -1712,6 +1741,7 @@ def create_server(
         secrets_path=secrets_path,
         datalake_root=datalake_root,
         geoip_dir=geoip_dir,
+        firewall_log_path=firewall_log_path,
     )
 
 

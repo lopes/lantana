@@ -90,28 +90,35 @@ table inet lantana_filter {
     chain output {
         type filter hook output priority 0; policy drop;
 
-        # 1. SENSOR-USER CONTAINMENT (single-node pasta originates sockets as stigma)
-        # Prevent compromised sensors from reaching the air-gapped Vigil dashboard
-        # (127.0.0.1:8501) or staging plaintext HTTP / ICMP exfiltration on WAN.
-        # HTTPS (443) + DNS (53) remain allowed so `podman pull` works during deploys.
-        oifname "lo" meta skuid {{ system.users.sensor.uid }} tcp dport 8501 drop
-        oifname $WAN_IF meta skuid {{ system.users.sensor.uid }} tcp dport 80 drop
-        oifname $WAN_IF meta skuid {{ system.users.sensor.uid }} ip protocol icmp drop
-        oifname $WAN_IF meta skuid {{ system.users.sensor.uid }} meta l4proto icmpv6 drop
-
-        # 2. CORE TRAFFIC
-        oifname "lo" accept
+        # 1. ESTABLISHED/RELATED REPLIES (inbound honeypot responses pass here)
         ct state established,related accept
+        ct state invalid drop
 
-        # 3. MAINTENANCE
+        # 2. SENSOR-USER CONTAINMENT (100% dark runtime egress for stigma/pasta)
+        # Blocks WAN (53/80/443/UDP/ICMP), loopback (127.0.0.1:8501 Vigil,
+        # 127.0.0.53:53 systemd-resolved DNS bypass), and ltn0 collector pivots.
+        # Unconditional match (established,related + invalid handled above) prevents
+        # untracked packets from falling through; `counter drop` counts 100% of drops.
+        oifname "lo" meta skuid {{ system.users.sensor.uid }} limit rate 10/minute burst 5 packets log prefix "[LANTANA_OUTPUT_DROP_SENSOR_LO] " level info
+        oifname "lo" meta skuid {{ system.users.sensor.uid }} counter drop
+        oifname $SENSOR_IF meta skuid {{ system.users.sensor.uid }} limit rate 10/minute burst 5 packets log prefix "[LANTANA_OUTPUT_DROP_SENSOR_LO] " level info
+        oifname $SENSOR_IF meta skuid {{ system.users.sensor.uid }} counter drop
+
+        meta skuid {{ system.users.sensor.uid }} limit rate 10/minute burst 5 packets log prefix "[LANTANA_OUTPUT_DROP_SENSOR_WAN] " level info
+        meta skuid {{ system.users.sensor.uid }} counter drop
+
+        # 3. CORE HOST TRAFFIC (non-stigma users: root, nectar, vector, suricata)
+        oifname "lo" accept
+
+        # 4. MAINTENANCE
         udp dport @allowed_egress_udp_ports accept
         tcp dport @allowed_egress_tcp_ports accept
 
-        # 4. ICMP
+        # 5. ICMP
         ip protocol icmp accept
         meta l4proto icmpv6 accept
 
-        # 5. LOG DROPS
+        # 6. LOG DROPS
         limit rate 5/minute log prefix "[LANTANA_OUTPUT_DROP] " level info
     }
 }

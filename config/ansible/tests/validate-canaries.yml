@@ -13,6 +13,11 @@
 #      Opens a real TCP connection from the Ansible controller to WAN:22 and
 #      sends an SSH-2.0-Go banner -> asserts sid:9000004 fires in eve.json and
 #      lands in Bronze (proving HOME_NET + TX offload + AF_PACKET + Vector).
+#   3. Sensor (stigma) 100% dark egress containment canary:
+#      Probes RFC 5737 198.51.100.250:{443,80,53} and loopback 127.0.0.1:1
+#      as stigma -> asserts every attempt is blocked, logged to sensor-egress.log
+#      under [LANTANA_OUTPUT_DROP_SENSOR_WAN] / [LANTANA_OUTPUT_DROP_SENSOR_LO],
+#      and ZERO egress canary lines leak into firewall.log or Bronze dataset=nftables.
 #
 # Usage (from config/ansible/):
 #   ansible-playbook -i inventories/<op>/inventory.yml tests/validate-canaries.yml
@@ -27,6 +32,9 @@
     cowrie_bronze: "{{ datalake_root }}/bronze/dataset=cowrie/date={{ target_date }}/server={{ inventory_hostname }}/events.json"
     suricata_eve: /var/log/lantana/honeywall/suricata/eve.json
     suricata_bronze: "{{ datalake_root }}/bronze/dataset=suricata/date={{ target_date }}/server={{ inventory_hostname }}/events.json"
+    firewall_log: /var/log/lantana/honeywall/nftables/firewall.log
+    sensor_egress_log: /var/log/lantana/honeywall/nftables/sensor-egress.log
+    nftables_bronze: "{{ datalake_root }}/bronze/dataset=nftables/date={{ target_date }}/server={{ inventory_hostname }}/events.json"
 
   pre_tasks:
     - name: "Load network variables from inventory"
@@ -151,9 +159,120 @@
       register: suricata_checksum_alerts
       changed_when: false
 
+    # === 3. Dark Sensor Egress Containment Canary (stigma UID) ===
+    - name: "Record pre-canary sensor egress drop counts in sensor-egress.log"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        wan_pre=0
+        lo_pre=0
+        if [ -f "{{ sensor_egress_log }}" ]; then
+          wan_pre=$(grep -c '\[LANTANA_OUTPUT_DROP_SENSOR_WAN\]' "{{ sensor_egress_log }}" || true)
+          lo_pre=$(grep -c '\[LANTANA_OUTPUT_DROP_SENSOR_LO\]' "{{ sensor_egress_log }}" || true)
+        fi
+        printf '%s %s\n' "$wan_pre" "$lo_pre"
+      register: egress_pre_counts
+      changed_when: false
+
+    - name: "Probe blocked WAN (443/80/53) and loopback (1) canary targets as sensor user"
+      become: true
+      become_user: "{{ system.users.sensor.name }}"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import socket, sys
+
+            failures = []
+            # Use strictly allowlisted canary targets (RFC 5737 198.51.100.250 and
+            # loopback TCP port 1) so canary probes never trigger false Critical
+            # alerts on /health or Discord. Blanket loopback drops (incl. port 8501)
+            # are enforced by the unconditional `oifname "lo" meta skuid stigma` rule.
+            for host, port in (
+                ("198.51.100.250", 443),
+                ("198.51.100.250", 80),
+                ("127.0.0.1", 1),
+            ):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1.5)
+                try:
+                    s.connect((host, port))
+                    failures.append(f"TCP {host}:{port} unexpectedly succeeded")
+                except OSError:
+                    pass
+                finally:
+                    s.close()
+
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp.settimeout(1.5)
+            try:
+                udp.sendto(b"\x00\x00\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00", ("198.51.100.250", 53))
+            except OSError:
+                pass
+            finally:
+                udp.close()
+
+            if failures:
+                sys.stderr.write("; ".join(failures) + "\n")
+                sys.exit(1)
+            print("ALL_BLOCKED")
+      register: egress_probe_result
+      changed_when: true
+
+    - name: "Wait for sensor egress canary drops in sensor-egress.log"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        wan_pre="{{ egress_pre_counts.stdout.split()[0] | int }}"
+        lo_pre="{{ egress_pre_counts.stdout.split()[1] | int }}"
+        for _ in $(seq 1 10); do
+          if [ -f "{{ sensor_egress_log }}" ]; then
+            wan_now=$(grep -c '\[LANTANA_OUTPUT_DROP_SENSOR_WAN\]' "{{ sensor_egress_log }}" || true)
+            lo_now=$(grep -c '\[LANTANA_OUTPUT_DROP_SENSOR_LO\]' "{{ sensor_egress_log }}" || true)
+            if [ "$wan_now" -gt "$wan_pre" ] && [ "$lo_now" -gt "$lo_pre" ]; then
+              printf '%s %s\n' "$((wan_now - wan_pre))" "$((lo_now - lo_pre))"
+              exit 0
+            fi
+          fi
+          sleep 1
+        done
+        echo "TIMEOUT waiting for LANTANA_OUTPUT_DROP_SENSOR_{WAN,LO} in {{ sensor_egress_log }}" >&2
+        exit 1
+      register: egress_log_delta
+      changed_when: false
+
+    - name: "Verify zero sensor egress canary lines leaked into firewall.log or Bronze dataset=nftables"
+      become: true
+      ansible.builtin.shell: |
+        set -eu
+        sleep 2
+        fw_leaks=0
+        bronze_leaks=0
+        if [ -f "{{ firewall_log }}" ]; then
+          fw_leaks=$(grep -c 'LANTANA_OUTPUT_DROP_SENSOR_' "{{ firewall_log }}" || true)
+        fi
+        if [ -f "{{ nftables_bronze }}" ]; then
+          bronze_leaks=$(grep -c 'LANTANA_OUTPUT_DROP_SENSOR_' "{{ nftables_bronze }}" || true)
+        fi
+        printf '%s %s\n' "$fw_leaks" "$bronze_leaks"
+      register: egress_bronze_leaks
+      changed_when: false
+
+    - name: "Assert zero sensor egress lines leaked into firewall.log or Bronze"
+      ansible.builtin.assert:
+        that:
+          - "(egress_bronze_leaks.stdout.split()[0] | int) == 0"
+          - "(egress_bronze_leaks.stdout.split()[1] | int) == 0"
+        fail_msg: >-
+          Found LANTANA_OUTPUT_DROP_SENSOR_* leak (firewall.log / bronze)={{ egress_bronze_leaks.stdout }}
+          — rsyslog must route sensor egress strictly to sensor-egress.log and Vector filter_nftables
+          must drop all OUTPUT records so the host WAN IP never enters Bronze.
+
     - name: "Report active canary results"
       ansible.builtin.debug:
         msg: >-
           Canaries passed: Vector (ext/lo/rfc1918/wan)={{ vector_canary_counts.stdout }},
           Suricata sid:9000004 ({{ suricata_canary_result.stdout }}),
-          TCPv4 invalid checksum alerts={{ suricata_checksum_alerts.stdout }}.
+          TCPv4 invalid checksum alerts={{ suricata_checksum_alerts.stdout }},
+          stigma egress blocked (wan lo)={{ egress_log_delta.stdout }} (0 Bronze leaks).

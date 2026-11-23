@@ -263,10 +263,8 @@ def prod_pipeline(
     silver_root = tmp_path / "silver"
     gold_root = tmp_path / "gold"
     cache_db = tmp_path / "cache.db"
-    sensor_dir = tmp_path / "sensor"  # empty — no on-disk hashes
     errors_path = tmp_path / "enrichment_errors.json"
 
-    sensor_dir.mkdir()
     _copy_bronze_fixtures(bronze_root)
 
     monkeypatch.setattr(datalake_mod, "BRONZE_ROOT", bronze_root)
@@ -320,7 +318,6 @@ def prod_pipeline(
         "silver": silver_root,
         "gold": gold_root,
         "cache": cache_db,
-        "sensor": sensor_dir,
         "errors": errors_path,
         "provider_state": tmp_path / "provider_state.json",
     }
@@ -339,7 +336,6 @@ async def test_end_to_end_pipeline_against_production_shape(
     await run_enrichment(
         target_date=FIXTURE_DATE,
         cache_db_path=prod_pipeline["cache"],
-        sensor_dir=prod_pipeline["sensor"],
         errors_path=prod_pipeline["errors"],
         provider_state_path=prod_pipeline["provider_state"],
     )
@@ -518,7 +514,6 @@ async def test_errors_logged_for_rate_limited_ips(
     await run_enrichment(
         target_date=FIXTURE_DATE,
         cache_db_path=prod_pipeline["cache"],
-        sensor_dir=prod_pipeline["sensor"],
         errors_path=prod_pipeline["errors"],
         provider_state_path=prod_pipeline["provider_state"],
     )
@@ -581,7 +576,6 @@ async def test_riot_signal_survives_bronze_to_gold(
     await run_enrichment(
         target_date=FIXTURE_DATE,
         cache_db_path=prod_pipeline["cache"],
-        sensor_dir=prod_pipeline["sensor"],
         errors_path=prod_pipeline["errors"],
         provider_state_path=prod_pipeline["provider_state"],
     )
@@ -666,10 +660,8 @@ def prod_pipeline_no_cowrie(
     silver_root = tmp_path / "silver"
     gold_root = tmp_path / "gold"
     cache_db = tmp_path / "cache.db"
-    sensor_dir = tmp_path / "sensor"
     errors_path = tmp_path / "enrichment_errors.json"
 
-    sensor_dir.mkdir()
     _copy_bronze_fixtures(bronze_root, include_datasets=frozenset({"suricata", "nftables"}))
 
     monkeypatch.setattr(datalake_mod, "BRONZE_ROOT", bronze_root)
@@ -723,7 +715,6 @@ def prod_pipeline_no_cowrie(
         "silver": silver_root,
         "gold": gold_root,
         "cache": cache_db,
-        "sensor": sensor_dir,
         "errors": errors_path,
         "provider_state": tmp_path / "provider_state.json",
     }
@@ -753,7 +744,6 @@ async def test_pipeline_and_brief_survive_missing_cowrie(
     await run_enrichment(
         target_date=FIXTURE_DATE,
         cache_db_path=prod_pipeline_no_cowrie["cache"],
-        sensor_dir=prod_pipeline_no_cowrie["sensor"],
         errors_path=prod_pipeline_no_cowrie["errors"],
         provider_state_path=prod_pipeline_no_cowrie["provider_state"],
     )
